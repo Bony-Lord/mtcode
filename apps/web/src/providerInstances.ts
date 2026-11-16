@@ -206,10 +206,8 @@ export function getDefaultProviderInstanceModel(
   const entry = getProviderInstanceEntry(providers, instanceId);
   if (!entry) return undefined;
   return (
-    entry.models.find((model) => model.isDefault && !model.isCustom)?.slug ??
-    entry.models.find((model) => !model.isCustom)?.slug ??
-    entry.models[0]?.slug ??
-    DEFAULT_MODEL_BY_PROVIDER[entry.driverKind]
+    entry.models.find((model) => model.slug === "auto")?.slug ??
+    "auto"
   );
 }
 

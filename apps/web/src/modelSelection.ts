@@ -73,6 +73,15 @@ export interface AppModelOption {
   isUnavailable?: boolean;
 }
 
+export const AUTO_APP_MODEL_OPTION: AppModelOption = {
+  slug: "auto",
+  name: "Auto (Smart Routing)",
+  shortName: "Auto",
+  badge: "new",
+  isDefault: true,
+  isCustom: false,
+};
+
 function appendUnavailableDynamicModelSelection(
   options: AppModelOption[],
   rawModels: ReadonlyArray<ServerProvider["models"][number]>,
@@ -179,6 +188,10 @@ function getAppModelOptions(
     .filter((model) => !model.isCustom)
     .map((model) => toAppModelOption(model, provider));
   const seen = new Set(options.map((option) => option.slug));
+  if (!seen.has("auto")) {
+    options.unshift(AUTO_APP_MODEL_OPTION);
+    seen.add("auto");
+  }
   const builtInModelSlugs = new Set(
     Arr.filterMap(getProviderModels(providers, provider), (model) =>
       model.isCustom ? Result.failVoid : Result.succeed(model.slug),
@@ -221,6 +234,10 @@ export function getAppModelOptionsForInstance(
     .filter((model) => !model.isCustom)
     .map((model) => toAppModelOption(model, entry.driverKind));
   const seen = new Set(options.map((option) => option.slug));
+  if (!seen.has("auto")) {
+    options.unshift(AUTO_APP_MODEL_OPTION);
+    seen.add("auto");
+  }
   const builtInModelSlugs = new Set(
     Arr.filterMap(entry.models, (model) =>
       model.isCustom ? Result.failVoid : Result.succeed(model.slug),

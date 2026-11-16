@@ -730,7 +730,8 @@ const modelRef = (
   selection: ProviderAdapter.ProviderAdapterV2TurnInput["modelSelection"],
   listedVariants: ReadonlySet<string> | undefined,
 ) => {
-  const parsed = OpenCodeRuntime.parseOpenCodeModelSlug(selection.model);
+  const modelSlug = selection.model === "auto" ? "opencode/big-pickle" : selection.model;
+  const parsed = OpenCodeRuntime.parseOpenCodeModelSlug(modelSlug);
   if (parsed === null) return undefined;
   const selected = getModelSelectionStringOptionValue(selection, "variant");
   const variant =

@@ -44,6 +44,7 @@ import {
   type ServerProviderModel,
   isDelegatedAppThread,
   ThreadId,
+  DEFAULT_MODEL,
 } from "@t3tools/contracts";
 import { SKILL_MENTION_PATTERN } from "@t3tools/shared/composerInlineTokens";
 import { AgentScope } from "@t3tools/shared/AgentScope";
@@ -882,12 +883,14 @@ export const buildCodexTurnStartParams = Effect.fn("CodexAdapterV2.buildCodexTur
       t3Context === undefined && Object.keys(appContext).length === 0
         ? undefined
         : { ...t3Context, ...appContext };
+    const effectiveModel =
+      input.modelSelection.model === "auto" ? DEFAULT_MODEL : input.modelSelection.model;
     return yield* decodeCodexTurnStartParams({
       threadId: input.nativeThreadId,
       input: input.codexInput,
       ...(additionalContext ? { additionalContext } : {}),
       cwd: input.runtimePolicy.cwd,
-      model: input.modelSelection.model,
+      model: effectiveModel,
       // Catalogues can default summaries to "none", and turn/start overrides the user's config,
       // so pass theirs through or `auto`: some providers (Amazon Bedrock) reject `detailed`.
       summary: input.configuredReasoningSummary ?? "auto",
@@ -903,7 +906,7 @@ export const buildCodexTurnStartParams = Effect.fn("CodexAdapterV2.buildCodexTur
       collaborationMode: {
         mode: input.runtimePolicy.interactionMode,
         settings: {
-          model: input.modelSelection.model,
+          model: effectiveModel,
           ...(effort === undefined ? {} : { reasoning_effort: effort }),
         },
       },
@@ -1581,7 +1584,12 @@ function codexThreadRuntimeParams(input: {
         };
   return {
     ...(input.runtimePolicy?.cwd == null ? {} : { cwd: input.runtimePolicy.cwd }),
-    ...(input.modelSelection === undefined ? {} : { model: input.modelSelection.model }),
+    ...(input.modelSelection === undefined
+      ? {}
+      : {
+          model:
+            input.modelSelection.model === "auto" ? DEFAULT_MODEL : input.modelSelection.model,
+        }),
     config: {
       ...CODEX_THREAD_CONFIG,
       // One app-server serves many threads, so the id goes in per-thread shell config, not its env.
@@ -1837,6 +1845,8 @@ export const layerAppServerClientFactory: Layer.Layer<
             ...codexAppServerArgs(
               resolveCodexLaunchArgs(input.settings.launchArgs, input.environment),
             ),
+            "-c",
+            "features.default_mode_request_user_input=true",
             ...(input.extraAppServerArgs ?? []),
           ],
           env: environment,
