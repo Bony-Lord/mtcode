@@ -38,6 +38,7 @@
     "../../scripts/lib/public-config.ts",
     "../../scripts/lib/connect-public-providers.ts",
     "../../scripts/lib/tagged-source-version.ts",
-    "../../scripts/lib/third-party-licenses.ts"
+    "../../scripts/lib/third-party-licenses.ts",
+    "../../scripts/lib/ui-i18n-transform.ts"
   ]
 }

@@ -1,12 +1,6 @@
 /**
- * Live remote view of this computer: streams periodic screen captures and
- * injects pointer/keyboard input by driving the bundled desktop-control MCP
- * binary over newline-delimited JSON-RPC.
- *
- * One child process is shared by every viewer and input call, refcounted so
- * it exits when the last subscriber goes away. Enablement mirrors Computer
- * Use: when the desktop MCP is disabled in settings or the binary is absent,
- * every call fails closed with `unavailable`.
+ * Live remote view streams screen frames and sends human input through desktop MCP.
+ * The shared child exits when the last subscriber leaves.
  */
 import {
   COMPUTER_VIEW_DEFAULT_MAX_WIDTH,
@@ -191,7 +185,8 @@ export const make = Effect.gen(function* ComputerViewBrokerMake() {
     client.pending.clear();
     yield* Effect.forEach(
       orphaned,
-      (deferred) => Deferred.succeed(deferred, { errorMessage: "The desktop MCP process stopped." }),
+      (deferred) =>
+        Deferred.succeed(deferred, { errorMessage: "The desktop MCP process stopped." }),
       { discard: true },
     );
   });
@@ -205,14 +200,10 @@ export const make = Effect.gen(function* ComputerViewBrokerMake() {
         "Computer Use is disabled on this machine or the desktop control binary is missing. Enable Computer Use in Settings on that computer to view it remotely.",
       );
     }
-    const command = ChildProcess.make(launch.path, [], {
+    const command = ChildProcess.make(launch.path, [...(launch.args ?? [])], {
       env: {
         ...Object.fromEntries(launch.env.map(({ name, value }) => [name, value])),
-        // This process exists to be driven by a person watching the screen it
-        // captures, so its input takes over the real pointer and keyboard
-        // instead of being routed to a window in the background. Agent
-        // sessions run their own desktop-MCP process, which keeps the
-        // background behaviour and leaves this machine's user alone.
+        // A remote human uses the real pointer and keyboard.
         [`${MTCODE_DESKTOP_ENV_PREFIX}REMOTE_CONTROL`]: "1",
       },
       extendEnv: true,

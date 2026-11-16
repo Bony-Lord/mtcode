@@ -47,6 +47,7 @@ import { DraftInput } from "../ui/draft-input";
 import { SecretSourceInput, type SecretSource } from "./SecretSourceInput";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
 import { Switch } from "../ui/switch";
+import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { ManagedControl, ManagedNotice } from "../ManagedPolicy";
 import { managedInstanceLocks, useManagedPolicy } from "../../state/managedPolicy";
 import { disallowedProviderMessage, isManagedDriverAllowed } from "@t3tools/contracts";
@@ -1364,6 +1365,38 @@ export function ProviderInstanceCard({
                 spellCheck={false}
               />
             </div>
+          }
+        />
+        <SettingsRow
+          title="Account plan"
+          description="Free accounts can be paused together without signing out. Unknown accounts are never paused automatically."
+          control={
+            <Select
+              value={instance.accountTier ?? "unknown"}
+              disabled={readOnly}
+              onValueChange={(value) => {
+                if (
+                  value === "free" ||
+                  value === "subscription" ||
+                  value === "paid-api" ||
+                  value === "local" ||
+                  value === "unknown"
+                ) {
+                  onUpdate({ ...instance, accountTier: value });
+                }
+              }}
+            >
+              <SelectTrigger size="sm" aria-label="Account plan">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectPopup align="end">
+                <SelectItem value="unknown">Unknown</SelectItem>
+                <SelectItem value="free">Free</SelectItem>
+                <SelectItem value="subscription">Subscription</SelectItem>
+                <SelectItem value="paid-api">Paid API</SelectItem>
+                <SelectItem value="local">Local</SelectItem>
+              </SelectPopup>
+            </Select>
           }
         />
       </SettingsSection>

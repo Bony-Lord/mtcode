@@ -539,6 +539,9 @@ export function useSettingsRestore(onRestored?: () => void) {
     ...(settings.autoResumeLimitedThreads !== DEFAULT_UNIFIED_SETTINGS.autoResumeLimitedThreads
       ? ["Resume after usage limits"]
       : []),
+    ...(settings.autoSwitchLimitedAccounts !== DEFAULT_UNIFIED_SETTINGS.autoSwitchLimitedAccounts
+      ? ["Auto-switch saved accounts"]
+      : []),
     ...(settings.snoozeLimitedThreads !== DEFAULT_UNIFIED_SETTINGS.snoozeLimitedThreads
       ? ["Snooze until limits reset"]
       : []),
@@ -721,6 +724,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       sidebarAutoSettlePinnedThreads: DEFAULT_UNIFIED_SETTINGS.sidebarAutoSettlePinnedThreads,
       tabsEnabled: DEFAULT_UNIFIED_SETTINGS.tabsEnabled,
       autoResumeLimitedThreads: DEFAULT_UNIFIED_SETTINGS.autoResumeLimitedThreads,
+      autoSwitchLimitedAccounts: DEFAULT_UNIFIED_SETTINGS.autoSwitchLimitedAccounts,
       snoozeLimitedThreads: DEFAULT_UNIFIED_SETTINGS.snoozeLimitedThreads,
       snoozePresets: DEFAULT_UNIFIED_SETTINGS.snoozePresets,
       responseStreamingMode: DEFAULT_UNIFIED_SETTINGS.responseStreamingMode,
@@ -1913,6 +1917,22 @@ export function ThreadsSettingsPanel() {
       ) : null}
 
       <SettingsSection id="usage-limits" title="Usage limits">
+        <SettingsRow
+          serverScoped
+          title="Auto-switch saved accounts"
+          description="After a quota error, continue on another saved login of the same provider and model with a verified allowance. Paused, unknown-tier and paid API accounts are excluded."
+          settingKeys={["autoSwitchLimitedAccounts"]}
+          control={
+            <ScopedSwitch
+              settingKeys={["autoSwitchLimitedAccounts"]}
+              checked={settings.autoSwitchLimitedAccounts}
+              onCheckedChange={(checked) =>
+                updateSettings({ autoSwitchLimitedAccounts: Boolean(checked) })
+              }
+              aria-label="Auto-switch saved accounts"
+            />
+          }
+        />
         <SettingsRow
           serverScoped
           {...searchableSetting("auto-resume-limited-threads")}

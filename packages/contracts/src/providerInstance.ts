@@ -74,6 +74,10 @@ export type ResolvedProviderInstanceEnvironment = ReadonlyArray<
 /** Drivers decode their own config; unknown-driver envelopes round-trip verbatim across versions. */
 export const ProviderInstanceConfig = Schema.Struct({
   driver: ProviderDriverKind,
+  accountTier: Schema.optionalKey(
+    Schema.Literals(["free", "subscription", "paid-api", "local", "unknown"]),
+  ),
+  freeAccountPaused: Schema.optionalKey(Schema.Boolean),
   displayName: Schema.optional(TrimmedNonEmptyString),
   accentColor: Schema.optional(TrimmedNonEmptyString),
   environment: Schema.optionalKey(ProviderInstanceEnvironment),

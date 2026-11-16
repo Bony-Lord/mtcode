@@ -1,5 +1,6 @@
 import { SettingsGroup } from "./SettingsGroup";
 import { RefreshIcon } from "~/components/ui/refresh-icon";
+import { freeAccountUpdates } from "@t3tools/shared/providerAccountControl";
 import {
   AuthSettingsWriteScope,
   AuthProvidersManageScope,
@@ -605,6 +606,7 @@ export function EnvironmentProviderSettings({
     reportFailure: false,
   });
   const [isRefreshingProviders, setIsRefreshingProviders] = useState(false);
+  const [isTogglingFreeAccounts, setIsTogglingFreeAccounts] = useState(false);
   const [isAddInstanceDialogOpen, setIsAddInstanceDialogOpen] = useState(false);
   const [selectedInstanceId, setSelectedInstanceId] = useState<ProviderInstanceId | null>(
     targetInstanceId ?? null,
@@ -809,6 +811,18 @@ export function EnvironmentProviderSettings({
   const selectedRow =
     rows.find((row) => row.instanceId === selectedInstanceId) ??
     (targetInstanceMissing ? null : (rows[0] ?? null));
+  const hasPausedFreeAccounts =
+    selectedRow !== null &&
+    Object.values(settings.providerInstances).some(
+      (instance) =>
+        instance.driver === selectedRow.driver &&
+        instance.accountTier === "free" &&
+        instance.freeAccountPaused,
+    );
+  const freeAccountChanges =
+    selectedRow === null
+      ? []
+      : freeAccountUpdates(settings.providerInstances, selectedRow.driver, !hasPausedFreeAccounts);
 
   const persistInstance = async (
     instanceId: ProviderInstanceId,
@@ -1110,6 +1124,34 @@ export function EnvironmentProviderSettings({
             </Select>
           }
         />
+        {selectedRow ? (
+          <SettingsRow
+            title={`Free accounts · ${providerClients.get(selectedRow.driver)?.label ?? selectedRow.driver}`}
+            description="Applies to this provider on this environment. Keeps sign-ins, settings and chat history."
+            control={
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={readOnly || isTogglingFreeAccounts || freeAccountChanges.length === 0}
+                aria-busy={isTogglingFreeAccounts}
+                onClick={async () => {
+                  setIsTogglingFreeAccounts(true);
+                  try {
+                    for (const change of freeAccountChanges) {
+                      if (!(await updateInstance(change.instanceId, change.previous, change.next)))
+                        break;
+                    }
+                  } finally {
+                    setIsTogglingFreeAccounts(false);
+                  }
+                }}
+              >
+                {hasPausedFreeAccounts ? "Resume free accounts" : "Pause free accounts"} (
+                {freeAccountChanges.length})
+              </Button>
+            }
+          />
+        ) : null}
         {readOnly ? (
           <SettingsGroup divided={false} className="overflow-hidden">
             <SettingsRow

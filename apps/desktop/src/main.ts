@@ -19,6 +19,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 
 import * as Electron from "electron";
+import { startComputerActivityBridge } from "./computerUse/activityBridge.ts";
 
 import * as NetService from "@t3tools/shared/Net";
 import * as HostProcess from "@t3tools/shared/HostProcess";
@@ -291,4 +292,5 @@ if (DesktopPreReadyPlatform.isVersionRequest(process.argv)) {
   process.exit(0);
 }
 
+startComputerActivityBridge();
 DesktopApp.program.pipe(Effect.provide(layerDesktopRuntime), NodeRuntime.runMain);

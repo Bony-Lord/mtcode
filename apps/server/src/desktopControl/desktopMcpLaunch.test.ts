@@ -22,7 +22,7 @@ describe("resolveEnabledDesktopMcp", () => {
       yield* fileSystem.chmod(binaryPath, 0o755);
 
       const resolved = yield* resolveEnabledDesktopMcp().pipe(
-        Effect.provideService(HostProcess.Platform, "darwin"),
+        Effect.provideService(HostProcess.Platform, "win32"),
         Effect.provideService(HostProcess.Environment, {
           MTCODE_DESKTOP_MCP_PATH: binaryPath,
         }),
@@ -44,7 +44,7 @@ describe("resolveEnabledDesktopMcp", () => {
       yield* fileSystem.chmod(binaryPath, 0o755);
 
       const resolved = yield* resolveEnabledDesktopMcp().pipe(
-        Effect.provideService(HostProcess.Platform, "darwin"),
+        Effect.provideService(HostProcess.Platform, "win32"),
         Effect.provideService(HostProcess.Environment, {
           MTCODE_DESKTOP_MCP_PATH: binaryPath,
         }),
@@ -64,6 +64,7 @@ describe("resolveEnabledDesktopMcp", () => {
       // Always under MT Code's identity, plus MT-prefixed tunables for the toggles.
       assert.deepEqual(resolved?.env, [
         { name: "COMPUTER_USE_PROFILE", value: mtcodeDesktopProfileEnv().COMPUTER_USE_PROFILE },
+        { name: "MTCODE_DESKTOP_AGENT_CURSOR_TASK_FADE_SECS", value: "1" },
         { name: "MTCODE_DESKTOP_AGENT_CURSOR", value: "0" },
         { name: "MTCODE_DESKTOP_BROWSER", value: "0" },
       ]);
@@ -97,7 +98,7 @@ describe("resolveEnabledDesktopMcp", () => {
       };
 
       const resolved = yield* resolveEnabledDesktopMcp().pipe(
-        Effect.provideService(HostProcess.Platform, "darwin"),
+        Effect.provideService(HostProcess.Platform, "win32"),
         Effect.provideService(HostProcess.Environment, {
           MTCODE_DESKTOP_MCP_PATH: binaryPath,
         }),

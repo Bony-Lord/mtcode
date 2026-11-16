@@ -474,6 +474,12 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["usage quota rate limit reset recover continue"],
   },
   {
+    id: "auto-switch-limited-accounts",
+    title: "Auto-switch saved accounts",
+    to: "/settings/threads",
+    searchTerms: ["account pool switch quota reset аккаунт переключение лимит"],
+  },
+  {
     id: "working-shelf",
     title: msg("Working section"),
     to: "/settings/general",

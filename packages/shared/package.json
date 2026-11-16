@@ -3,6 +3,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./providerAccountControl": {
+      "types": "./src/providerAccountControl.ts",
+      "import": "./src/providerAccountControl.ts"
+    },
     "./munimComputerUse": {
       "types": "./src/munimComputerUse.ts",
       "import": "./src/munimComputerUse.ts"

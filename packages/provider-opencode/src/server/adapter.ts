@@ -1109,7 +1109,7 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
                 name: DESKTOP_MCP_SERVER_NAME,
                 config: {
                   type: "local",
-                  command: [desktopMcp.path],
+                  command: [desktopMcp.path, ...(desktopMcp.args ?? [])],
                   ...(desktopMcp.env.length > 0
                     ? {
                         environment: Object.fromEntries(

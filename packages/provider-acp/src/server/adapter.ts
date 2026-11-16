@@ -930,7 +930,7 @@ export function acpDesktopMcpServers(
     {
       name: DESKTOP_MCP_SERVER_NAME,
       command: desktopMcp.path,
-      args: [],
+      args: [...(desktopMcp.args ?? [])],
       env: [...desktopMcp.env],
     },
   ];

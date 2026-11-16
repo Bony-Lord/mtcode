@@ -4213,12 +4213,8 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
       ).pipe(Effect.timeout("5 seconds"), Effect.ignore({ log: true }));
 
     /**
-     * MT Code: Computer Use (`mt-desktop`) for the directory, registered once
-     * on the shared server and left for the instance's other sessions (a
-     * spawned server forgets it when it stops). A server already listed that
-     * this instance did not add is the user's own and wins. Switching Computer
-     * Use off removes the one this instance added. The tools are an addition,
-     * so failures only log.
+     * Share mt-desktop across the instance's sessions. Preserve user-defined entries.
+     * Disabling Computer Use removes only the entry created by this instance.
      */
     const syncDesktopMcp = Effect.fn("syncDesktopMcp")(
       function* (directory: string) {
@@ -4243,7 +4239,7 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
             location: { directory },
             config: new Mcp.LocalConfig({
               type: "local",
-              command: [desktopMcp.path],
+              command: [desktopMcp.path, ...(desktopMcp.args ?? [])],
               ...(desktopMcp.env.length > 0
                 ? {
                     environment: Object.fromEntries(

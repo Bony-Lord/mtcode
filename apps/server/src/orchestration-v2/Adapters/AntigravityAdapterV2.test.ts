@@ -219,6 +219,63 @@ describe("AntigravityAdapterV2 compaction", () => {
 });
 
 describe("AntigravityAdapterV2 session open", () => {
+  it.effect("passes the enabled desktop server to the Antigravity runtime", () =>
+    Effect.gen(function* () {
+      const host = yield* ProviderHost.ProviderHost;
+      const launch = {
+        path: "/opt/mt/desktop",
+        env: [{ name: "MTCODE_DESKTOP_AGENT_CURSOR", value: "1" }],
+      };
+      const instanceId = ProviderInstanceId.make("antigravity-desktop");
+      let servers: ReadonlyArray<EffectAcpSchema.McpServer> = [];
+      const adapter = yield* makeAntigravityAdapterV2({
+        instanceId,
+        selfInvocation: yield* resolveSelfInvocation(),
+        makeRuntime: (input) =>
+          Effect.sync(() => {
+            servers = input.mcpServers ?? [];
+          }).pipe(
+            Effect.andThen(
+              Effect.fail(
+                new EffectAcpErrors.AcpTransportError({
+                  detail: "Test stopped before spawning",
+                  cause: undefined,
+                }),
+              ),
+            ),
+          ),
+        withProcess: (_stop, task) => task,
+        defaultModel: Effect.undefined,
+      }).pipe(
+        Effect.provideService(ProviderHost.ProviderHost, {
+          ...host,
+          desktopMcp: {
+            resolve: () => Effect.succeed(launch),
+            userDefines: () => Effect.succeed(false),
+          },
+        }),
+      );
+      yield* adapter
+        .openSession({
+          threadId: ThreadId.make("thread-desktop"),
+          providerSessionId: ProviderSessionId.make("session-desktop"),
+          modelSelection: { instanceId, model: "gemini-test" },
+          runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            cwd: process.cwd(),
+          }),
+        })
+        .pipe(Effect.exit);
+      assert.deepInclude(servers, {
+        name: "mt-desktop",
+        command: launch.path,
+        args: [],
+        env: launch.env,
+      });
+    }).pipe(Effect.provide(layerSession)),
+  );
+
   it.effect.each([
     {
       name: "browser sign-in",

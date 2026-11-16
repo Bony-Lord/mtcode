@@ -3,6 +3,10 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
+import * as Option from "effect/Option";
+import { availableAccountForModel } from "@t3tools/shared/providerAccountControl";
+import { resolveProjectProviderInstanceEnabled } from "@t3tools/contracts";
+import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import type { OrchestrationV2DomainEvent } from "@t3tools/contracts";
 import * as DueHint from "../scheduling/DueHint.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
@@ -92,13 +96,29 @@ const makeSweep = Effect.gen(function* () {
   const threads = yield* ThreadManagement.ThreadManagementService;
   const orchestrator = yield* Orchestrator.OrchestratorV2;
   const settings = yield* ServerSettings.ServerSettingsService;
+  const providerRegistry = yield* Effect.serviceOption(ProviderRegistry.ProviderRegistry);
+  // Never cycle through a login again after it failed; a real user message starts a new chain.
+  const attempted = new Map<string, Set<string>>();
   const due = DueHint.make();
   yield* forkParked(
     Stream.runForEach(orchestrator.streamDomainEvents, (event) =>
-      affectsLimitRecovery(event) ? due.invalidate : Effect.void,
+      Effect.gen(function* () {
+        if (
+          event.type === "turn-item.updated" &&
+          event.payload.type === "user_message" &&
+          event.payload.createdBy === "user"
+        )
+          attempted.delete(event.threadId);
+        if (affectsLimitRecovery(event)) yield* due.invalidate;
+      }),
     ),
   );
   yield* forkParked(Stream.runForEach(settings.streamChanges, () => due.invalidate));
+  if (Option.isSome(providerRegistry)) {
+    yield* forkParked(
+      Stream.runForEach(providerRegistry.value.streamChanges, () => due.invalidate),
+    );
+  }
   return Effect.fn("UsageLimitRecoveryWorker.sweep")(function* () {
     const now = yield* DateTime.now;
     const nowMs = DateTime.toEpochMillis(now);
@@ -107,11 +127,72 @@ const makeSweep = Effect.gen(function* () {
     const preferences = yield* settings.getSettings;
     const candidates = yield* projections.getLimitRecoveryCandidates({
       now,
-      autoResume: preferences.autoResumeLimitedThreads,
+      autoResume: preferences.autoResumeLimitedThreads || preferences.autoSwitchLimitedAccounts,
       snooze: preferences.snoozeLimitedThreads,
     });
     let acted = false;
     for (const thread of candidates) {
+      if (preferences.autoSwitchLimitedAccounts && Option.isSome(providerRegistry)) {
+        const shell = yield* projections.getThreadShell(thread.id);
+        if (
+          shell?.status === "failed" &&
+          shell.lastErrorClass === "usage_limit" &&
+          shell.latestRunId &&
+          shell.archivedAt === null &&
+          shell.settledOverride !== "settled" &&
+          shell.pendingRuntimeRequest === null
+        ) {
+          const providers = yield* providerRegistry.value.getProviders;
+          const current = providers.find(
+            (provider) => provider.instanceId === shell.modelSelection.instanceId,
+          );
+          const excluded = attempted.get(thread.id) ?? new Set<string>();
+          excluded.add(shell.modelSelection.instanceId);
+          if (attempted.size > 1000) attempted.delete(attempted.keys().next().value!);
+          attempted.set(thread.id, excluded);
+          const target =
+            current &&
+            availableAccountForModel(
+              current,
+              providers,
+              preferences.providerInstances,
+              shell.modelSelection.model,
+              nowMs,
+              excluded,
+            );
+          if (
+            target &&
+            resolveProjectProviderInstanceEnabled(preferences, shell.projectId, target.instanceId)
+          ) {
+            excluded.add(target.instanceId);
+            const identity = `limit-switch:${thread.id}:${shell.latestRunId}:${target.instanceId}`;
+            yield* threads
+              .dispatch({
+                type: "message.dispatch",
+                commandId: CommandId.make(identity),
+                messageId: MessageId.make(identity),
+                threadId: thread.id,
+                usageLimitContinuationOfRunId: shell.latestRunId,
+                modelSelection: { ...shell.modelSelection, instanceId: target.instanceId },
+                text: "Continue where you left off using the selected saved account. Check the latest tool results before repeating any action.",
+                attachments: [],
+                dispatchMode: { type: "start_immediately" },
+                createdBy: "agent",
+                creationSource: "server",
+              })
+              .pipe(
+                Effect.catchCause((cause) =>
+                  Effect.logWarning("usage-limit.account-switch.failed", {
+                    threadId: thread.id,
+                    cause,
+                  }),
+                ),
+              );
+            acted = true;
+            continue;
+          }
+        }
+      }
       const command = limitRecoveryCommand(
         thread,
         preferences.autoResumeLimitedThreads,

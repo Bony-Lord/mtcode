@@ -322,6 +322,7 @@ import { ProviderSubagentBar } from "./chat/ProviderSubagentBar";
 import { getTriggerDisplayModelName } from "./chat/providerIconUtils";
 import { resolveScrollToEndClearance } from "./composerFooterLayout";
 import { ChatHeader } from "./chat/ChatHeader";
+import { ComputerUseActivity } from "./chat/ComputerUseActivity";
 import { useSideChat } from "./chat/useSideChat";
 import { useRemoteOpenState } from "~/remoteOpen";
 import { shouldShowOpenInPicker } from "./chat/OpenInPicker.logic";
@@ -3677,6 +3678,10 @@ export default function ChatView(props: ChatViewProps) {
         )}
 
         <div className="relative flex min-h-0 min-w-0 flex-1">
+          <ComputerUseActivity
+            items={serverProjection?.turnItems ?? EMPTY_TURN_ITEMS}
+            working={isWorking}
+          />
           <ThreadFindCanvas
             findOptions={{
               skills: timelineSkills,

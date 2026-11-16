@@ -1546,6 +1546,8 @@ export function codexDesktopMcpAppServerArgs(desktopMcp: DesktopMcpLaunch): Arra
   };
   const prefix = `mcp_servers.${DESKTOP_MCP_SERVER_NAME}`;
   const args = ["-c", `${prefix}.command=${quoteToml(desktopMcp.path)}`];
+  if (desktopMcp.args?.length)
+    args.push("-c", `${prefix}.args=[${desktopMcp.args.map(quoteToml).join(",")}]`);
   for (const entry of desktopMcp.env) {
     args.push("-c", `${prefix}.env.${entry.name}=${quoteToml(entry.value)}`);
   }

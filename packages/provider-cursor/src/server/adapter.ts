@@ -244,6 +244,7 @@ export function cursorSessionMcpServers(
     [DESKTOP_MCP_SERVER_NAME]: {
       type: "stdio",
       command: desktopMcp.path,
+      ...(desktopMcp.args?.length ? { args: [...desktopMcp.args] } : {}),
       ...(desktopMcp.env.length > 0
         ? { env: Object.fromEntries(desktopMcp.env.map((entry) => [entry.name, entry.value])) }
         : {}),

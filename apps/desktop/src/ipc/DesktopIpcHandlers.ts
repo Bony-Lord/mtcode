@@ -25,6 +25,7 @@ import {
 } from "./methods/serverExposure.ts";
 import {
   getComputerUsePermissions,
+  computerUsePause,
   installChromeExtension,
   openComputerUsePrivacySettings,
 } from "./methods/computerUse.ts";
@@ -64,6 +65,7 @@ import {
   getPrimaryPasteEnabled,
   getWindowFullscreenState,
   openExternal,
+  openPrivateExternal,
   readMedia,
   restartAudioService,
   openSystemSettings,
@@ -179,6 +181,8 @@ export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers"
   yield* ipc.handle(setTheme);
   yield* ipc.handle(showContextMenu);
   yield* ipc.handle(openExternal);
+  yield* ipc.handle(openPrivateExternal);
+  yield* ipc.handle(computerUsePause);
   yield* ipc.handle(openTerminal);
   yield* ipc.handle(requestTerminalPermission);
   yield* ipc.handle(readMedia);

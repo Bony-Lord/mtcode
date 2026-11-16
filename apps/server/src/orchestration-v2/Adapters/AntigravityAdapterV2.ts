@@ -301,6 +301,7 @@ export const makeAntigravityAdapterV2 = Effect.fn("makeAntigravityAdapterV2")(fu
   };
   return yield* makeAcpAdapterV2({
     instanceId: options.instanceId,
+    resolveDesktopMcp: () => services.host.desktopMcp?.resolve() ?? Effect.undefined,
     flavor: makeAntigravityAcpAdapterFlavor({ ...options, ...services }),
     selfInvocation: options.selfInvocation,
     ...(options.nativeLogging === undefined ? {} : { nativeLogging: options.nativeLogging }),

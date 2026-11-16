@@ -335,11 +335,7 @@ const TRUSTED_RENDERER_CLIPBOARD_PERMISSIONS = new Set([
 // Same-origin only, like the clipboard permissions above.
 const TRUSTED_RENDERER_DEVICE_PERMISSIONS = new Set(["geolocation"]);
 
-// Computer View's Fullscreen button calls `element.requestFullscreen()` and
-// then `navigator.keyboard.lock()`, which is what lets Cmd-Tab and Escape
-// reach the remote machine. Electron routes both through the permission
-// handler, and the default-deny above rejected the fullscreen promise, so
-// the button did nothing.
+// Computer View needs fullscreen and keyboard lock to send shortcuts to the remote machine.
 const TRUSTED_RENDERER_DISPLAY_PERMISSIONS = new Set(["fullscreen", "keyboardLock", "pointerLock"]);
 
 export function isTrustedRendererPermissionRequest(input: {
@@ -1080,7 +1076,7 @@ export const make = Effect.gen(function* () {
     });
 
     const revealSubscribers: RevealSubscription[] = [(fire) => window.once("ready-to-show", fire)];
-    if (environment.platform === "linux") {
+    if (environment.platform === "linux" || environment.platform === "win32") {
       revealSubscribers.push((fire) => window.webContents.once("did-finish-load", fire));
     }
     let rendererReady = false;

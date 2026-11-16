@@ -32,6 +32,7 @@ export interface ProviderCredentials {
 /** MT Code: how to launch munim-computer-use as the bundled `mt-desktop` MCP server. */
 export type DesktopMcpLaunch = {
   readonly path: string;
+  readonly args?: ReadonlyArray<string>;
   readonly env: ReadonlyArray<{ readonly name: string; readonly value: string }>;
 };
 

@@ -1,5 +1,6 @@
 import { MonitorIcon } from "lucide-react";
-import { type ReactNode, useCallback, useEffect, useState } from "react";
+import { type ReactNode, useEffect, useState } from "react";
+import { useStableCallback } from "../../hooks/useStableCallback";
 import type {
   DesktopComputerUsePermission,
   DesktopComputerUsePermissionsState,
@@ -102,14 +103,16 @@ export function ComputerUseSettings() {
     null,
   );
   const [permState, setPermState] = useState<DesktopComputerUsePermissionsState | null>(null);
-  const [permError, setPermError] = useState<string | null>(null);
+  const [permError, setPermError] = useState<string | null>(() =>
+    onDesktop && !isBridgeSupported() ? BRIDGE_UNSUPPORTED_MESSAGE : null,
+  );
   const [chromeInstall, setChromeInstall] = useState<{
     readonly running: boolean;
     readonly message: string | null;
     readonly ok: boolean;
   }>({ running: false, message: null, ok: false });
 
-  const refreshPermissions = useCallback(async () => {
+  const refreshPermissions = useStableCallback(async () => {
     const bridge = window.desktopBridge;
     if (!bridge?.getComputerUsePermissions) {
       setPermState(null);
@@ -123,15 +126,11 @@ export function ComputerUseSettings() {
     } catch (error) {
       setPermError(error instanceof Error ? error.message : "Could not read permissions");
     }
-  }, []);
+  });
 
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Refresh native permissions after focus changes and platform permission updates.
   useEffect(() => {
-    if (!onDesktop) return;
-    const bridgeSupported = isBridgeSupported();
-    if (!bridgeSupported) {
-      setPermError(BRIDGE_UNSUPPORTED_MESSAGE);
-      return;
-    }
+    if (!onDesktop || !isBridgeSupported()) return;
     void refreshPermissions();
     const onFocus = () => void refreshPermissions();
     window.addEventListener("focus", onFocus);
@@ -189,6 +188,25 @@ export function ComputerUseSettings() {
   return (
     <SettingsPageContainer>
       <SettingsSection id="computer-use" title="Computer Use">
+        {window.desktopBridge?.computerUsePause ? (
+          <SettingsRow
+            title="Управление после Esc"
+            description="Esc останавливает управление ПК. После остановки нажмите кнопку и начните новый сеанс агента."
+            control={
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={async () => {
+                  if (await window.desktopBridge?.computerUsePause?.(false)) {
+                    await window.desktopBridge?.computerUsePause?.(true);
+                  }
+                }}
+              >
+                Разрешить управление
+              </Button>
+            }
+          />
+        ) : null}
         {!onDesktop ? (
           <div className="mb-1 flex items-start gap-2 rounded-xl px-3 py-2 text-sm text-muted-foreground sm:px-4">
             <MonitorIcon className="mt-0.5 size-4 shrink-0" />
@@ -386,9 +404,9 @@ export function ComputerUseSettings() {
             <p className="px-3 text-sm text-muted-foreground sm:px-4">Checking permissions…</p>
           ) : null}
           {needsMacPrivacy ? (
-            <p className="px-3 text-[12px] leading-relaxed text-muted-foreground/80 sm:px-4">
-              After enabling a permission in System Settings, return here — status refreshes
-              automatically.
+            <p className="px-3 text-xs leading-relaxed text-muted-foreground/80 sm:px-4">
+              После выдачи разрешения в системных настройках вернитесь сюда. Статус обновится
+              автоматически.
             </p>
           ) : null}
         </SettingsSection>
@@ -404,7 +422,7 @@ export function ComputerUseSettings() {
               opens Chrome and clicks through the steps below.
             </DialogDescription>
           </DialogHeader>
-          <DialogPanel className="space-y-3 text-sm text-muted-foreground">
+          <DialogPanel>
             <ol className="list-decimal space-y-2 pl-4 text-foreground/90">
               <li>
                 Open <span className="font-medium text-foreground">chrome://extensions</span> in
@@ -413,7 +431,7 @@ export function ComputerUseSettings() {
               <li>
                 Choose <span className="font-medium text-foreground">Load unpacked</span> and select
                 the{" "}
-                <span className="font-mono text-[12px] text-foreground">
+                <span className="font-mono text-xs text-foreground">
                   munim-computer-use/chrome-extension
                 </span>{" "}
                 folder bundled with the desktop app (its full path is shown below until the
@@ -421,7 +439,7 @@ export function ComputerUseSettings() {
               </li>
               <li>
                 Confirm the extension id is{" "}
-                <span className="font-mono text-[12px] text-foreground">
+                <span className="font-mono text-xs text-foreground">
                   kgdolgnijopbghhomnblabjkmjhnoage
                 </span>
                 .
@@ -478,11 +496,11 @@ export function ComputerUseSettings() {
             <DialogTitle>Allow {permissionPrompt?.label ?? "permission"}</DialogTitle>
             <DialogDescription>
               {APP_BASE_NAME} needs this macOS privacy permission for Computer Use. System Settings
-              will open to the right Privacy &amp; Security list — turn on the switch for{" "}
+              will open to the right Privacy &amp; Security list. Turn on the switch for{" "}
               {APP_BASE_NAME}.
             </DialogDescription>
           </DialogHeader>
-          <DialogPanel className="text-sm text-muted-foreground">
+          <DialogPanel>
             {permissionPrompt?.kind === "accessibility" ? (
               <p>
                 Accessibility lets the agent click and type in other apps without stealing your

@@ -841,6 +841,8 @@ export const make = Effect.gen(function* () {
   const foldWorktreeCase = isWindows;
   const hostEnvironment = yield* HostProcess.Environment;
   const homeDir = yield* HostProcess.HomeDirectory;
+  const fullCodexHistory = hostEnvironment.MTCODE_IMPORT_ALL_HISTORY === "1";
+  const codexArchiveRoot = path.join(homeDir, "Documents", "MT Code History");
   // `/private/tmp` is what macOS reports for sessions started in `/tmp`.
   const excludedProjectRoots = new Set(
     [homeDir, NodeOS.tmpdir(), "/tmp", "/private/tmp"].map((directory) =>
@@ -1478,11 +1480,25 @@ export const make = Effect.gen(function* () {
   });
 
   // Only chats left in an excluded folder, such as Codex's scratch folder, take their project's root.
-  const projectCwd = (cwd: string, projectRoots: ReadonlyArray<string> | undefined) =>
-    projectRoots !== undefined &&
+  const projectCwd = (
+    cwd: string,
+    projectRoots: ReadonlyArray<string> | undefined,
+    source?: AgentSessionSource,
+  ) =>
     isExcludedProjectPath(path.resolve(expandHomePath(cwd.trim(), homeDir)), [])
-      ? projectRoots[0]!
+      ? (projectRoots?.[0] ?? (fullCodexHistory && source === "codex" ? codexArchiveRoot : cwd))
       : cwd;
+
+  const transcriptProjectCwd = Effect.fn("AgentSessionScanner.transcriptProjectCwd")(function* (
+    cwd: string,
+    roots: ReadonlyArray<string> | undefined,
+    source: AgentSessionSource,
+  ) {
+    const resolved = projectCwd(cwd, roots, source);
+    if (!fullCodexHistory || source !== "codex") return resolved;
+    const stats = yield* statOption(expandHomePath(resolved, homeDir));
+    return Option.isSome(stats) && stats.value.type === "Directory" ? resolved : codexArchiveRoot;
+  });
 
   const discoverCodexTranscripts = Effect.fn("AgentSessionScanner.discoverCodexTranscripts")(
     function* (homePath: string, providerInstanceId: ProviderInstanceId, operationBudget: number) {
@@ -1547,6 +1563,36 @@ export const make = Effect.gen(function* () {
                 });
               }
             }
+          }
+        }
+      }
+      if (fullCodexHistory) {
+        const archiveDirectory = path.join(homePath, "archived_sessions");
+        for (const entry of (yield* readDirectory(archiveDirectory)).toSorted().toReversed()) {
+          if (
+            !entry.startsWith("rollout-") ||
+            !(entry.endsWith(".jsonl") || isCompressedTranscript(entry))
+          )
+            continue;
+          if (operationsRemaining <= 0) {
+            truncated = true;
+            break;
+          }
+          operationsRemaining -= 1;
+          const filePath = path.join(archiveDirectory, entry);
+          const stats = yield* statOption(filePath);
+          if (
+            Option.isSome(stats) &&
+            stats.value.type === "File" &&
+            Option.isSome(stats.value.mtime)
+          ) {
+            transcripts.push({
+              filePath,
+              mtimeMs: stats.value.mtime.value.getTime(),
+              providerInstanceId,
+              homePath,
+              identity: transcriptIdentity(filePath, stats.value),
+            });
           }
         }
       }
@@ -1650,7 +1696,7 @@ export const make = Effect.gen(function* () {
             sameTranscriptIdentity(imported.source, transcript.identity),
         )?.cwd ?? (yield* readCwd(source, transcript, budget));
       if (rolloutCwd === null || rolloutCwd === false) continue;
-      const cwd = projectCwd(rolloutCwd, transcript.projectRoots);
+      const cwd = yield* transcriptProjectCwd(rolloutCwd, transcript.projectRoots, source);
       const key = `${transcript.providerInstanceId}\0${cwd}`;
       const existing = byOwnerAndCwd.get(key);
       if (existing) {
@@ -1679,6 +1725,8 @@ export const make = Effect.gen(function* () {
   });
 
   const collectCandidates = Effect.fn("AgentSessionScanner.collectCandidates")(function* () {
+    if (fullCodexHistory)
+      yield* fileSystem.makeDirectory(codexArchiveRoot, { recursive: true }).pipe(Effect.orDie);
     const settings = yield* serverSettings.getSettings.pipe(
       Effect.mapError((cause) => new AgentSessionScanError({ operation: "read-settings", cause })),
     );
@@ -1709,7 +1757,9 @@ export const make = Effect.gen(function* () {
         readonly config: ProviderInstanceConfig;
       }> = Object.entries(settings.providerInstances)
         .filter(
-          ([, instance]) => instance.driver === source && resolveProviderInstanceEnabled(instance),
+          ([, instance]) =>
+            instance.driver === source &&
+            (resolveProviderInstanceEnabled(instance) || (fullCodexHistory && source === "codex")),
         )
         .map(([instanceId, config]) => ({
           instanceId: ProviderInstanceId.make(instanceId),
@@ -1952,6 +2002,9 @@ export const make = Effect.gen(function* () {
   ) {
     const configuredWorktreesDirs = yield* readWorktreesDirectories;
     const root = path.resolve(expandHomePath(workspaceRoot, homeDir));
+    if (fullCodexHistory && root === codexArchiveRoot) {
+      yield* fileSystem.makeDirectory(root, { recursive: true }).pipe(Effect.orDie);
+    }
     const realRoot = yield* fileSystem.realPath(root).pipe(Effect.orElseSucceed(() => root));
     if (
       isExcludedProjectPath(root, configuredWorktreesDirs) ||
@@ -2025,7 +2078,7 @@ export const make = Effect.gen(function* () {
       for (const transcript of candidate.transcripts) {
         if (
           transcript.mtimeMs === null ||
-          transcript.mtimeMs < cutoffMs ||
+          (transcript.mtimeMs < cutoffMs && !(fullCodexHistory && candidate.source === "codex")) ||
           transcript.mtimeMs > nowMs
         ) {
           continue;
@@ -2148,7 +2201,11 @@ export const make = Effect.gen(function* () {
             return Option.some<AgentSessionRecentThread>({ _tag: "Skipped" });
           }
           const expandedCwd = expandHomePath(
-            projectCwd(snapshot.cwd.value, transcript.projectRoots).trim(),
+            (yield* transcriptProjectCwd(
+              snapshot.cwd.value,
+              transcript.projectRoots,
+              candidate.source,
+            )).trim(),
             homeDir,
           );
           if (!path.isAbsolute(expandedCwd) || !(yield* belongsToRoot(path.resolve(expandedCwd)))) {

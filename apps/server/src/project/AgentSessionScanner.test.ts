@@ -373,6 +373,55 @@ const layerReportingProcessRunner = (
 
 it.layer(NodeServices.layer)("AgentSessionScanner", (it) => {
   describe("scan", () => {
+    it.effect(
+      "imports old archived, scratch and missing-folder Codex chats in full-history mode",
+      () =>
+        Effect.gen(function* () {
+          const path = yield* Path.Path;
+          const homeDir = yield* makeTempDir("t3code-full-history-home-");
+          const codexHomePath = path.join(homeDir, ".codex");
+          const claudeHomePath = path.join(homeDir, ".claude");
+          const archiveRoot = path.join(homeDir, "Documents", "MT Code History");
+          yield* TestClock.setTime(Date.parse("2026-11-16T00:00:00Z"));
+          for (const [index, cwd] of [
+            path.join(homeDir, "Documents", "Codex", "2020-01-01", "new-chat"),
+            path.join(homeDir, "deleted-project"),
+          ].entries()) {
+            yield* writeTranscript({
+              filePath: path.join(
+                codexHomePath,
+                "archived_sessions",
+                `rollout-2020-01-01-archived-${index}.jsonl`,
+              ),
+              contents: [
+                encodeTranscriptRecord({
+                  type: "session_meta",
+                  payload: { id: `archived-${index}`, cwd },
+                }),
+                encodeTranscriptRecord({
+                  type: "event_msg",
+                  payload: { type: "user_message", message: `Old request ${index}` },
+                }),
+              ].join("\n"),
+              mtimeMs: Date.parse("2020-01-01T00:00:00Z"),
+            });
+          }
+          const input = { claudeHomePath, codexHomePath };
+          const threads = yield* runRecentThreads({ ...input, workspaceRoot: archiveRoot }).pipe(
+            Effect.provideService(HostProcess.HomeDirectory, homeDir),
+            Effect.provideService(HostProcess.Environment, { MTCODE_IMPORT_ALL_HISTORY: "1" }),
+          );
+          expect(threads.map((thread) => thread.title).sort()).toEqual([
+            "Old request 0",
+            "Old request 1",
+          ]);
+          const recentOnly = yield* runRecentThreads({ ...input, workspaceRoot: archiveRoot }).pipe(
+            Effect.provideService(HostProcess.HomeDirectory, homeDir),
+            Effect.provideService(HostProcess.Environment, {}),
+          );
+          expect(recentOnly).toEqual([]);
+        }),
+    );
     it.effect("reads Claude project cwds from transcripts, newest first", () =>
       Effect.gen(function* () {
         const path = yield* Path.Path;

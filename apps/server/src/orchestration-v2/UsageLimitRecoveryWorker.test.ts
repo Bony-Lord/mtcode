@@ -1,5 +1,15 @@
 import { assert, describe, it } from "@effect/vitest";
-import { RunId, ThreadId, type OrchestrationV2DomainEvent } from "@t3tools/contracts";
+import {
+  DEFAULT_SERVER_SETTINGS,
+  ProviderDriverKind,
+  ProviderInstanceId,
+  ProjectId,
+  RunId,
+  ThreadId,
+  type OrchestrationV2ServerCommand,
+  type OrchestrationV2DomainEvent,
+  type ServerProvider,
+} from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -15,6 +25,94 @@ import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ThreadManagement from "./ThreadManagementService.ts";
 import * as UsageLimitRecoveryWorker from "./UsageLimitRecoveryWorker.ts";
 import { limitRecoveryCommand } from "./UsageLimitRecoveryWorker.ts";
+import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
+
+it.effect(
+  "continues once on another saved login after quota exhaustion without requesting sign-in",
+  () =>
+    Effect.gen(function* () {
+      const now = Date.parse("2026-11-16T12:00:00Z");
+      yield* TestClock.setTime(now);
+      const dispatched = yield* Queue.unbounded<OrchestrationV2ServerCommand>();
+      const driver = ProviderDriverKind.make("codex");
+      const a = ProviderInstanceId.make("account-a"),
+        b = ProviderInstanceId.make("account-b");
+      const candidate = { ...failedThread(1000, -HOUR_MS), id: ThreadId.make("switch-thread") };
+      const shell = {
+        ...candidate,
+        projectId: ProjectId.make("project"),
+        modelSelection: { instanceId: a, model: "gpt-test", options: {} },
+      };
+      const provider = (instanceId: ProviderInstanceId, usedPercent: number): ServerProvider => ({
+        instanceId,
+        driver,
+        enabled: true,
+        installed: true,
+        status: "ready",
+        version: null,
+        checkedAt: DateTime.formatIso(DateTime.makeUnsafe(now)),
+        auth: { status: "authenticated", email: `${instanceId}@example.com` },
+        models: [{ slug: "gpt-test", name: "Test", isCustom: false, capabilities: null }],
+        skills: [],
+        slashCommands: [],
+        usageLimits: {
+          checkedAt: DateTime.formatIso(DateTime.makeUnsafe(now)),
+          windows: [
+            {
+              id: "session",
+              label: "5 hours",
+              kind: "session",
+              usedPercent,
+              resetsAt: DateTime.formatIso(DateTime.makeUnsafe(now + HOUR_MS)),
+            },
+          ],
+        },
+      });
+      const runtime = UsageLimitRecoveryWorker.layer.pipe(
+        Layer.provide(
+          Layer.mergeAll(
+            Scheduler.layer,
+            Layer.mock(ProjectionStore.ProjectionStoreV2)({
+              getLimitRecoveryCandidates: () => Effect.succeed([candidate]),
+              getThreadShell: () => Effect.succeed(shell as never),
+              getLimitRecoveryWakeAt: () => Effect.succeed(null),
+            }),
+            Layer.mock(ThreadManagement.ThreadManagementService)({
+              dispatch: (command) =>
+                Queue.offer(dispatched, command).pipe(Effect.as(undefined as never)),
+            }),
+            Layer.mock(Orchestrator.OrchestratorV2)({ streamDomainEvents: Stream.never }),
+            Layer.mock(ProviderRegistry.ProviderRegistry)({
+              getProviders: Effect.succeed([provider(a, 100), provider(b, 10)]),
+              streamChanges: Stream.never,
+            }),
+            Layer.mock(ServerSettings.ServerSettingsService)({
+              getSettings: Effect.succeed({
+                ...DEFAULT_SERVER_SETTINGS,
+                autoSwitchLimitedAccounts: true,
+                providerInstances: {
+                  [a]: { driver, accountTier: "subscription" },
+                  [b]: { driver, accountTier: "free" },
+                },
+              }),
+              streamChanges: Stream.never,
+            }),
+          ),
+        ),
+      );
+      yield* Effect.gen(function* () {
+        const command = yield* Queue.take(dispatched);
+        assert.equal(command.type, "message.dispatch");
+        if (command.type === "message.dispatch") {
+          assert.equal(command.modelSelection?.instanceId, b);
+          assert.equal(command.usageLimitContinuationOfRunId, candidate.latestRunId);
+          assert.notInclude(command.text, "sign in");
+        }
+        yield* TestClock.adjust("10 seconds");
+        assert.equal(yield* Queue.size(dispatched), 0);
+      }).pipe(Effect.provide(runtime));
+    }),
+);
 
 it.effect("idle sweeps skip SQL until the next wake time or a relevant event", () =>
   Effect.gen(function* () {

@@ -55,9 +55,9 @@ If it works in T3 Code, you can trust it is safe.
 
 ## Can I add a bunch of accounts for one provider?
 
-I don't think T3 Code is the right place to manage a pile of accounts. If we add an auto-switcher, we are risking TOS bans for our users.
+В этом персональном форке каждый аккаунт хранится отдельным экземпляром провайдера со своим сохранённым профилем входа. Добавляйте аккаунты через Settings → Providers → Add account. Приватное окно помогает выбрать другой аккаунт, не подставляя cookies текущего; серверные ограничения сервиса сохраняются.
 
-A separate work account is fine. Setup for two: [Codex](./providers-codex.md#use-multiple-accounts) · [Claude](./providers-claude.md#separate-accounts-or-configurations). For a bigger pool, manage them outside T3 Code with a self-hosted proxy like [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI). I walked through how I use 6 Claude subs and 3 Codex subs in [this video](https://www.youtube.com/watch?v=D8PikZ1KhUo), and wrote up the setup in [this guide](https://gist.github.com/t3dotgg/59a521d2ee8d70aaf90e280c175072af). Hand it to your agent and it will walk you through it. Early apologies if it gets you banned 💀 After you set up a hub, T3 Code can show its pooled limits under Usage. [Connect a hub](./usage.md#connect-a-cliproxyapi-hub)
+В Settings → Threads можно включить переключение после исчерпания лимита. Выбирается другой авторизованный аккаунт того же провайдера и модели с недавно проверенным доступным остатком; отключённые, приостановленные, неизвестные тарифы и платные API исключаются. Приложение не выполняет повторный вход при переключении. При отсутствии подходящего аккаунта можно дождаться штатного сброса. Форк не даёт гарантий о внутренних проверках стороннего сервиса.
 
 ## Can I use an API key or OpenRouter instead of a subscription?
 

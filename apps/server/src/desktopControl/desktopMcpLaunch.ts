@@ -27,7 +27,7 @@ export type { DesktopMcpLaunch };
 export const claudeDesktopMcpServerConfig = (launch: DesktopMcpLaunch) => ({
   type: "stdio" as const,
   command: launch.path,
-  args: [] as Array<string>,
+  args: [...(launch.args ?? [])],
   ...(launch.env.length > 0
     ? { env: Object.fromEntries(launch.env.map((entry) => [entry.name, entry.value])) }
     : {}),
@@ -76,6 +76,7 @@ export const resolveEnabledDesktopMcp = Effect.fn("desktopControl.resolveEnabled
     const env: Array<{ name: string; value: string }> = Object.entries(
       mtcodeDesktopProfileEnv(),
     ).map(([name, value]) => ({ name, value }));
+    env.push({ name: `${MTCODE_DESKTOP_ENV_PREFIX}AGENT_CURSOR_TASK_FADE_SECS`, value: "1" });
     if (!desktopControl.agentCursorEnabled) {
       env.push({ name: `${MTCODE_DESKTOP_ENV_PREFIX}AGENT_CURSOR`, value: "0" });
     }
@@ -83,6 +84,23 @@ export const resolveEnabledDesktopMcp = Effect.fn("desktopControl.resolveEnabled
       env.push({ name: `${MTCODE_DESKTOP_ENV_PREFIX}BROWSER`, value: "0" });
     }
 
+    const environment = yield* HostProcess.Environment;
+    if (environment.MTCODE_ACTIVITY_PIPE) {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const paths = yield* Path.Path;
+      const proxy = paths.join(import.meta.dirname, "desktop-activity-proxy.mjs");
+      if (!(yield* fileSystem.exists(proxy).pipe(Effect.orElseSucceed(() => false))))
+        return undefined;
+      return {
+        path: yield* HostProcess.ExecutablePath,
+        args: [proxy, path],
+        env: [
+          ...env,
+          { name: "MTCODE_ACTIVITY_PIPE", value: environment.MTCODE_ACTIVITY_PIPE },
+          { name: "ELECTRON_RUN_AS_NODE", value: "1" },
+        ],
+      } satisfies DesktopMcpLaunch;
+    }
     return { path, env } satisfies DesktopMcpLaunch;
   },
 );

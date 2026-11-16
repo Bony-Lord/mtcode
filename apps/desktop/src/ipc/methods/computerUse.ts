@@ -14,13 +14,26 @@ import * as DesktopEnvironment from "../../app/DesktopEnvironment.ts";
 import { installChromeExtensionNow } from "../../computerUse/chromeExtensionSetup.ts";
 import * as IpcChannels from "../channels.ts";
 import * as DesktopIpc from "../DesktopIpc.ts";
+import { isComputerUsePaused, resumeComputerUse } from "../../computerUse/activityBridge.ts";
+
+export const computerUsePause = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.COMPUTER_USE_PAUSE_CHANNEL,
+  payload: Schema.Boolean,
+  result: Schema.Boolean,
+  handler: Effect.fn("desktop.ipc.computerUse.pause")(function (resume) {
+    return Effect.sync(() => {
+      if (resume) resumeComputerUse();
+      return isComputerUsePaused();
+    });
+  }),
+});
 
 export const getComputerUsePermissions = DesktopIpc.makeIpcMethod({
   channel: IpcChannels.GET_COMPUTER_USE_PERMISSIONS_CHANNEL,
   payload: Schema.Undefined,
   result: DesktopComputerUsePermissionsStateSchema,
-  handler: Effect.fn("desktop.ipc.computerUse.getComputerUsePermissions")(function* () {
-    return readComputerUsePermissions();
+  handler: Effect.fn("desktop.ipc.computerUse.getComputerUsePermissions")(function () {
+    return Effect.sync(() => readComputerUsePermissions());
   }),
 });
 
