@@ -313,9 +313,14 @@ export const make = Effect.gen(function* () {
 
           if (platform === "darwin") {
             Electron.app.focus({ steal: true });
+            window.focus();
+          } else if (platform === "win32") {
+            window.setAlwaysOnTop(true);
+            window.focus();
+            window.setAlwaysOnTop(false);
+          } else {
+            window.focus();
           }
-
-          window.focus();
 
           if (captureReveal) {
             if (shellHostedForeground) {

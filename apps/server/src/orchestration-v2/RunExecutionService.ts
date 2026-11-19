@@ -42,6 +42,9 @@ import * as McpSessionRegistry from "../mcp/McpSessionRegistry.ts";
 import * as McpAppModelContext from "../mcpApps/McpAppModelContext.ts";
 import * as PreviewAgentActivity from "../preview/PreviewAgentActivity.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import { resolveAgentWorkModes, workProfileInstructions } from "@t3tools/shared/agentWorkProfiles";
+import { cachedRoutingAdvice } from "../provider/AutoRoutingAdvisor.ts";
+import { isSmartModel } from "@t3tools/shared/smartModelRouting";
 import * as CheckpointService from "./CheckpointService.ts";
 import * as EventSink from "./EventSink.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
@@ -1958,6 +1961,29 @@ export const layer: Layer.Layer<
           key: `mcp_app_${entry.itemId.replace(/[^\w.-]/g, "_")}`,
           text: entry.text,
         }));
+        const workModes = yield* serverSettings.getSettings.pipe(
+          Effect.map((settings) => resolveAgentWorkModes(settings, input.appThread.projectId)),
+          Effect.orElseSucceed(() => []),
+        );
+        const automatic = isSmartModel(input.appThread.modelSelection.model);
+        const delegated = input.appThread.lineage?.relationshipToParent === "subagent";
+        const workInstructions = !input.message.text.trimStart().startsWith("/")
+          ? workProfileInstructions(delegated ? [] : workModes, automatic && !delegated) +
+            (delegated
+              ? "\nYou are a bounded helper. Do not delegate recursively. Report only your assigned task and verified evidence."
+              : "")
+          : "";
+        const advice =
+          !delegated && automatic ? cachedRoutingAdvice(input.run.threadId) : undefined;
+        const helperPlan =
+          advice?.parallelTasks.length &&
+          workModes.some((mode) => mode === "fast" || mode === "conductor")
+            ? `Routing coordinator's suggested independent helper briefs (validate scope before using; use MCP delegate_task mode:'async' before waiting):\n${advice.parallelTasks.map((task, index) => `${index + 1}. ${task}`).join("\n")}`
+            : "";
+        if (helperPlan) appContext.push({ key: "mt_helper_plan", text: helperPlan });
+        const message = workInstructions
+          ? { ...input.message, text: `${workInstructions}\n\n${input.message.text}` }
+          : input.message;
         const turnInput = {
           appThread: input.appThread,
           threadId: input.run.threadId,
@@ -1975,7 +2001,7 @@ export const layer: Layer.Layer<
           attemptId: input.attemptId,
           rootNodeId: input.rootNode.id,
           providerThread: input.providerThread,
-          message: input.message,
+          message,
           modelSelection: input.modelSelection,
           runtimePolicy: input.runtimePolicy,
           ...(appContext.length === 0 ? {} : { appContext }),

@@ -831,10 +831,17 @@ export const layer: Layer.Layer<
       });
       let effectiveHandoffs = handoffs;
       let resumeFellBack = false;
-      const userText = projectComposerContextForProvider({
-        text: providerMessage.text,
-        records: providerMessage.context?.records ?? [],
-      });
+      const portableResume =
+        manualResume && unsentResumeMessage === undefined && session.resumeTurn === undefined;
+      const latestTask = projection.messages.findLast(
+        (entry) => entry.role === "user" && entry.createdBy === "user" && entry.text.trim() !== "",
+      );
+      const userText = portableResume
+        ? `[MT Code: пользователь нажал «Продолжить». Провайдер не поддерживает native resume, поэтому отправлено системное продолжение с сохранённым контекстом. Продолжи последнюю незавершённую задачу в текущем рабочем каталоге и пределах прежних разрешений. Сначала проверь доступные файлы инструментами, не проси вставлять их содержимое без проверки доступа.]${latestTask ? `\nПоследняя задача пользователя: ${latestTask.text.slice(-4000)}` : ""}`
+        : projectComposerContextForProvider({
+            text: providerMessage.text,
+            records: providerMessage.context?.records ?? [],
+          });
       // Native goal commands go verbatim; handoff history waits a turn.
       const goalDriver =
         session.driver === "codex" ||
@@ -1525,17 +1532,6 @@ export const layer: Layer.Layer<
         legacyInputRunIds,
         budget,
       } = handoffContext;
-      if (manualResume && unsentResumeMessage === undefined && session.resumeTurn === undefined) {
-        yield* settleStartFailure({
-          signal: "resume-unsupported",
-          title: "Native resume is unavailable",
-          error: new ProviderAdapter.ProviderResumeUnsupportedError({
-            driver: session.driver,
-            providerThreadId: providerThread.id,
-          }),
-        });
-        return;
-      }
       const retryHandoff = resumedRetryHandoff ?? (yield* prepareRetryHandoff(handoffContext));
       const runningProviderThread: OrchestrationV2ProviderThread = {
         ...loadedProviderThread,
@@ -1736,7 +1732,7 @@ export const layer: Layer.Layer<
             .filter((part) => part !== "")
             .join("\n\n");
           const { restartContinuationOfRunId: _resumedRunId, ...promptedInput } = turnInput;
-          const text = goalCommand ? userText : withInlineContext(context, userText);
+          const text = goalCommand ? userText : withInlineContext(context, turnInput.message.text);
           const startInput = noteContinuation ? promptedInput : turnInput;
           const { resume: _resume, ...contextInput } = startInput;
           const { message: resumeMessage, resume: _resumeIntent, ...resumeInput } = startInput;
@@ -1840,7 +1836,7 @@ export const layer: Layer.Layer<
               .filter((turn) => turn.providerThreadId === providerThread.id)
               .map((turn) => turn.ordinal),
           ) + 1,
-        resume: manualResume && unsentResumeMessage === undefined,
+        resume: manualResume && unsentResumeMessage === undefined && !portableResume,
         nativeThreadHasTurns:
           nativeInputRunIds.size > 0 ||
           (legacyInputRunIds.size > 0 &&

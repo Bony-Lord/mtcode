@@ -1,3 +1,5 @@
+// @effect-diagnostics nodeBuiltinImport:off -- This fixture needs Windows junctions, which the Effect symlink API does not create.
+import * as NodeFS from "node:fs";
 import { assert, it } from "@effect/vitest";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -370,7 +372,11 @@ it.effect("still knows No project when its folder is the target of a symlinked S
       const root = yield* requireRoot;
       const target = path.join(baseDir, "visible-chats");
       yield* fileSystem.makeDirectory(target);
-      yield* fileSystem.symlink(target, root);
+      if ((yield* HostProcess.Platform) === "win32") {
+        yield* Effect.promise(() => NodeFS.promises.symlink(target, root, "junction"));
+      } else {
+        yield* fileSystem.symlink(target, root);
+      }
       const { projectId } = yield* scratch.ensureScratchProject;
       yield* projects.update({
         commandId: CommandId.make("command:point-at-target"),
@@ -534,6 +540,16 @@ it.effect("says Git is not installed when a named project cannot start Git", () 
     () =>
       Effect.gen(function* () {
         const folders = yield* ManagedProjectFolders.ManagedProjectFolders;
+
+        const project = yield* folders.createNamedProject({
+          name: "Local Workspace",
+          initializeGit: false,
+        });
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        assert.isTrue(yield* fileSystem.exists(project.workspaceRoot));
+        assert.isFalse(yield* fileSystem.exists(path.join(project.workspaceRoot, ".git")));
+        assert.isUndefined(project.commitError);
 
         const failure = yield* Effect.flip(folders.createNamedProject({ name: "T3Code Test" }));
 

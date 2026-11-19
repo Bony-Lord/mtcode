@@ -3,6 +3,13 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./modelBenchmarks": "./src/modelBenchmarks.ts",
+    "./modelInsights": "./src/modelInsights.ts",
+    "./agentWorkProfiles": "./src/agentWorkProfiles.ts",
+    "./smartModelRouting": {
+      "types": "./src/smartModelRouting.ts",
+      "import": "./src/smartModelRouting.ts"
+    },
     "./providerAccountControl": {
       "types": "./src/providerAccountControl.ts",
       "import": "./src/providerAccountControl.ts"

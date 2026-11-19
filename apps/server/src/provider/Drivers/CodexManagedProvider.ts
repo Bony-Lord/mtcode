@@ -32,6 +32,20 @@ import { withInstanceIdentity } from "@t3tools/provider-core/server/instanceIden
 import { HttpClient } from "effect/http";
 const DRIVER = ProviderDriverKind.make("codex");
 
+function accountPlan(idToken: string | undefined): string | undefined {
+  if (!idToken) return;
+  try {
+    const payload = JSON.parse(
+      Buffer.from(idToken.split(".")[1] ?? "", "base64url").toString("utf8"),
+    );
+    const plan =
+      payload["https://api.openai.com/auth"]?.chatgpt_plan_type ?? payload.chatgpt_plan_type;
+    if (typeof plan === "string" && plan.trim()) return plan.trim();
+  } catch {
+    /* Plan metadata is optional and does not authorize requests. */
+  }
+}
+
 export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(function* (
   input: ProviderDriverCreateInput<CodexSettings>,
 ) {
@@ -106,8 +120,10 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
         message: "Sign in with ChatGPT to use Codex.",
         auth: { status: "unauthenticated" as const },
       };
+    const plan = accountPlan(saved.value.idToken) ?? accountPlan(saved.value.accessToken);
     const usageLimits = {
       checkedAt: base.checkedAt,
+      ...(plan ? { plan } : {}),
       windows: [],
       unavailable: {
         reason: "unsupported" as const,

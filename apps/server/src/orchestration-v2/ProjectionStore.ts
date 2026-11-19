@@ -373,6 +373,8 @@ export interface ProjectionRecordFilter {
   readonly contextTransferStatuses?: ReadonlyArray<OrchestrationV2ContextTransfer["status"]>;
   readonly subagentIds?: ReadonlyArray<NodeId>;
   readonly subagentRunIds?: ReadonlyArray<RunId>;
+  /** Only failed delegated tasks updated on or after this ISO timestamp. */
+  readonly failedSubagentsSince?: string;
   readonly subagentChildThreadIds?: ReadonlyArray<ThreadId>;
   readonly nodeIds?: ReadonlyArray<NodeId>;
   readonly turnItemRequestIds?: ReadonlyArray<RuntimeRequestId>;
@@ -625,6 +627,7 @@ export interface ProjectionStoreV2Shape {
     readonly now: DateTime.Utc;
     readonly autoResume: boolean;
     readonly snooze: boolean;
+    readonly autoSwitchAccounts?: boolean;
   }) => Effect.Effect<ReadonlyArray<ProjectionLimitRecoveryCandidate>, ProjectionStoreV2Error>;
   /** Epoch ms of the next armed reset or snooze end after `now`, when a waiting thread becomes a candidate. */
   readonly getLimitRecoveryWakeAt: (
@@ -4006,6 +4009,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               ${filter?.subagentIds === undefined ? sql`` : sql`AND subagent_id IN (SELECT value FROM json_each(${encodeIdList(filter.subagentIds)}))`}
               ${filter?.subagentChildThreadIds === undefined ? sql`` : sql`AND child_thread_id IN (SELECT value FROM json_each(${encodeIdList(filter.subagentChildThreadIds)}))`}
               ${filter?.subagentRunIds === undefined ? sql`` : sql`AND run_id IN (SELECT value FROM json_each(${encodeIdList(filter.subagentRunIds)}))`}
+              ${filter?.failedSubagentsSince === undefined ? sql`` : sql`AND status = 'failed' AND updated_at >= ${filter.failedSubagentsSince}`}
               ${
                 filter?.omitSettledSubagents === true
                   ? sql`AND subagent.rowid IN (${unsettledSubagentRowids(threadId)})`
@@ -4661,14 +4665,23 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             AND t.thread_id IN (
               SELECT failure.thread_id FROM orchestration_v2_projection_turn_items failure
               WHERE failure.type = 'error' AND failure.status = 'failed'
-                AND json_extract(failure.payload_json, '$.failure.class') = 'usage_limit'
+                AND (json_extract(failure.payload_json, '$.failure.class') = 'usage_limit'
+                  OR (${booleanInt(options.autoSwitchAccounts === true)}
+                    AND json_extract(t.payload_json, '$.modelSelection.model') LIKE 'mt-auto%'
+                    AND json_extract(failure.payload_json, '$.failure.class') IN ('transport_error', 'provider_error')))
             )
             AND json_extract(t.payload_json, '$.archivedAt') IS NULL
             AND json_extract(t.payload_json, '$.settledOverride') IS NOT 'settled'
-            AND json_extract(item.payload_json, '$.failure.class') = 'usage_limit'
-            AND json_extract(item.payload_json, '$.failure.resetAt') IS NOT NULL
-            AND julianday(json_extract(item.payload_json, '$.failure.resetAt')) > julianday(COALESCE(r.completed_at, json_extract(t.payload_json, '$.updatedAt')))
+            AND (json_extract(item.payload_json, '$.failure.class') = 'usage_limit'
+              OR (${booleanInt(options.autoSwitchAccounts === true)}
+                AND json_extract(t.payload_json, '$.modelSelection.model') LIKE 'mt-auto%'
+                AND json_extract(item.payload_json, '$.failure.class') IN ('transport_error', 'provider_error')))
             AND (
+              ${booleanInt(options.autoSwitchAccounts === true)}
+              OR (
+              json_extract(item.payload_json, '$.failure.resetAt') IS NOT NULL
+              AND julianday(json_extract(item.payload_json, '$.failure.resetAt')) > julianday(COALESCE(r.completed_at, json_extract(t.payload_json, '$.updatedAt')))
+              AND (
               (
                 json_extract(t.payload_json, '$.limitRecovery.runId') IS r.run_id
                 AND json_extract(t.payload_json, '$.limitRecovery.resetAt') IS json_extract(item.payload_json, '$.failure.resetAt')
@@ -4688,19 +4701,14 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                   ${booleanInt(options.autoResume)}
                   OR (${booleanInt(options.snooze)} AND julianday(json_extract(item.payload_json, '$.failure.resetAt')) > julianday(${DateTime.formatIso(options.now)}))
                 )
-                -- A subagent of a settled, archived or deleted parent is abandoned work.
-                AND NOT EXISTS (
-                  SELECT 1 FROM orchestration_v2_projection_threads parent
-                  WHERE json_extract(t.payload_json, '$.lineage.relationshipToParent') = 'subagent'
-                    AND parent.thread_id = json_extract(t.payload_json, '$.lineage.parentThreadId')
-                    AND (
-                      json_extract(parent.payload_json, '$.settledOverride') = 'settled'
-                      OR json_extract(parent.payload_json, '$.archivedAt') IS NOT NULL
-                      OR parent.deleted_at IS NOT NULL
-                    )
-                )
+              )
+              )
               )
             )
+            -- Delegated failures are delivered to the parent as terminal results. Restarting
+            -- them here can continue work after the parent has already received that result.
+            -- The parent may explicitly start a replacement on a different provider.
+            AND json_extract(t.payload_json, '$.lineage.relationshipToParent') IS NOT 'subagent'
             AND NOT EXISTS (
               SELECT 1 FROM orchestration_v2_projection_runtime_requests request
               WHERE request.thread_id = t.thread_id AND request.status = 'pending'
@@ -4715,7 +4723,16 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             item.type === "error" ? item.failure : null,
             row.last_error,
           );
-          if (summary.lastErrorClass !== "usage_limit") continue;
+          if (
+            summary.lastErrorClass !== "usage_limit" &&
+            !(
+              options.autoSwitchAccounts &&
+              thread.modelSelection.model.startsWith("mt-auto") &&
+              (summary.lastErrorClass === "transport_error" ||
+                summary.lastErrorClass === "provider_error")
+            )
+          )
+            continue;
           candidates.push({
             id: thread.id,
             status: "failed",

@@ -70,6 +70,7 @@ import * as ProjectService from "../project/ProjectService.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
+import { AUTO_ESCALATION_PREFIX } from "@t3tools/shared/agentWorkProfiles";
 import * as RemoteDelegation from "../peer/RemoteDelegation.ts";
 import type { McpInvocationScope } from "./McpInvocationContext.ts";
 import { idleThreadProjection, liveThreadShell } from "./McpToolAccess.testkit.ts";
@@ -2533,6 +2534,17 @@ describe("OrchestratorMcpService provider resolution", () => {
             })
             .pipe(Effect.flip);
 
+        // App Auto is selected before the orchestrator resolves a native model.
+        for (const mode of ["mt-auto", "mt-auto/fast", "mt-auto/quality", "mt-auto/subscription"]) {
+          yield* OrchestratorMcpService.requireAdvertisedModel(
+            {
+              ...codex,
+              models: [{ slug: "gpt-6-luna", name: "Luna", isCustom: false, capabilities: null }],
+            },
+            mode,
+          );
+        }
+
         const prefixed = yield* refuse("anthropic/claude-opus-5-3");
         assert.equal(prefixed.code, "model_unavailable");
         assert.equal(
@@ -4513,6 +4525,72 @@ describe("OrchestratorMcpService thread lookup", () => {
                   mode: input.mode === "restart" ? "restart" : "steer",
                 }),
               ),
+          }),
+        ),
+      );
+    }),
+  );
+
+  it.effect("queues an explicit Auto self-handoff and bounds repeated escalations", () =>
+    Effect.gen(function* () {
+      const auto = {
+        ...launched,
+        modelSelection: { ...launched.modelSelection, model: "mt-auto" },
+      };
+      const ownScope: McpInvocationScope = {
+        ...client,
+        client: undefined,
+        thread: {
+          threadId: auto.id,
+          providerInstanceId: auto.providerInstanceId,
+          providerSessionId: "auto-test",
+        },
+      };
+      const records = {
+        ...idleThreadProjection(auto),
+        messages: [] as OrchestrationV2ThreadProjection["messages"],
+      };
+      const inputs: Array<ThreadManagementService.ThreadManagementSendInput> = [];
+      const sent = yield* Ref.make(0);
+      yield* Effect.gen(function* () {
+        const mcp = yield* OrchestratorMcpService.OrchestratorMcpService;
+        yield* mcp.sendToThread(ownScope, {
+          threadId: auto.id,
+          message: "Verified progress; missing reasoning capability",
+          escalate: true,
+        });
+        assert.equal(inputs[0]?.mode, "queue");
+        assert.isTrue(inputs[0]?.text.startsWith(AUTO_ESCALATION_PREFIX));
+        records.messages = [1, 2].map((number) => ({
+          id: MessageId.make(`handoff:${number}`),
+          threadId: auto.id,
+          runId: null,
+          nodeId: null,
+          role: "user",
+          createdBy: "agent",
+          creationSource: "mcp",
+          attachments: [],
+          streaming: false,
+          createdAt: DateTime.makeUnsafe("2026-11-17T00:00:00Z"),
+          updatedAt: DateTime.makeUnsafe("2026-11-17T00:00:00Z"),
+          text: `${AUTO_ESCALATION_PREFIX}handoff ${number}`,
+        }));
+        const refused = yield* mcp
+          .sendToThread(ownScope, { threadId: auto.id, message: "Again", escalate: true })
+          .pipe(Effect.flip);
+        assert.equal(refused.code, "invalid_request");
+        assert.equal(inputs.length, 1);
+      }).pipe(
+        Effect.provide(
+          service([auto], sent, {
+            getThreadRecords: () => Effect.succeed(records),
+            sendToThread: (input) => {
+              inputs.push(input);
+              return Effect.succeed({
+                run: { id: RunId.make("escalation:queued"), status: "queued" },
+                delivery: "queued",
+              } as never);
+            },
           }),
         ),
       );

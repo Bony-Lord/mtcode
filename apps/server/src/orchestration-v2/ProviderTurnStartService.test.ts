@@ -2112,7 +2112,7 @@ effectIt.effect("sends new steering text when restarting a manual continuation",
   }),
 );
 
-effectIt.effect("refuses unsupported resume instead of manufacturing a user prompt", () =>
+effectIt.effect("continues unsupported native resume with a marked system continuation", () =>
   Effect.gen(function* () {
     const harness = makeLocalCommandHarness({
       text: "",
@@ -2121,20 +2121,12 @@ effectIt.effect("refuses unsupported resume instead of manufacturing a user prom
       sideChat: { contextRun: "delivered" },
     });
     yield* harness.start;
-    expect(harness.startTurn).not.toHaveBeenCalled();
-    expect(harness.startRootRun).not.toHaveBeenCalled();
-    expect(harness.settledRuns).toEqual(["failed"]);
-    expect(harness.projection().turnItems).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          type: "error",
-          failure: expect.objectContaining({
-            message:
-              "This provider cannot resume without a new message. Send a message to continue.",
-          }),
-        }),
-      ]),
+    expect(harness.startTurn).toHaveBeenCalledOnce();
+    expect(harness.startTurn.mock.calls[0]?.[0].message.text).toContain(
+      "MT Code: пользователь нажал",
     );
+    expect(harness.startRootRun.mock.calls[0]?.[0].resume).toBe(false);
+    expect(harness.settledRuns).toEqual([]);
   }),
 );
 

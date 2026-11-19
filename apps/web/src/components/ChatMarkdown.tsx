@@ -1,5 +1,6 @@
 import { clientHostEnvironmentAtom } from "../state/clientHostEnvironment";
 import { buildFileLinkParentSuffixByPath, fileLinkLabel } from "@t3tools/shared/fileLinks";
+import { InteractiveHtmlBlock } from "./chat/InteractiveHtmlBlock";
 import {
   isWindowsDrivePathHref,
   normalizeMarkdownLinkDestination,
@@ -1736,6 +1737,16 @@ const CHAT_MARKDOWN_COMPONENTS = {
         </MarkdownMermaidCodeBlock>
       );
     }
+    if (language === "mt-html" || language === "interactive-html") {
+      return (
+        <InteractiveHtmlBlock
+          code={codeBlock.code}
+          isStreaming={isStreaming || !isClosedCodeFence(node, text, codeBlock.code)}
+        >
+          {highlightedCode}
+        </InteractiveHtmlBlock>
+      );
+    }
     return (
       <MarkdownCodeBlock
         code={codeBlock.code}
@@ -1832,7 +1843,7 @@ const MarkdownSource = memo(function MarkdownSource({
 });
 
 function ChatMarkdown({
-  text,
+  text: originalText,
   className,
   inline = false,
   lineBreaks = false,
@@ -1841,6 +1852,10 @@ function ChatMarkdown({
   renderInsights = false,
   ...props
 }: ChatMarkdownProps) {
+  const text =
+    !inline && /^(?:mt-html|interactive-html)\s*\n\s*</.test(originalText.trimStart())
+      ? `\`\`\`mt-html\n${originalText.trimStart().replace(/^(?:mt-html|interactive-html)\s*\n/, "")}\n\`\`\``
+      : originalText;
   const { componentState, handleCopy, markdownRef, localMediaPreview, closeLocalMediaPreview } =
     useChatMarkdownState({ text, inline, ...props });
   const hasInsights = renderInsights && text.includes("★ Insight");

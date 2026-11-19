@@ -338,50 +338,59 @@ describe("DesktopClerk", () => {
     );
   });
 
-  it.effect("reveals the window when second-instance argv has no protocol URL", () => {
-    storageMock.mockReturnValue(storageAdapter);
-    createClerkBridgeMock.mockReturnValue({ cleanup: vi.fn(), isPrimaryInstance: true });
-    const listeners = new Map<string, (...args: unknown[]) => void>();
-    const loadURL = vi.fn(() => Promise.resolve());
-    const mainWindow = { loadURL };
-    const revealed: unknown[] = [];
-    const electronApp = {
-      quit: Effect.void,
-      on: (eventName: string, listener: (...args: unknown[]) => void) =>
-        Effect.sync(() => {
-          listeners.set(eventName, listener);
-        }),
-    } as unknown as ElectronApp.ElectronApp["Service"];
-    const electronWindow = {
-      main: Effect.succeedSome(mainWindow),
-      currentMainOrFirst: Effect.succeedSome(mainWindow),
-      reveal: (window: unknown) =>
-        Effect.sync(() => {
-          revealed.push(window);
-        }),
-    } as unknown as ElectronWindow.ElectronWindow["Service"];
-
-    return Effect.scoped(
-      Effect.gen(function* () {
-        const clerk = yield* DesktopClerk.DesktopClerk;
-        yield* clerk.configure;
-
-        listeners.get("second-instance")?.({}, ["electron", "--hidden"], process.cwd());
-        yield* Effect.promise(() =>
-          vi.waitFor(() => {
-            assert.deepEqual(revealed, [mainWindow]);
+  it.effect.each([true, false])(
+    "reveals or recreates the window on a second launch (existing %s)",
+    (existing) => {
+      storageMock.mockReturnValue(storageAdapter);
+      createClerkBridgeMock.mockReturnValue({ cleanup: vi.fn(), isPrimaryInstance: true });
+      const listeners = new Map<string, (...args: unknown[]) => void>();
+      const loadURL = vi.fn(() => Promise.resolve());
+      const mainWindow = { loadURL };
+      const revealed: unknown[] = [];
+      const electronApp = {
+        quit: Effect.void,
+        on: (eventName: string, listener: (...args: unknown[]) => void) =>
+          Effect.sync(() => {
+            listeners.set(eventName, listener);
           }),
-        );
-        assert.deepEqual(loadURL.mock.calls, []);
-      }),
-    ).pipe(
-      Effect.provide(layerDesktopClerk(true, [], "linux", undefined, undefined, listeners)),
-      Effect.provideService(ElectronApp.ElectronApp, electronApp),
-      Effect.provideService(DesktopWebLinks.DesktopWebLinks, ignoreWebLinks),
-      Effect.provideService(ElectronWindow.ElectronWindow, electronWindow),
-      Effect.provideService(DesktopWindow.DesktopWindow, unusedDesktopWindow),
-    );
-  });
+      } as unknown as ElectronApp.ElectronApp["Service"];
+      const electronWindow = {
+        main: existing ? Effect.succeedSome(mainWindow) : Effect.succeedNone,
+        currentMainOrFirst: existing ? Effect.succeedSome(mainWindow) : Effect.succeedNone,
+        reveal: (window: unknown) =>
+          Effect.sync(() => {
+            revealed.push(window);
+          }),
+      } as unknown as ElectronWindow.ElectronWindow["Service"];
+
+      return Effect.scoped(
+        Effect.gen(function* () {
+          const clerk = yield* DesktopClerk.DesktopClerk;
+          yield* clerk.configure;
+
+          listeners.get("second-instance")?.({}, ["electron", "--hidden"], process.cwd());
+          yield* Effect.promise(() =>
+            vi.waitFor(() => {
+              assert.deepEqual(revealed, [mainWindow]);
+            }),
+          );
+          assert.deepEqual(loadURL.mock.calls, []);
+        }),
+      ).pipe(
+        Effect.provide(layerDesktopClerk(true, [], "linux", undefined, undefined, listeners)),
+        Effect.provideService(ElectronApp.ElectronApp, electronApp),
+        Effect.provideService(DesktopWebLinks.DesktopWebLinks, ignoreWebLinks),
+        Effect.provideService(ElectronWindow.ElectronWindow, electronWindow),
+        Effect.provideService(DesktopWindow.DesktopWindow, {
+          ...unusedDesktopWindow,
+          revealOrCreateMain: Effect.sync(() => {
+            revealed.push(mainWindow);
+            return mainWindow as unknown as Electron.BrowserWindow;
+          }),
+        }),
+      );
+    },
+  );
 
   it.effect("loads macOS open-url deep links on the existing window", () => {
     storageMock.mockReturnValue(storageAdapter);

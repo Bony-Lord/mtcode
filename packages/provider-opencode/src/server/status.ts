@@ -856,6 +856,22 @@ export const checkOpenCodeProviderStatus = Effect.fn("checkOpenCodeProviderStatu
   }
   const probed = probedExit.value;
   if (probed.generation === "v2") {
+    if (openCodeSettings.configuredCatalogOnly && customModels.length > 0 && !isExternalServer) {
+      return buildServerProvider({
+        presentation: OPENCODE_2_PRESENTATION,
+        enabled: true,
+        checkedAt,
+        models: providerModelsFromSettings([], customModels, DEFAULT_OPENCODE_MODEL_CAPABILITIES),
+        slashCommands: [COMPACT_SLASH_COMMAND],
+        probe: {
+          installed: true,
+          version: probed.version,
+          status: "ready",
+          auth: { status: "authenticated" },
+          message: "Saved model list. OpenCode starts when you send a message.",
+        },
+      });
+    }
     return yield* checkOpenCode2(openCodeSettings, probed.version, checkedAt, loadOpenCode2Models);
   }
   if (compareSemverVersions(probed.version, OpenCodeRuntime.MINIMUM_OPENCODE_VERSION) < 0) {

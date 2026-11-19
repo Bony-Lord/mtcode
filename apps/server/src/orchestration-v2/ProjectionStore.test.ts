@@ -2588,7 +2588,7 @@ const subagentRecordsSelectById = Effect.gen(function* () {
         prompt: "Do the work",
         title: "Delegated task",
         model: null,
-        status: "running",
+        status: id === ids[0] ? "failed" : "running",
         result: null,
         startedAt: now,
         completedAt: null,
@@ -2603,6 +2603,17 @@ const subagentRecordsSelectById = Effect.gen(function* () {
   assert.deepEqual(yield* read(), ids);
   assert.deepEqual(yield* read([ids[1]!]), [ids[1]]);
   assert.deepEqual(yield* read([]), []);
+  const recentFailures = yield* store.getThreadRecords(threadId, ["subagents"], {
+    failedSubagentsSince: DateTime.formatIso(DateTime.subtract(now, { minutes: 1 })),
+  });
+  assert.deepEqual(
+    recentFailures.subagents.map((task) => task.id),
+    [ids[0]],
+  );
+  const expiredFailures = yield* store.getThreadRecords(threadId, ["subagents"], {
+    failedSubagentsSince: DateTime.formatIso(DateTime.add(now, { minutes: 1 })),
+  });
+  assert.deepEqual(expiredFailures.subagents, []);
 });
 
 const recordsAt = (second: number) => DateTime.makeUnsafe(Date.UTC(2026, 0, 1, 0, 0, second));
@@ -8332,6 +8343,34 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
       });
       yield* applyRun("failed");
       yield* assertSummary("Plan limit reached.", "usage_limit");
+      yield* store.apply({
+        id: EventId.make("event:limit-shell:unknown-reset"),
+        type: "turn-item.updated",
+        threadId,
+        occurredAt: now,
+        payload: { ...limitItem, failure: { ...limitItem.failure, resetAt: null } },
+      });
+      assert.isUndefined(
+        (yield* store.getLimitRecoveryCandidates({ now, autoResume: true, snooze: false })).find(
+          (row) => row.id === threadId,
+        ),
+      );
+      assert.equal(
+        (yield* store.getLimitRecoveryCandidates({
+          now,
+          autoResume: false,
+          snooze: false,
+          autoSwitchAccounts: true,
+        })).find((row) => row.id === threadId)?.latestRunId,
+        original.id,
+      );
+      yield* store.apply({
+        id: EventId.make("event:limit-shell:known-reset"),
+        type: "turn-item.updated",
+        threadId,
+        occurredAt: now,
+        payload: limitItem,
+      });
       const queuedRunId = RunId.make("run:limit-shell:queued");
       yield* store.apply({
         id: EventId.make("event:limit-shell:queued"),
@@ -8613,7 +8652,7 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
     }),
   );
 
-  it.effect("does not freshly arm limit recovery for a subagent of a put-away parent", () =>
+  it.effect("does not automatically restart a failed subagent after its result is delivered", () =>
     Effect.gen(function* () {
       const store = yield* ProjectionStore.ProjectionStoreV2;
       const now = yield* DateTime.now;
@@ -8743,6 +8782,7 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
       for (const options of [
         { now, autoResume: true, snooze: false },
         { now, autoResume: false, snooze: true },
+        { now, autoResume: true, snooze: false, autoSwitchAccounts: true },
       ]) {
         const armed = (yield* store.getLimitRecoveryCandidates(options))
           .filter((row) => children.includes(row.id))
@@ -8758,11 +8798,11 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
           .map((row) => row.id);
         assert.deepEqual(
           armed,
-          [activeParentChild],
-          `only the child of the open parent is armed (${JSON.stringify(options)})`,
+          [],
+          `delegated failures are left to the parent (${JSON.stringify(options)})`,
         );
       }
-      // A recovery armed before the parent settled still resumes at its reset.
+      // A previously armed recovery must not resurrect a delivered delegated task.
       yield* store.apply({
         id: EventId.make("event:settled-parent-limit:settled:armed"),
         type: "thread.metadata-updated",
@@ -8787,15 +8827,7 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
         autoResume: true,
         snooze: false,
       })).find((row) => row.id === settledParentChild);
-      assert.isDefined(resumed);
-      assert.isTrue(
-        limitRecoveryCommand(
-          resumed,
-          true,
-          DateTime.toEpochMillis(afterReset),
-          false,
-        )?.commandId.startsWith("limit-resume:"),
-      );
+      assert.isUndefined(resumed);
     }),
   );
 

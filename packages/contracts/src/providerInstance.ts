@@ -74,14 +74,27 @@ export type ResolvedProviderInstanceEnvironment = ReadonlyArray<
 /** Drivers decode their own config; unknown-driver envelopes round-trip verbatim across versions. */
 export const ProviderInstanceConfig = Schema.Struct({
   driver: ProviderDriverKind,
+  settingsProfileId: Schema.optionalKey(ProviderInstanceId),
   accountTier: Schema.optionalKey(
     Schema.Literals(["free", "subscription", "paid-api", "local", "unknown"]),
   ),
   freeAccountPaused: Schema.optionalKey(Schema.Boolean),
+  usagePolicy: Schema.optionalKey(
+    Schema.Struct({
+      sessionMaxUsedPercent: Schema.optionalKey(
+        Schema.Number.check(Schema.isBetween({ minimum: 0, maximum: 100 })),
+      ),
+      weeklyMaxUsedPercent: Schema.optionalKey(
+        Schema.Number.check(Schema.isBetween({ minimum: 0, maximum: 100 })),
+      ),
+    }),
+  ),
+  routingRole: Schema.optionalKey(Schema.Literals(["agent", "assistant", "excluded"])),
   displayName: Schema.optional(TrimmedNonEmptyString),
   accentColor: Schema.optional(TrimmedNonEmptyString),
   environment: Schema.optionalKey(ProviderInstanceEnvironment),
   enabled: Schema.optionalKey(Schema.Boolean),
+  hidden: Schema.optionalKey(Schema.Boolean),
   config: Schema.optionalKey(Schema.Unknown),
 });
 export type ProviderInstanceConfig = typeof ProviderInstanceConfig.Type;
@@ -106,6 +119,54 @@ export type ProviderInstanceMutation = typeof ProviderInstanceMutation.Type;
 
 export const ProviderInstanceConfigMap = Schema.Record(ProviderInstanceId, ProviderInstanceConfig);
 export type ProviderInstanceConfigMap = typeof ProviderInstanceConfigMap.Type;
+
+/** Resolve common runtime options while keeping each account's credentials and home private. */
+export function resolveProviderInstanceProfiles(
+  instances: ProviderInstanceConfigMap,
+): ProviderInstanceConfigMap {
+  const resolved: Record<string, ProviderInstanceConfig> = {};
+  const visiting = new Set<string>();
+  const resolve = (id: string): ProviderInstanceConfig => {
+    const own = instances[ProviderInstanceId.make(id)]!;
+    if (resolved[id]) return resolved[id];
+    const parent = own.settingsProfileId && instances[own.settingsProfileId];
+    if (!parent || parent.driver !== own.driver || visiting.has(id)) return own;
+    visiting.add(id);
+    const base = resolve(own.settingsProfileId!);
+    visiting.delete(id);
+    const config =
+      typeof base.config === "object" && base.config !== null && !Array.isArray(base.config)
+        ? ({ ...base.config } as Record<string, unknown>)
+        : {};
+    delete config.homePath;
+    delete config.shadowHomePath;
+    for (const key of Object.keys(config)) {
+      if (/api.?key|token|secret|password|credential|^auth/i.test(key)) delete config[key];
+    }
+    const overrides =
+      typeof own.config === "object" && own.config !== null && !Array.isArray(own.config)
+        ? own.config
+        : {};
+    const variables = new Map(
+      (base.environment ?? [])
+        .filter(
+          (item) =>
+            !item.sensitive &&
+            !/(?:TOKEN|SECRET|KEY|PASSWORD|CREDENTIAL|AUTH|HOME)/.test(item.name),
+        )
+        .map((item) => [item.name, item]),
+    );
+    for (const item of own.environment ?? []) variables.set(item.name, item);
+    const next = {
+      ...own,
+      config: { ...config, ...overrides },
+      environment: [...variables.values()],
+    };
+    resolved[id] = next;
+    return next;
+  };
+  return Object.fromEntries(Object.keys(instances).map((id) => [id, resolve(id)]));
+}
 
 /** Driver-kind ids keep stored selections routable without migration. */
 export const defaultInstanceIdForDriver = (driver: ProviderDriverKind): ProviderInstanceId =>

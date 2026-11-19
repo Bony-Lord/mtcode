@@ -1,3 +1,4 @@
+import type { EnvironmentId, ServerProvider } from "@t3tools/contracts";
 import {
   CHATGPT_USAGE_URL,
   collectLimitAccounts,
@@ -12,13 +13,17 @@ import {
   type LimitPoolMember,
   type LimitPoolWindow,
   paceRemainingPercent,
+  providerUsageDisplaySource,
   remainingPercent,
   type ResetCreditChoice,
   resetCreditChoices,
 } from "@t3tools/shared/usageLimits";
 import type { Popover as PopoverPrimitive } from "@base-ui/react/popover";
-import { normalizeProviderAccentColor } from "@t3tools/client-runtime/state/provider-instance-display";
-import { AlertTriangleIcon, ExternalLinkIcon, TicketIcon } from "lucide-react";
+import {
+  normalizeProviderAccentColor,
+  resolveProviderInstanceDisplayName,
+} from "@t3tools/client-runtime/state/provider-instance-display";
+import { AlertTriangleIcon, ChevronDownIcon, ExternalLinkIcon, TicketIcon } from "lucide-react";
 import {
   createContext,
   Fragment,
@@ -38,10 +43,19 @@ import { ProviderInstanceIcon } from "../chat/ProviderInstanceIcon";
 import { providerClients } from "../settings/providerDriverMeta";
 import { RedactedSensitiveText } from "../settings/RedactedSensitiveText";
 import { Button } from "../ui/button";
+import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from "../ui/collapsible";
 import { OpenAI } from "../Icons";
 import { Alert, AlertTitle } from "../ui/alert";
 import { Popover, PopoverCreateHandle, PopoverPopup, PopoverTrigger } from "../ui/popover";
-import { PaceIcon, ResetCreditDialog, barColor, usePaceMark, useResetCredit } from "./UsageLimits";
+import {
+  LimitWindows,
+  PaceIcon,
+  ResetCreditDialog,
+  barColor,
+  usePaceMark,
+  useResetCredit,
+} from "./UsageLimits";
+import { ConnectCodexLimits } from "./ConnectCodexLimits";
 
 function accountInitials(email: string): string {
   const [local = "", domain = ""] = email.split("@");
@@ -619,18 +633,225 @@ function PoolSection({ pool, now }: { readonly pool: LimitPool; readonly now: nu
   );
 }
 
-export function UsageLimitsPooled({
+type AccountLimitRow = {
+  readonly environmentId: EnvironmentId;
+  readonly environmentLabel: string;
+  readonly profile: ServerProvider;
+  readonly source: ServerProvider;
+};
+
+function accountLimitRows(
+  presentations: Parameters<typeof collectLimitAccounts>[0],
+  includeAll = false,
+) {
+  const groups = new Map<ServerProvider["driver"], AccountLimitRow[]>();
+  for (const [environmentId, { entry, serverConfig }] of presentations) {
+    const providers = serverConfig?.providers ?? [];
+    const profiles = providers.filter(
+      (provider) =>
+        !provider.instanceId.startsWith("codex-quota-") &&
+        (includeAll || (provider.enabled && provider.auth.status === "authenticated")),
+    );
+    const resolved = profiles.map((profile) => ({
+      profile,
+      source: providerUsageDisplaySource(profile, providers) ?? profile,
+    }));
+    const aliases = new Set(
+      resolved.flatMap(({ profile, source }) => (profile === source ? [] : [source.instanceId])),
+    );
+    for (const { profile, source } of resolved) {
+      if (aliases.has(profile.instanceId)) continue;
+      const group = groups.get(profile.driver) ?? [];
+      group.push({ environmentId, environmentLabel: entry.target.label, profile, source });
+      groups.set(profile.driver, group);
+    }
+  }
+  return groups;
+}
+
+function OtherLimitAccounts({
+  accounts,
+  now,
+  showEnvironment,
+}: {
+  readonly accounts: readonly AccountLimitRow[];
+  readonly now: number;
+  readonly showEnvironment: boolean;
+}) {
+  if (accounts.length < 2) return null;
+  return (
+    <LimitDisclosure label="Другие аккаунты">
+      <AccountLimitList accounts={accounts} now={now} showEnvironment={showEnvironment} />
+    </LimitDisclosure>
+  );
+}
+
+function AccountLimitList({
+  accounts,
+  now,
+  showEnvironment,
+}: {
+  readonly accounts: readonly AccountLimitRow[];
+  readonly now: number;
+  readonly showEnvironment: boolean;
+}) {
+  return (
+    <ul className="divide-y divide-border/60 border-t px-3.5">
+      {accounts.map(({ environmentId, environmentLabel, profile, source }) => {
+        const limits = source.usageLimits;
+        const windows = profile.enabled && limits && !limits.unavailable ? limits.windows : [];
+        const name = resolveProviderInstanceDisplayName(profile);
+        const externalUsage = profile.usageLimits?.externalUsage;
+        return (
+          <li key={`${environmentId}:${profile.instanceId}`} className="space-y-2 py-3">
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+              <span className="min-w-0 break-words text-sm font-medium">{name}</span>
+              {showEnvironment ? (
+                <span className="text-xs text-muted-foreground">{environmentLabel}</span>
+              ) : null}
+            </div>
+            {windows.length > 0 ? (
+              <LimitWindows
+                compact
+                driver={profile.driver}
+                accentColor={profile.accentColor}
+                windows={windows.map((window) => ({
+                  ...window,
+                  label:
+                    window.kind === "weekly"
+                      ? "Неделя"
+                      : window.windowDurationMins === 300
+                        ? "5 часов"
+                        : window.label,
+                }))}
+                now={now}
+              />
+            ) : (
+              <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
+                <span>
+                  {!profile.enabled
+                    ? "Провайдер выключен"
+                    : limits?.unavailable?.reason === "probeFailed"
+                      ? "Не удалось обновить лимиты"
+                      : "Числовые лимиты пока недоступны"}
+                </span>
+                {profile.enabled &&
+                profile.auth.subscriptionSharing &&
+                profile.auth.status === "authenticated" ? (
+                  <ConnectCodexLimits environmentId={environmentId} profile={profile} />
+                ) : null}
+                {externalUsage ? (
+                  <Button
+                    variant="ghost-muted"
+                    size="xs"
+                    onClick={() => void ensureLocalApi().shell.openExternal(externalUsage.url)}
+                  >
+                    Открыть использование <ExternalLinkIcon className="size-3.5" aria-hidden />
+                  </Button>
+                ) : null}
+              </div>
+            )}
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+function AllProviderLimits({
   presentations,
   now,
 }: {
   readonly presentations: Parameters<typeof collectLimitAccounts>[0];
   readonly now: number;
 }) {
+  const groups = accountLimitRows(presentations, true);
+  return (
+    <LimitDisclosure label="Показать лимиты всех провайдеров">
+      {[...groups].map(([driver, accounts]) => (
+        <section key={driver} className="border-t border-border/60">
+          <h2 className="flex items-center gap-2 px-3.5 py-3 text-sm font-medium">
+            <ProviderInstanceIcon
+              driverKind={driver}
+              displayName={providerClients.get(driver)?.label ?? driver}
+              indicatorBackground="var(--background)"
+              className="size-5"
+              iconClassName="size-4 text-foreground/80"
+            />
+            {providerClients.get(driver)?.label ?? driver}
+          </h2>
+          <AccountLimitList
+            accounts={accounts}
+            now={now}
+            showEnvironment={presentations.size > 1}
+          />
+        </section>
+      ))}
+    </LimitDisclosure>
+  );
+}
+
+function LimitDisclosure({
+  label,
+  children,
+}: {
+  readonly label: string;
+  readonly children: ReactNode;
+}) {
+  return (
+    <div className="rounded-xl border">
+      <Collapsible>
+        <CollapsibleTrigger className="group flex w-full items-center gap-2 rounded-xl p-3.5 text-start text-sm font-medium hover:bg-muted/40 focus-visible:outline-ring">
+          <ChevronDownIcon
+            className="size-4 shrink-0 -rotate-90 text-muted-foreground transition-transform group-data-panel-open:rotate-0"
+            aria-hidden
+          />
+          {label}
+        </CollapsibleTrigger>
+        <CollapsiblePanel animate={false}>{children}</CollapsiblePanel>
+      </Collapsible>
+    </div>
+  );
+}
+
+export function UsageLimitsPooled({
+  presentations,
+  allPresentations = presentations,
+  now,
+}: {
+  readonly presentations: Parameters<typeof collectLimitAccounts>[0];
+  readonly allPresentations?: Parameters<typeof collectLimitAccounts>[0];
+  readonly now: number;
+}) {
   const [segmentPopover] = useState(() => PopoverCreateHandle<SegmentPayload>());
   const segmentPopoverActions = useRef<PopoverPrimitive.Root.Actions | null>(null);
-  const pools = collectLimitPools(collectLimitAccounts(presentations), now);
+  const accountGroups = accountLimitRows(presentations);
+  const namesBySource = new Map<string, string>(
+    [...accountGroups.values()].flatMap((accounts) =>
+      accounts.flatMap(({ environmentId, profile, source }) =>
+        profile !== source
+          ? [
+              [
+                `${environmentId}:${source.instanceId}`,
+                resolveProviderInstanceDisplayName(profile),
+              ] as const,
+            ]
+          : [],
+      ),
+    ),
+  );
+  const pools = collectLimitPools(
+    collectLimitAccounts(presentations).map((account) => {
+      const name = namesBySource.get(account.key);
+      return name ? { ...account, displayName: name } : account;
+    }),
+    now,
+  );
   const notices = collectLimitNotices(presentations);
   const externalLinks = collectExternalUsageLinks(presentations);
+  const unpooledAccountGroups = [...accountGroups].filter(
+    ([driver, accounts]) => accounts.length > 1 && !pools.some((pool) => pool.driver === driver),
+  );
   return (
     <div className="flex flex-col gap-8">
       {pools.length === 0 && notices.length === 0 && externalLinks.length === 0 ? (
@@ -642,9 +863,27 @@ export function UsageLimitsPooled({
         {pools.map((pool) => (
           <Fragment key={pool.driver}>
             <PoolSection pool={pool} now={now} />
+            <OtherLimitAccounts
+              accounts={accountGroups.get(pool.driver) ?? []}
+              now={now}
+              showEnvironment={presentations.size > 1}
+            />
           </Fragment>
         ))}
       </SegmentPopoverContext>
+      {unpooledAccountGroups.map(([driver, accounts]) => (
+        <section key={driver} className="flex flex-col gap-3">
+          <h2 className="text-sm font-medium">{providerClients.get(driver)?.label ?? driver}</h2>
+          <OtherLimitAccounts
+            accounts={accounts}
+            now={now}
+            showEnvironment={presentations.size > 1}
+          />
+        </section>
+      ))}
+      {[...allPresentations.values()].some((entry) => entry.serverConfig?.providers.length) ? (
+        <AllProviderLimits presentations={allPresentations} now={now} />
+      ) : null}
       <Popover handle={segmentPopover} actionsRef={segmentPopoverActions}>
         {({ payload }) =>
           payload ? (

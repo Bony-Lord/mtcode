@@ -26,7 +26,7 @@ import {
   ProviderDriverKind,
   type ProjectId,
   type ProviderInstanceConfig,
-  type ProviderInstanceId,
+  ProviderInstanceId,
   type RuntimeMode,
   type ServerProvider,
   resolveEnvironmentMachineKind,
@@ -104,7 +104,11 @@ import { TextGeneratorsSettings } from "./TextGeneratorsSettings";
 import { UsageProviderSettings } from "./UsageProviderSettings";
 import { ProviderSetupSection, readAntigravityAuthMethod } from "./ProviderSetupSection";
 import { ProviderAuthenticationSection } from "./ProviderAuthenticationSection";
-import { CodexSetupSection, CodexManagedRuntimeFields } from "./CodexSetupSection";
+import {
+  CodexSetupSection,
+  CodexManagedRuntimeFields,
+  AddManagedCodexAccountDialog,
+} from "./CodexSetupSection";
 import { readCodexSetupMode } from "./CodexSetupSection.logic";
 import { providerClients } from "./providerDriverMeta";
 import { searchableSetting } from "./settingsSearch";
@@ -576,6 +580,11 @@ export function EnvironmentProviderSettings({
   readonly readOnly?: boolean;
 }) {
   const settings = useEnvironmentSettings(environmentId);
+  const primaryEnvironmentId = usePrimaryEnvironmentId();
+  const isLocalGatewayEnvironment =
+    environmentId === primaryEnvironmentId &&
+    typeof window !== "undefined" &&
+    window.desktopBridge !== undefined;
   const managedPolicy = useManagedPolicy(environmentId);
   // A policy that allows no provider leaves nothing to add.
   const canAddProvider =
@@ -583,6 +592,8 @@ export function EnvironmentProviderSettings({
   const canWriteSettings = useEnvironmentScope(environmentId, AuthSettingsWriteScope);
   const canRefreshProviders = useEnvironmentScope(environmentId, AuthOrchestrationReadScope);
   const updateSettings = useUpdateEnvironmentSettings(environmentId);
+  const syncFreeCatalog = useAtomCommand(serverEnvironment.updateSettings, { reportFailure: true });
+  const [isSyncingFreeCatalog, setIsSyncingFreeCatalog] = useState(false);
   const updateModelPreferences = useUpdateEnvironmentModelPreferences(environmentId);
   const toggleModelFavorite = useToggleEnvironmentModelFavorite(environmentId);
   const persistProviderInstance = usePersistEnvironmentProviderInstanceMutation(environmentId);
@@ -608,6 +619,8 @@ export function EnvironmentProviderSettings({
   const [isRefreshingProviders, setIsRefreshingProviders] = useState(false);
   const [isTogglingFreeAccounts, setIsTogglingFreeAccounts] = useState(false);
   const [isAddInstanceDialogOpen, setIsAddInstanceDialogOpen] = useState(false);
+  const [isAddCodexAccountOpen, setIsAddCodexAccountOpen] = useState(false);
+  const [showHiddenProviders, setShowHiddenProviders] = useState(false);
   const [selectedInstanceId, setSelectedInstanceId] = useState<ProviderInstanceId | null>(
     targetInstanceId ?? null,
   );
@@ -764,6 +777,8 @@ export function EnvironmentProviderSettings({
     const driver = providerSettings.provider;
     const defaultInstanceId = defaultInstanceIdForDriver(driver);
     const explicitInstance = settings.providerInstances?.[defaultInstanceId];
+    if (explicitInstance?.hidden && !showHiddenProviders && defaultInstanceId !== targetInstanceId)
+      continue;
     const isDirty = explicitInstance !== undefined;
     const hasDefaultSlot = providerSettings.hasDefaultInstance || explicitInstance !== undefined;
     if (
@@ -784,6 +799,7 @@ export function EnvironmentProviderSettings({
     }
     for (const [id, instance] of instancesByDriver.get(providerSettings.provider) ?? []) {
       if (id === defaultInstanceId) continue;
+      if (instance.hidden && !showHiddenProviders && id !== targetInstanceId) continue;
       rows.push({
         instanceId: id,
         explicitInstance: instance,
@@ -795,6 +811,7 @@ export function EnvironmentProviderSettings({
   for (const [driver, list] of instancesByDriver) {
     if (visibleDriverKinds.has(driver)) continue;
     for (const [id, instance] of list) {
+      if (instance.hidden && !showHiddenProviders && id !== targetInstanceId) continue;
       rows.push({
         instanceId: id,
         explicitInstance: instance,
@@ -1174,7 +1191,58 @@ export function EnvironmentProviderSettings({
               className="@min-[48rem]/providers:min-h-0 @min-[48rem]/providers:flex-1"
             >
               <div className="divide-y divide-border/50">
-                {rows.map((row) => renderProviderInstance(row, "list"))}
+                {[...new Set(rows.map((row) => row.driver))].map((driver) => {
+                  const members = rows.filter((row) => row.driver === driver);
+                  const commonCodex =
+                    driver === "codex" ? members.find((row) => row.isDefault) : undefined;
+                  if (commonCodex)
+                    return (
+                      <div key={driver}>
+                        <div className="flex items-center gap-1 border-b border-border/50 bg-muted/20 px-3 py-2">
+                          <button
+                            type="button"
+                            className="min-w-0 flex-1 cursor-pointer text-left text-xs font-medium hover:text-primary"
+                            aria-current={
+                              selectedRow?.instanceId === commonCodex.instanceId
+                                ? "true"
+                                : undefined
+                            }
+                            onClick={() => setSelectedInstanceId(commonCodex.instanceId)}
+                          >
+                            Codex · общий профиль
+                          </button>
+                          {canAddProvider ? (
+                            <Button
+                              size="icon-xs"
+                              variant="ghost-muted"
+                              aria-label="Добавить аккаунт Codex"
+                              onClick={() => setIsAddCodexAccountOpen(true)}
+                            >
+                              <PlusIcon className="size-3.5" />
+                            </Button>
+                          ) : null}
+                        </div>
+                        <div className="ml-3 border-l border-border/60">
+                          {members
+                            .filter((row) => row !== commonCodex)
+                            .map((row) => renderProviderInstance(row, "list"))}
+                        </div>
+                      </div>
+                    );
+                  return members.length > 1 &&
+                    ["codex", "claudeAgent", "antigravity"].includes(driver) ? (
+                    <details key={driver} open className="group/accounts">
+                      <summary className="cursor-pointer bg-muted/20 px-3 py-2 text-xs font-medium">
+                        {PROVIDER_DISPLAY_NAMES[driver] ?? driver} · {members.length} аккаунта
+                      </summary>
+                      <div className="ml-3 border-l border-border/60">
+                        {members.map((row) => renderProviderInstance(row, "list"))}
+                      </div>
+                    </details>
+                  ) : (
+                    members.map((row) => renderProviderInstance(row, "list"))
+                  );
+                })}
                 {canAddProvider ? (
                   <button
                     type="button"
@@ -1183,6 +1251,17 @@ export function EnvironmentProviderSettings({
                   >
                     <PlusIcon className="size-4 shrink-0" />
                     Add provider
+                  </button>
+                ) : null}
+                {Object.values(settings.providerInstances).some((instance) => instance.hidden) ? (
+                  <button
+                    type="button"
+                    className="w-full cursor-pointer px-3 py-2 text-left text-xs text-muted-foreground hover:text-foreground"
+                    onClick={() => setShowHiddenProviders((value) => !value)}
+                  >
+                    {showHiddenProviders
+                      ? "Скрыть отключённые провайдеры"
+                      : "Показать скрытых провайдеров"}
                   </button>
                 ) : null}
               </div>
@@ -1207,6 +1286,131 @@ export function EnvironmentProviderSettings({
           </div>
         </SettingsGroup>
       </SettingsSection>
+
+      {isLocalGatewayEnvironment &&
+      settings.providerInstances[ProviderInstanceId.make("omniroute-free")] ? (
+        <SettingsSection title="OmniRoute">
+          <SettingsRow
+            title="Бесплатные модели"
+            description="Обновляет подключённые текстовые модели OmniRoute, Kilo и OpenCode."
+            control={
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={readOnly || !canWriteSettings || isSyncingFreeCatalog}
+                onClick={() => {
+                  setIsSyncingFreeCatalog(true);
+                  void syncFreeCatalog({
+                    environmentId,
+                    input: { patch: {}, refreshFreeModels: true },
+                  }).finally(() => setIsSyncingFreeCatalog(false));
+                }}
+              >
+                {isSyncingFreeCatalog ? "Обновляем…" : "Обновить модели"}
+              </Button>
+            }
+          />
+          <SettingsRow
+            title="Модели и аккаунты"
+            description="Каталог бесплатных маршрутов и подключение аккаунтов. Шлюз запускается при обращении."
+            control={
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() =>
+                  void ensureLocalApi().shell.openExternal(
+                    "http://127.0.0.1:20128/dashboard/providers",
+                  )
+                }
+              >
+                Открыть каталог
+              </Button>
+            }
+          />
+          <SettingsRow
+            title="Маршруты"
+            description="Комбинации моделей, порядок выбора и запасные маршруты."
+            control={
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() =>
+                  void ensureLocalApi().shell.openExternal(
+                    "http://127.0.0.1:20128/dashboard/combos",
+                  )
+                }
+              >
+                Настроить
+              </Button>
+            }
+          />
+        </SettingsSection>
+      ) : null}
+
+      {isLocalGatewayEnvironment &&
+      settings.providerInstances[ProviderInstanceId.make("web-ai")] ? (
+        <SettingsSection title="Веб-провайдеры">
+          <SettingsRow
+            title="Помощник веб-чатов"
+            description="Исправляет адаптер сайта при ошибке. Для неверного результата отправь @assistant и опиши ожидаемый ответ."
+            control={
+              <select
+                aria-label="Помощник веб-чатов"
+                className="h-8 max-w-60 rounded border border-border bg-background px-2 text-sm"
+                disabled={readOnly || !canWriteSettings}
+                value={JSON.stringify([
+                  settings.webAssistantRepairSelection?.instanceId ?? "codex",
+                  settings.webAssistantRepairSelection?.model ?? "mt-auto",
+                ])}
+                onChange={(event) => {
+                  const [instanceId, model] = JSON.parse(event.target.value) as [string, string];
+                  updateSettings({
+                    webAssistantRepairSelection: {
+                      instanceId: ProviderInstanceId.make(instanceId),
+                      model,
+                    },
+                  });
+                }}
+              >
+                <option value={JSON.stringify(["codex", "mt-auto"])}>
+                  Авто · подключённые агенты
+                </option>
+                {serverProviders
+                  .filter(
+                    (provider) =>
+                      provider.status === "ready" &&
+                      settings.providerInstances[provider.instanceId]?.routingRole !==
+                        "assistant" &&
+                      settings.providerInstances[provider.instanceId]?.routingRole !== "excluded" &&
+                      settings.providerInstances[provider.instanceId]?.accountTier !== "paid-api",
+                  )
+                  .flatMap((provider) =>
+                    provider.models.map((model) => (
+                      <option
+                        key={`${provider.instanceId}:${model.slug}`}
+                        value={JSON.stringify([provider.instanceId, model.slug])}
+                      >
+                        {provider.displayName ?? provider.driver} · {model.name}
+                      </option>
+                    )),
+                  )}
+              </select>
+            }
+          />
+          <SettingsRow
+            title="Войти на сайты"
+            control={
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => void ensureLocalApi().shell.openExternal("https://chat.qwen.ai/")}
+              >
+                Открыть Qwen Web
+              </Button>
+            }
+          />
+        </SettingsSection>
+      ) : null}
 
       <UsageProviderSettings
         key={environmentId}
@@ -1298,6 +1502,13 @@ export function EnvironmentProviderSettings({
           environmentLabel={environmentLabel}
           onOpenChange={setIsAddInstanceDialogOpen}
           onCreated={setSelectedInstanceId}
+        />
+      ) : null}
+      {isAddCodexAccountOpen && !readOnly ? (
+        <AddManagedCodexAccountDialog
+          environmentId={environmentId}
+          onClose={() => setIsAddCodexAccountOpen(false)}
+          onAccountCreated={(instanceId) => setSelectedInstanceId(instanceId)}
         />
       ) : null}
     </>
@@ -1568,7 +1779,7 @@ function ProviderInstanceRow({
           ? () => actions.deleteInstance(instanceId, instance)
           : undefined
       }
-      onAddAccount={readOnly ? undefined : actions.openAddInstanceDialog}
+      onAddAccount={readOnly || driver === "codex" ? undefined : actions.openAddInstanceDialog}
       headerAction={
         mode === "editor" && isDefault && isDirty ? (
           <SettingResetButton

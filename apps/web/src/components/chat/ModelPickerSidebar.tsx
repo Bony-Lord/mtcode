@@ -1,7 +1,9 @@
 import { Toolbar } from "@base-ui/react/toolbar";
 import { type ProviderInstanceId } from "@t3tools/contracts";
 import { memo, useLayoutEffect, useRef, useState } from "react";
-import { StarIcon } from "lucide-react";
+import { StarIcon, GlobeIcon, LayersIcon, RouteIcon } from "lucide-react";
+import { MANUFACTURER_PROFILE_ID } from "./modelCatalogBrand";
+import { AUTO_PROFILE_ID } from "./ProviderModelPicker.logic";
 import { ProviderInstanceIcon } from "./ProviderInstanceIcon";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { cn } from "~/lib/utils";
@@ -28,6 +30,13 @@ function describeUnavailableInstance(entry: ProviderInstanceEntry): string {
 
 const PICKER_TOOLTIP_SIDE = "left" as const;
 const PICKER_TOOLTIP_SIDE_OFFSET = 8;
+const FREE_PROVIDER_TAB_LABELS = new Map([
+  ["opencode-free", "OpenCode"],
+  ["kilo-free", "Kilo"],
+  ["omniroute-free", "OmniRoute"],
+  ["web-ai", "Веб"],
+  ["qwen-free", "Qwen Code"],
+]);
 
 export const ModelPickerSidebar = memo(function ModelPickerSidebar(props: {
   selectedInstanceId: ProviderInstanceId | "favorites";
@@ -35,6 +44,7 @@ export const ModelPickerSidebar = memo(function ModelPickerSidebar(props: {
   onFocusSearch: () => void;
   instanceEntries: ReadonlyArray<ProviderInstanceEntry>;
   showFavorites?: boolean;
+  showAutomatic?: boolean;
   disabledInstanceIds?: ReadonlySet<ProviderInstanceId>;
   selectableUnavailableInstanceIds?: ReadonlySet<ProviderInstanceId>;
   getDisabledInstanceTooltip?: (entry: ProviderInstanceEntry) => string;
@@ -69,7 +79,12 @@ export const ModelPickerSidebar = memo(function ModelPickerSidebar(props: {
 
   return (
     <Toolbar.Root
-      className="w-11 shrink-0 overflow-hidden bg-muted/30"
+      className={cn(
+        "shrink-0 overflow-hidden bg-muted/30",
+        props.instanceEntries.some((entry) => FREE_PROVIDER_TAB_LABELS.has(entry.instanceId))
+          ? "w-16"
+          : "w-11",
+      )}
       data-model-picker-sidebar="true"
       aria-label="Providers"
       orientation="vertical"
@@ -84,6 +99,46 @@ export const ModelPickerSidebar = memo(function ModelPickerSidebar(props: {
     >
       <div className="h-full overflow-y-auto overscroll-contain [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
         <div ref={sidebarContentRef} className="relative flex min-h-full flex-col gap-1 p-1">
+          <div data-model-picker-provider={MANUFACTURER_PROFILE_ID}>
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <Toolbar.Button
+                    type="button"
+                    aria-label="Все модели по производителю"
+                    aria-pressed={props.selectedInstanceId === MANUFACTURER_PROFILE_ID}
+                    className="flex h-10 w-full cursor-pointer flex-col items-center justify-center gap-0.5 rounded-md hover:bg-foreground/10"
+                    onClick={() => handleSelect(MANUFACTURER_PROFILE_ID as ProviderInstanceId)}
+                  >
+                    <LayersIcon className="size-4" />
+                    <span className="text-3xs leading-none">Модели</span>
+                  </Toolbar.Button>
+                }
+              />
+              <TooltipPopup side="left">Все модели по производителю</TooltipPopup>
+            </Tooltip>
+          </div>
+          {props.showAutomatic ? (
+            <div data-model-picker-provider={AUTO_PROFILE_ID}>
+              <Tooltip>
+                <TooltipTrigger
+                  render={
+                    <Toolbar.Button
+                      type="button"
+                      aria-label="Авто · все провайдеры"
+                      aria-pressed={props.selectedInstanceId === AUTO_PROFILE_ID}
+                      className="flex h-9 w-full cursor-pointer flex-col items-center justify-center gap-0.5 rounded-md hover:bg-foreground/10"
+                      onClick={() => handleSelect(AUTO_PROFILE_ID)}
+                    >
+                      <RouteIcon className="size-4" />
+                      <span className="text-3xs leading-none">Авто</span>
+                    </Toolbar.Button>
+                  }
+                />
+                <TooltipPopup side="left">Автовыбор · все провайдеры</TooltipPopup>
+              </Tooltip>
+            </div>
+          ) : null}
           {selectedIndicatorTop !== null ? (
             <div
               data-model-picker-selected-indicator="true"
@@ -99,7 +154,7 @@ export const ModelPickerSidebar = memo(function ModelPickerSidebar(props: {
                     render={
                       <Toolbar.Button
                         className={cn(
-                          "relative isolate flex w-full cursor-pointer aspect-square items-center justify-center rounded-md transition-colors hover:bg-foreground/10 focus-visible:bg-foreground/10 focus-visible:outline-none",
+                          "relative isolate flex h-9 w-full cursor-pointer items-center justify-center rounded-md transition-colors hover:bg-foreground/10 focus-visible:bg-foreground/10 focus-visible:outline-none",
                         )}
                         onClick={() => handleSelect("favorites")}
                         type="button"
@@ -124,6 +179,7 @@ export const ModelPickerSidebar = memo(function ModelPickerSidebar(props: {
           ) : null}
 
           {props.instanceEntries.map((entry) => {
+            const tabLabel = FREE_PROVIDER_TAB_LABELS.get(entry.instanceId);
             const isUnavailable = !isProviderInstancePickerReady(entry);
             const isContextDisabled = props.disabledInstanceIds?.has(entry.instanceId) ?? false;
             const unavailableSelectionIsReachable =
@@ -143,7 +199,8 @@ export const ModelPickerSidebar = memo(function ModelPickerSidebar(props: {
             const button = (
               <Toolbar.Button
                 className={cn(
-                  "relative isolate flex w-full cursor-pointer aspect-square items-center justify-center rounded-md transition-colors hover:bg-foreground/10 focus-visible:bg-foreground/10 focus-visible:outline-none",
+                  "relative isolate flex h-9 w-full cursor-pointer items-center justify-center rounded-md transition-colors hover:bg-foreground/10 focus-visible:bg-foreground/10 focus-visible:outline-none",
+                  tabLabel && "h-auto min-h-10 flex-col gap-0.5 py-1",
                   isDisabled && "opacity-50 cursor-not-allowed hover:bg-transparent",
                 )}
                 data-provider-accent-color={entry.accentColor}
@@ -162,24 +219,31 @@ export const ModelPickerSidebar = memo(function ModelPickerSidebar(props: {
                 type="button"
                 aria-label={isUnavailable || isContextDisabled ? tooltip : entry.displayName}
               >
-                <ProviderInstanceIcon
-                  driverKind={entry.driverKind}
-                  displayName={entry.displayName}
-                  accentColor={entry.accentColor}
-                  acpRegistryAgentId={entry.acpRegistryAgentId}
-                  acpRegistryIconUrl={entry.acpRegistryIconUrl}
-                  showBadge={showInstanceBadge}
-                  className="size-6 z-30"
-                  iconClassName="size-5"
-                  indicatorBackground={
-                    isHovered && !isDisabled
-                      ? "var(--muted)"
-                      : isSelected
-                        ? "var(--background)"
-                        : "color-mix(in oklab, var(--muted) 30%, transparent)"
-                  }
-                  {...(entry.accentColor ? { badgeClassName: "h-3 min-w-3 px-0.5 text-5xs" } : {})}
-                />
+                {entry.instanceId === "web-ai" ? (
+                  <GlobeIcon className="size-5" aria-hidden="true" />
+                ) : (
+                  <ProviderInstanceIcon
+                    driverKind={entry.driverKind}
+                    displayName={entry.displayName}
+                    accentColor={entry.accentColor}
+                    acpRegistryAgentId={entry.acpRegistryAgentId}
+                    acpRegistryIconUrl={entry.acpRegistryIconUrl}
+                    showBadge={showInstanceBadge}
+                    className="size-6 z-30"
+                    iconClassName="size-5"
+                    indicatorBackground={
+                      isHovered && !isDisabled
+                        ? "var(--muted)"
+                        : isSelected
+                          ? "var(--background)"
+                          : "color-mix(in oklab, var(--muted) 30%, transparent)"
+                    }
+                    {...(entry.accentColor
+                      ? { badgeClassName: "h-3 min-w-3 px-0.5 text-5xs" }
+                      : {})}
+                  />
+                )}
+                {tabLabel ? <span className="text-3xs leading-none">{tabLabel}</span> : null}
               </Toolbar.Button>
             );
 

@@ -27,6 +27,7 @@ import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -224,6 +225,135 @@ const make = Effect.gen(function* () {
         normalizeProjectPathForComparison(input.expectedWorkspaceRoot)
     ) {
       return yield* new AgentSessionImportProjectChangedError({ projectId: input.projectId });
+    }
+    const copyLatestFromThreadId = input.copyLatestFromThreadId;
+    if (copyLatestFromThreadId) {
+      return yield* Effect.gen(function* () {
+        const originalId = ThreadId.make(copyLatestFromThreadId);
+        const original = yield* orchestrator
+          .getThreadRecords(originalId, ["runs"])
+          .pipe(
+            Effect.mapError(
+              (cause) => new AgentSessionScanError({ operation: "read-projects", cause }),
+            ),
+          );
+        if (original.thread.projectId !== input.projectId)
+          return yield* new AgentSessionThreadProjectConflictError({
+            threadId: originalId,
+            expectedProjectId: input.projectId,
+            actualProjectId: original.thread.projectId,
+          });
+        const runtime = yield* runtimes
+          .getByThreadId({ threadId: originalId })
+          .pipe(
+            Effect.mapError(
+              (cause) => new AgentSessionScanError({ operation: "read-projects", cause }),
+            ),
+          );
+        const imported = Option.isSome(runtime)
+          ? AgentSessionScanner.decodeImportedTranscriptPayload(runtime.value.runtimePayload)
+          : Option.none();
+        const source = Option.isSome(imported)
+          ? imported.value.importedTranscripts?.find(
+              (entry) => entry.provider === "codex" && !entry.filePath.endsWith(".zst"),
+            )
+          : undefined;
+        const fs = yield* Effect.serviceOption(FileSystem.FileSystem);
+        if (!source || Option.isNone(fs))
+          return yield* new AgentSessionScanError({
+            operation: "read-projects",
+            cause: "Нет исходного JSONL для обновлённой копии чата.",
+          });
+        const stat = yield* fs.value
+          .stat(source.filePath)
+          .pipe(
+            Effect.mapError(
+              (cause) => new AgentSessionScanError({ operation: "read-projects", cause }),
+            ),
+          );
+        const contents =
+          Number(stat.size) > 128 * 1024 * 1024
+            ? undefined
+            : yield* fs.value
+                .readFileString(source.filePath)
+                .pipe(
+                  Effect.mapError(
+                    (cause) => new AgentSessionScanError({ operation: "read-projects", cause }),
+                  ),
+                );
+        const transcript =
+          contents === undefined
+            ? yield* scanner.readCopy(source)
+            : AgentSessionScanner.parseAgentSessionTranscript({
+                contents,
+                source: "codex",
+                providerInstanceId: source.providerInstanceId,
+                fallbackSessionId: source.providerSessionId,
+                lastActiveAtMs: DateTime.toEpochMillis(yield* DateTime.now),
+                maxMessages: 10_000,
+              });
+        if (!transcript || transcript.omittedMessageCount > 0)
+          return yield* new AgentSessionScanError({
+            operation: "read-projects",
+            cause: "Полная копия не сформирована; исходный чат сохранён.",
+          });
+        const threadId = ThreadId.make(`${originalId}:latest-copy`);
+        const now = yield* DateTime.now;
+        return yield* threadCommands.withLock(
+          threadId,
+          Effect.gen(function* () {
+            const existing = yield* orchestrator
+              .getThreadRecords(threadId, ["runs", "messages"])
+              .pipe(Effect.option);
+            if (
+              Option.isSome(existing) &&
+              (existing.value.runs.length > 0 ||
+                existing.value.thread.historyOrigin !== "v1_import" ||
+                existing.value.messages.length > transcript.messages.length)
+            )
+              return yield* new AgentSessionThreadModifiedError({ threadId });
+            const fingerprint = `${stat.size}:${DateTime.toEpochMillis(now)}`;
+            const thread: OrchestrationV2AppThread = {
+              ...original.thread,
+              id: threadId,
+              title: `${original.thread.title} · актуальная копия`,
+              activeProviderThreadId: null,
+              historyOrigin: "v1_import",
+              lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: threadId },
+              forkedFrom: null,
+              createdAt: original.thread.createdAt,
+              updatedAt: now,
+              archivedAt: null,
+              deletedAt: null,
+              settledOverride: "settled",
+              settledAt: now,
+            };
+            yield* eventSink.write({
+              events: [
+                {
+                  id: EventId.make(`import-copy:${threadId}:${fingerprint}`),
+                  type: Option.isSome(existing) ? "thread.metadata-updated" : "thread.created",
+                  threadId,
+                  providerInstanceId: thread.providerInstanceId,
+                  occurredAt: now,
+                  payload: thread,
+                },
+                ...transcript.messages.flatMap((message, index) =>
+                  messageEvents({ threadId, message, index }).map((event) => ({
+                    ...event,
+                    id: EventId.make(`${event.id}:${fingerprint}`),
+                  })),
+                ),
+              ],
+            });
+            return { importedCount: 1, skippedCount: 0 };
+          }),
+        );
+      }).pipe(
+        Effect.mapError(
+          (cause) => new AgentSessionScanError({ operation: "read-projects", cause }),
+        ),
+      );
     }
     // Imports run in full access, except under a policy ceiling: then in the project's default,
     // which the policy keeps under it, so imported threads never sit above the ceiling.

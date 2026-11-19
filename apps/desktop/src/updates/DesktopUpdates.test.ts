@@ -364,7 +364,7 @@ describe("DesktopUpdates", () => {
     ).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer)));
   });
 
-  it.effect("does not poll for another update while automatically restarting", () => {
+  it.effect("does not install a downloaded update until the user requests it", () => {
     const harness = makeHarness();
     return Effect.scoped(
       Effect.gen(function* () {
@@ -372,8 +372,7 @@ describe("DesktopUpdates", () => {
         yield* updates.configure;
         harness.emit("update-downloaded", { version: "1.2.4" });
         yield* flushCallbacks;
-        assert.isFalse((yield* updates.check("poll")).checked);
-        assert.equal(harness.quitAndInstalls(), 1);
+        assert.equal(harness.quitAndInstalls(), 0);
         assert.equal((yield* updates.getState).downloadedVersion, "1.2.4");
       }),
     ).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer)));

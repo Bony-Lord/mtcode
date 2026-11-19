@@ -6,6 +6,8 @@ import type {
   ManagedPolicyDocument,
   ProviderDriverKind,
   ProviderReplayTranscript,
+  ServerProvider,
+  ServerSettings as ServerSettingsType,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -21,6 +23,7 @@ import * as CheckpointStore from "../../checkpointing/CheckpointStore.ts";
 import * as ServerConfig from "../../config.ts";
 import * as SqlitePersistence from "../../persistence/Sqlite.ts";
 import * as ServerSettings from "../../serverSettings.ts";
+import * as RoutingProviderRegistry from "../../provider/ProviderRegistry.ts";
 import * as ManagedPolicy from "../../policy/ManagedPolicy.ts";
 import * as ThreadManagementService from "../ThreadManagementService.ts";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
@@ -206,6 +209,8 @@ export function runOrchestratorV2ProviderReplayScenario<
     readonly runContinuationWorker?: boolean;
     readonly recoverOnStartup?: boolean;
     readonly continueThreadsAfterServerUpdate?: boolean;
+    readonly routingProviders?: readonly ServerProvider[];
+    readonly providerInstances?: ServerSettingsType["providerInstances"];
     readonly managedPolicy?: ManagedPolicyDocument;
   } = {},
 ): Effect.Effect<
@@ -280,6 +285,8 @@ export function layerWithRegistry<Error>(
       MigrationError | PlatformError.PlatformError | SqlError
     >;
     readonly runEffectWorker?: boolean;
+    readonly routingProviders?: readonly ServerProvider[];
+    readonly providerInstances?: ServerSettingsType["providerInstances"];
     readonly runContinuationWorker?: boolean;
     readonly recoverOnStartup?: boolean;
     readonly continueThreadsAfterServerUpdate?: boolean;
@@ -321,6 +328,7 @@ export function layerWithRegistry<Error>(
       ServerSettings.layerTest(
         {
           responseStreamingMode: "turn",
+          ...(options.providerInstances ? { providerInstances: options.providerInstances } : {}),
           ...(options.continueThreadsAfterServerUpdate === undefined
             ? {}
             : { continueThreadsAfterServerUpdate: options.continueThreadsAfterServerUpdate }),
@@ -511,6 +519,13 @@ export function layerWithRegistry<Error>(
         layerRunExecutionServiceProvided,
         layerServerSettings,
         ThreadForkService.layer,
+        ...(options.routingProviders
+          ? [
+              Layer.mock(RoutingProviderRegistry.ProviderRegistry)({
+                getProviders: Effect.succeed(options.routingProviders),
+              }),
+            ]
+          : []),
       ),
     ),
   );

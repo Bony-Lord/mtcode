@@ -3,7 +3,7 @@ import { isMacPlatform } from "@t3tools/shared/keybindings";
 import { type CxOptions, cx } from "class-variance-authority";
 import * as Hex from "effect/encoding/Hex";
 import { extendTailwindMerge } from "tailwind-merge";
-import { DraftId } from "../composerDraftStore";
+import type { DraftId } from "../composerDraftStore";
 
 // Register extra font sizes and background images so tailwind-merge does not
 // treat text-2xs or bg-composer-seam-below as colors.
@@ -50,7 +50,7 @@ export const newProjectId = (): ProjectId => ProjectId.make(randomUUID());
 
 export const newThreadId = (): ThreadId => ThreadId.make(randomUUID());
 
-export const newDraftId = (): DraftId => DraftId.make(randomUUID());
+export const newDraftId = (): DraftId => randomUUID() as DraftId;
 
 export const newCommandId = (): CommandId => CommandId.make(randomUUID());
 

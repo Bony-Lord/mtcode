@@ -1,4 +1,5 @@
 import { pipe } from "effect/Function";
+import { parseElicitationForm } from "@t3tools/provider-acp/server/elicitationForm";
 import * as DocumentText from "../../provider/DocumentText.ts";
 import { revertCodexThread } from "../../provider/CodexThreadRevert.ts";
 import { historyResponseItems } from "@t3tools/provider-core/server/handoffBudget";
@@ -896,7 +897,22 @@ export const buildCodexTurnStartParams = Effect.fn("CodexAdapterV2.buildCodexTur
       summary: input.configuredReasoningSummary ?? "auto",
       // Omitting the reviewer on resume preserves the previous Auto reviewer.
       approvalsReviewer: runtimeModeDefaults.approvalsReviewer,
-      ...(approvalPolicy === undefined ? {} : { approvalPolicy }),
+      ...(approvalPolicy === undefined
+        ? {}
+        : {
+            approvalPolicy:
+              approvalPolicy === "never" && input.hasT3Mcp
+                ? {
+                    granular: {
+                      sandbox_approval: false,
+                      rules: false,
+                      skill_approval: false,
+                      request_permissions: false,
+                      mcp_elicitations: true,
+                    },
+                  }
+                : approvalPolicy,
+          }),
       ...(sandboxPolicy === undefined ? {} : { sandboxPolicy }),
       ...(effort === undefined ? {} : { effort }),
       ...(serviceTier === undefined ? {} : { serviceTier }),
@@ -1587,8 +1603,7 @@ function codexThreadRuntimeParams(input: {
     ...(input.modelSelection === undefined
       ? {}
       : {
-          model:
-            input.modelSelection.model === "auto" ? DEFAULT_MODEL : input.modelSelection.model,
+          model: input.modelSelection.model === "auto" ? DEFAULT_MODEL : input.modelSelection.model,
         }),
     config: {
       ...CODEX_THREAD_CONFIG,
@@ -1613,6 +1628,13 @@ function codexThreadRuntimeParams(input: {
   };
 }
 
+const decodeMtQuestionChoices = Schema.decodeUnknownOption(
+  Schema.Struct({
+    mt_question_choices: Schema.Array(Schema.String.check(Schema.isMaxLength(200))).check(
+      Schema.isMaxLength(6),
+    ),
+  }),
+);
 const decodeCodexResumeMetadata = Schema.decodeUnknownEffect(
   Schema.Struct({ thread: Schema.Struct({ id: Schema.String, updatedAt: Schema.Number }) }),
 );
@@ -6186,6 +6208,81 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
 
         yield* client.handleServerRequest("mcpServer/elicitation/request", (payload) =>
           Effect.gen(function* () {
+            if (payload.mode !== "url" && payload.message.startsWith("[MT question] ")) {
+              const choices = decodeMtQuestionChoices(payload._meta);
+              const requestedSchema =
+                Option.isSome(choices) && choices.value.mt_question_choices.length
+                  ? {
+                      type: "object",
+                      properties: {
+                        answer: {
+                          type: "string",
+                          title: "Ответ",
+                          description: payload.message.slice(14),
+                          enum: choices.value.mt_question_choices,
+                        },
+                        answer__other: { type: "string", title: "Свой ответ" },
+                      },
+                      required: [],
+                    }
+                  : payload.requestedSchema;
+              const form = parseElicitationForm(requestedSchema, payload.message.slice(14));
+              const context = payload.turnId ? yield* awaitActiveTurn(payload.turnId) : undefined;
+              if (!form || !context || form.questions.length === 0)
+                return {
+                  action: "decline",
+                } satisfies CodexSchema.McpServerElicitationRequestResponse;
+              const nativeId = `mt-question:${context.providerTurnId}:${DateTime.toEpochMillis(yield* DateTime.now)}`;
+              const artifacts = yield* buildUserInputRequestArtifacts({
+                context,
+                nativeItemId: nativeId,
+                nativeRequestId: nativeId,
+                questions: form.questions.map((question) => ({
+                  id: question.id,
+                  header: question.header,
+                  question: question.question,
+                  isOther: true,
+                  isSecret: false,
+                  options: question.options.map((option) => ({
+                    label: option.label,
+                    description: option.description ?? option.label,
+                  })),
+                })),
+              });
+              const answers = yield* Deferred.make<ProviderUserInputAnswers>();
+              yield* Ref.update(pendingRuntimeRequests, (current) =>
+                new Map(current).set(String(artifacts.request.id), { type: "user_input", answers }),
+              );
+              yield* emitProviderEvent({
+                type: "node.updated",
+                driver: CODEX_PROVIDER,
+                node: artifacts.node,
+              });
+              yield* emitProviderEvent({
+                type: "turn_item.updated",
+                driver: CODEX_PROVIDER,
+                turnItem: artifacts.turnItem,
+              });
+              yield* emitProviderEvent({
+                type: "runtime_request.updated",
+                driver: CODEX_PROVIDER,
+                threadId: artifacts.node.threadId,
+                runtimeRequest: artifacts.request,
+              });
+              const resolved = yield* Deferred.await(answers).pipe(
+                Effect.ensuring(
+                  Ref.update(pendingRuntimeRequests, (current) => {
+                    const next = new Map(current);
+                    next.delete(String(artifacts.request.id));
+                    return next;
+                  }),
+                ),
+              );
+              const content = form.content(resolved);
+              return (
+                content ? { action: "accept", content } : { action: "decline" }
+              ) satisfies CodexSchema.McpServerElicitationRequestResponse;
+            }
             if (toMcpElicitationResponse(payload, "accept").action !== "accept") {
               yield* Effect.logWarning("Declined an unsupported MCP elicitation.", {
                 serverName: payload.serverName,
@@ -6208,6 +6305,15 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 action: "decline",
               } satisfies CodexSchema.McpServerElicitationRequestResponse;
             }
+
+            if (
+              context.input.runtimePolicy.runtimeMode === "full-access" &&
+              (payload.serverName === "t3-code" || payload.serverName === "t3-code-direct") &&
+              /^Allow the t3-code(?:-direct)? MCP server to run tool "[\w-]+"\?$/.test(
+                payload.message,
+              )
+            )
+              return toMcpElicitationResponse(payload, "acceptForSession");
 
             const nativeRequestId =
               payload.mode === "url"
@@ -8282,10 +8388,21 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 yield* client.request("thread/archive", { threadId: nativeThreadId });
               } else {
                 // A resume may already wait on the pending entry; replacing it would strand that wait.
-                if (!threadClosings.has(nativeThreadId)) {
-                  threadClosings.set(nativeThreadId, yield* Deferred.make<void>());
+                let closing = threadClosings.get(nativeThreadId);
+                const wasClosing = closing !== undefined;
+                if (closing === undefined) {
+                  closing = yield* Deferred.make<void>();
+                  threadClosings.set(nativeThreadId, closing);
                 }
-                yield* client.request("thread/unsubscribe", { threadId: nativeThreadId });
+                const { status } = yield* client.request("thread/unsubscribe", {
+                  threadId: nativeThreadId,
+                });
+                if (status === "notLoaded" || (status === "notSubscribed" && !wasClosing)) {
+                  threadClosings.delete(nativeThreadId);
+                  yield* Deferred.succeed(closing, undefined);
+                } else if (unloadInput.waitForClose === true) {
+                  yield* Deferred.await(closing);
+                }
               }
               // No turn/completed arrives for an unloaded thread, so a Stop Codex never
               // confirmed would otherwise keep its turn open for the life of the session.

@@ -641,11 +641,11 @@ function ProjectDetail({
                 }
               />
               <SettingsRow
-                title="Archive"
+                title="Архив проекта"
                 description={
                   group.archived
-                    ? "Hidden from project pickers. Threads and files are kept."
-                    : "Hides the project from project pickers. Threads and files are kept."
+                    ? "Проект скрыт из списка выбора. Чаты и файлы сохранены."
+                    : "Убирает проект из списка выбора, сохраняя чаты и файлы."
                 }
                 control={
                   <Button
@@ -656,12 +656,12 @@ function ProjectDetail({
                       void organize(
                         { archived: !group.archived },
                         group.archived
-                          ? "Failed to unarchive project"
-                          : "Failed to archive project",
+                          ? "Не удалось восстановить проект"
+                          : "Не удалось архивировать проект",
                       )
                     }
                   >
-                    {group.archived ? "Unarchive" : "Archive"}
+                    {group.archived ? "Восстановить" : "Архивировать"}
                   </Button>
                 }
               />

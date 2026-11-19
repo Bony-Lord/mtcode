@@ -2,6 +2,7 @@ import { settlePromise } from "@t3tools/client-runtime/state/runtime";
 import { useState } from "react";
 
 import { APP_BASE_NAME } from "~/branding";
+import { isElectron } from "../../env";
 
 import {
   hasDesktopNotifications,
@@ -16,6 +17,16 @@ import { useScopedSettings, useUpdateScopedSettings } from "./useScopedSettings"
 
 export function NotificationSettings() {
   const mode = useScopedSettings((settings) => settings.notificationMode);
+  const desktopNotifications = useScopedSettings((settings) => settings.desktopNotifications);
+  const displayedMode = isElectron
+    ? desktopNotifications.enabled
+      ? hasNotificationSound(mode) || desktopNotifications.soundEnabled
+        ? "notifications-and-sound"
+        : "notifications"
+      : hasNotificationSound(mode)
+        ? "sound"
+        : "off"
+    : mode;
   const updateSettings = useUpdateScopedSettings();
   const [permissionMessage, setPermissionMessage] = useState<string | null>(null);
   const [requesting, setRequesting] = useState(false);
@@ -29,7 +40,7 @@ export function NotificationSettings() {
       }
       control={
         <Select
-          value={mode}
+          value={displayedMode}
           disabled={requesting}
           onValueChange={async (value) => {
             if (
@@ -41,6 +52,18 @@ export function NotificationSettings() {
               return;
             setPermissionMessage(null);
             if (hasNotificationSound(value)) unlockNotificationAudio();
+            if (isElectron) {
+              updateSettings({
+                notificationMode: hasNotificationSound(value) ? "sound" : "off",
+                desktopNotifications: {
+                  ...desktopNotifications,
+                  enabled: hasDesktopNotifications(value),
+                  // The thread coordinator plays the selected sound once.
+                  soundEnabled: false,
+                },
+              });
+              return;
+            }
             if (hasDesktopNotifications(value)) {
               if (typeof Notification === "undefined" || !window.isSecureContext) {
                 setPermissionMessage(
@@ -68,7 +91,7 @@ export function NotificationSettings() {
           }}
         >
           <SelectTrigger size="sm" className="w-full sm:w-56" aria-label="Thread notifications">
-            <SelectValue>{NOTIFICATION_MODE_LABELS[mode]}</SelectValue>
+            <SelectValue>{NOTIFICATION_MODE_LABELS[displayedMode]}</SelectValue>
           </SelectTrigger>
           <SelectPopup align="end" alignItemWithTrigger={false}>
             {Object.entries(NOTIFICATION_MODE_LABELS).map(([value, label]) => (

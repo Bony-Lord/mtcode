@@ -138,6 +138,18 @@ describe("handoff budget", () => {
     assert.equal(command?.kind, "command_execution");
     assert.include(command!.text, "Exit code: 1");
     assert.include(command!.text, "界".repeat(300));
+    const longOutput = "Started\n" + "x".repeat(15_000) + "\nFailed at the end";
+    const excerpt = historicalMessage({
+      ...base,
+      type: "command_execution",
+      input: "vp test",
+      output: longOutput,
+      exitCode: 1,
+    });
+    assert.equal(excerpt?.itemId, base.id);
+    assert.include(excerpt!.text, "Started");
+    assert.include(excerpt!.text, "Failed at the end");
+    assert.isBelow(excerpt!.text.length, 2400);
     assert.equal(
       historicalMessage({
         ...base,

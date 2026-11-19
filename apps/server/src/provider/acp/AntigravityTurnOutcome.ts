@@ -115,6 +115,15 @@ function turnFailure(
   if (errorText === undefined && stopReason !== "refusal") return undefined;
   const text = errorText ?? "";
   const apiError = API_ERROR.exec(text);
+  if (/User location is not supported for the API use/i.test(text)) {
+    return makeProviderFailure({
+      class: "provider_error",
+      code: "LOCATION_UNSUPPORTED",
+      retryable: false,
+      message:
+        "Google отклонил запрос: текущий регион не поддерживается. Повторный вход и ожидание сброса квоты не устраняют этот отказ.",
+    });
+  }
   if (stopReason === "refusal" || QUOTA_EXHAUSTED.test(text)) {
     return makeProviderFailure({
       class: "usage_limit",

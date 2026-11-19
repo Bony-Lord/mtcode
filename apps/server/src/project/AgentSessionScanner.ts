@@ -142,6 +142,7 @@ const TranscriptRecord = Schema.Struct({
       session_id: Schema.optional(Schema.String),
       type: Schema.optional(Schema.String),
       role: Schema.optional(Schema.String),
+      channel: Schema.optional(Schema.String),
       message: Schema.optional(Schema.String),
       model: Schema.optional(Schema.String),
       cwd: Schema.optional(Schema.String),
@@ -239,6 +240,9 @@ export class AgentSessionScanner extends Context.Service<
       workspaceRoot: string,
       completedSources?: ReadonlyArray<AgentSessionImportSource>,
     ) => Stream.Stream<AgentSessionRecentThread, AgentSessionScanError>;
+    readonly readCopy: (
+      source: AgentSessionImportSource,
+    ) => Effect.Effect<AgentSessionThread | null>;
   }
 >()("t3/project/AgentSessionScanner") {}
 
@@ -439,6 +443,7 @@ function isPiConversationRecord(
 export function parseAgentSessionTranscript(
   input: AgentSessionTranscriptMetadata & {
     readonly contents: string;
+    readonly maxMessages?: number;
   },
   lines = splitTranscriptRecords(input.contents, MAX_IMPORT_RECORDS + 1),
 ): AgentSessionThread | null {
@@ -453,7 +458,7 @@ export function parseAgentSessionTranscript(
 }
 
 function parseAgentSessionRecords(
-  input: AgentSessionTranscriptMetadata,
+  input: AgentSessionTranscriptMetadata & { readonly maxMessages?: number },
   records: ReadonlyArray<DecodedTranscriptRecord>,
   claudeFields: ClaudeFields,
   droppedMessageCount: number,
@@ -544,7 +549,7 @@ function parseAgentSessionRecords(
     }
     conversationMessageCount += 1;
     messages.push(message);
-    if (messages.length > MAX_IMPORTED_MESSAGES) messages.shift();
+    if (messages.length > (input.maxMessages ?? MAX_IMPORTED_MESSAGES)) messages.shift();
   };
 
   const hasMatchingCodexEventInTurn = (text: string) => {
@@ -629,7 +634,8 @@ function parseAgentSessionRecords(
     if (
       record.type !== "response_item" ||
       record.payload?.type !== "message" ||
-      (record.payload.role !== "user" && record.payload.role !== "assistant")
+      (record.payload.role !== "user" && record.payload.role !== "assistant") ||
+      (record.payload.role === "assistant" && record.payload.channel === "analysis")
     ) {
       continue;
     }
@@ -659,7 +665,10 @@ function parseAgentSessionRecords(
   const { codexResponseUser: _codexResponseUser, ...visibleFirstUserMessage } = firstUserMessage;
   const retainedMessages = firstUserMessageRetained
     ? visibleMessages
-    : [visibleFirstUserMessage, ...visibleMessages.slice(-(MAX_IMPORTED_MESSAGES - 1))];
+    : [
+        visibleFirstUserMessage,
+        ...visibleMessages.slice(-((input.maxMessages ?? MAX_IMPORTED_MESSAGES) - 1)),
+      ];
 
   return {
     source: input.source,
@@ -703,6 +712,7 @@ function shouldRetainDecodedRecord(
     (record.type === "event_msg" && record.payload?.type === "user_message") ||
     (record.type === "response_item" &&
       record.payload?.type === "message" &&
+        record.payload.channel !== "analysis" &&
       (record.payload.role === "user" || record.payload.role === "assistant"))
   );
 }
@@ -2290,7 +2300,32 @@ export const make = Effect.gen(function* () {
     completedSources = [],
   ) => Stream.unwrap(prepareRecentThreads(workspaceRoot, completedSources));
 
-  return AgentSessionScanner.of({ scan, recentThreads });
+  const readCopy = Effect.fn("AgentSessionScanner.readCopy")(function* (
+    source: AgentSessionImportSource,
+  ) {
+    const stat = yield* statOption(source.filePath);
+    if (Option.isNone(stat)) return null;
+    const snapshot = yield* readTranscript(
+      source.filePath,
+      transcriptIdentity(source.filePath, stat.value),
+      source.provider,
+    );
+    if (!snapshot) return null;
+    const result = parseAgentSessionRecords(
+      {
+        source: source.provider,
+        providerInstanceId: source.providerInstanceId,
+        fallbackSessionId: source.providerSessionId,
+        lastActiveAtMs: DateTime.toEpochMillis(yield* DateTime.now),
+        maxMessages: 10_000,
+      },
+      snapshot.records,
+      snapshot.claudeFields,
+      snapshot.droppedMessageCount,
+    );
+    return result === "empty" ? null : result;
+  });
+  return AgentSessionScanner.of({ scan, recentThreads, readCopy });
 });
 
 export const layer = Layer.effect(AgentSessionScanner, make).pipe(

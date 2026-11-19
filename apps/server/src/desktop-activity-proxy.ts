@@ -41,22 +41,29 @@ export const isComputerControlTool = (name: unknown): boolean =>
 export function runDesktopActivityProxy(binary: string, args: readonly string[] = []): void {
   const environment = { ...process.env };
   delete environment.ELECTRON_RUN_AS_NODE;
-  const child = NodeChildProcess.spawn(binary, args, {
-    env: environment,
-    shell: false,
-    windowsHide: true,
-    stdio: ["pipe", "pipe", "pipe"],
-  });
   const scopeId = NodeCrypto.randomUUID();
   const pipe =
     process.env.MTCODE_DESKTOP_REMOTE_CONTROL === "1"
       ? undefined
       : process.env.MTCODE_ACTIVITY_PIPE;
-  const running = new Set<string | number>(),
-    denied = new Set<string | number>();
+  type Child = ReturnType<typeof spawn>;
+  type RpcId = string | number;
+  const running = new Set<RpcId>();
+  const forwarded = new Map<RpcId, string | undefined>();
+  const spawn = () =>
+    NodeChildProcess.spawn(binary, args, {
+      env: environment,
+      shell: false,
+      windowsHide: true,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+  let child: Child | undefined;
+  let initialize: Record<string, unknown> | undefined;
+  let initialized: string | undefined;
+  let escapeVersion = 0;
+  let closed = false;
   let socket: NodeNet.Socket | undefined, connection: Promise<void> | undefined;
-  let sequence = 0,
-    escaped = false;
+  let sequence = 0;
   const requests = new Map<
     number,
     {
@@ -73,7 +80,19 @@ export function runDesktopActivityProxy(binary: string, args: readonly string[] 
       result: { isError: true, content: [{ type: "text", text: message }] },
     });
   const stopped =
-    "Пользователь остановил управление клавишей Esc. Не повторяйте команды ПК и браузера и не обходите паузу. Продолжение возможно только после явного разрешения пользователя в настройках.";
+    "Пользователь остановил управление клавишей Esc. Не повторяйте команды ПК и браузера и не обходите паузу. Пользователь может снять паузу в поле ввода чата.";
+  const rejectRequest = (id: RpcId, method: string | undefined, message: string) => {
+    if (method === "tools/call") refuse(id, message);
+    else output({ jsonrpc: "2.0", id, error: { code: -32000, message } });
+  };
+  const stopChild = (message: string) => {
+    const previous = child;
+    child = undefined;
+    previous?.kill();
+    for (const [id, method] of forwarded) rejectRequest(id, method, message);
+    forwarded.clear();
+    running.clear();
+  };
   const connect = (): Promise<void> => {
     if (!pipe) return Promise.resolve();
     if (connection) return connection;
@@ -83,6 +102,10 @@ export function runDesktopActivityProxy(binary: string, args: readonly string[] 
       socket.once("error", reject);
       socket.on("close", () => {
         connection = undefined;
+        if (running.size > 0) {
+          escapeVersion++;
+          stopChild("Activity bridge disconnected");
+        }
         for (const request of requests.values()) {
           clearTimeout(request.timer);
           request.reject(Error("Activity bridge disconnected"));
@@ -97,13 +120,8 @@ export function runDesktopActivityProxy(binary: string, args: readonly string[] 
           return;
         }
         if (message.event === "escape") {
-          escaped = true;
-          for (const id of running) {
-            refuse(id, stopped);
-            denied.add(id);
-          }
-          running.clear();
-          child.kill();
+          escapeVersion++;
+          stopChild(stopped);
           return;
         }
         const request = message.id === undefined ? undefined : requests.get(message.id);
@@ -132,6 +150,59 @@ export function runDesktopActivityProxy(binary: string, args: readonly string[] 
   const heartbeat = setInterval(() => {
     if (running.size) void notify("active").catch(() => {});
   }, 1000);
+  const startChild = (reinitialize: boolean): Promise<Child> => {
+    const native = spawn();
+    child = native;
+    const replayId = reinitialize && initialize ? `mtcode-${NodeCrypto.randomUUID()}` : undefined;
+    return new Promise<Child>((resolve, reject) => {
+      const fail = (cause: Error) => {
+        clearTimeout(timer);
+        if (child === native) {
+          const wasRunning = running.size > 0;
+          stopChild(cause.message);
+          if (wasRunning) void notify("waiting").catch(() => {});
+        }
+        reject(cause);
+      };
+      const timer = replayId
+        ? setTimeout(() => fail(Error("Desktop helper initialization timed out")), 5000)
+        : undefined;
+      native.stdin.on("error", fail);
+      native.on("error", fail);
+      native.on("exit", () => {
+        clearTimeout(timer);
+        fail(Error("Desktop helper stopped"));
+      });
+      native.stderr.pipe(process.stderr);
+      NodeReadline.createInterface({ input: native.stdout, crlfDelay: Infinity }).on(
+        "line",
+        (line) => {
+          if (child !== native) return;
+          try {
+            const response = JSON.parse(line);
+            if (replayId !== undefined && response.id === replayId) {
+              clearTimeout(timer);
+              if (response.error || !response.result)
+                fail(Error("Desktop helper could not reconnect"));
+              else {
+                if (initialized) native.stdin.write(`${initialized}\n`);
+                resolve(native);
+              }
+              return;
+            }
+            forwarded.delete(response.id);
+            if (running.delete(response.id) && running.size === 0)
+              void notify("waiting").catch(() => {});
+          } catch {
+            /* Preserve native protocol diagnostics. */
+          }
+          process.stdout.write(`${line}\n`);
+        },
+      );
+      if (replayId === undefined) resolve(native);
+      else native.stdin.write(`${JSON.stringify({ ...initialize, id: replayId })}\n`);
+    });
+  };
   let inputQueue = Promise.resolve();
   const input = NodeReadline.createInterface({ input: process.stdin, crlfDelay: Infinity });
   input.on("line", (line) => {
@@ -145,76 +216,72 @@ export function runDesktopActivityProxy(binary: string, args: readonly string[] 
         try {
           request = JSON.parse(line);
         } catch {
-          child.stdin.write(`${line}\n`);
           return;
         }
+        const version = escapeVersion;
+        if (request.method === "initialize") initialize = request;
+        if (request.method === "notifications/initialized") initialized = line;
+        let control = false;
         if (request.method === "tools/call") {
           const isAppState = request.params?.name === "get_app_state";
           const args = request.params?.arguments;
-          const control =
+          control =
             isComputerControlTool(request.params?.name) ||
             (isAppState && args?.ocr !== undefined && args.ocr !== "never");
           if (isAppState && request.params && args?.ocr === undefined) {
             request.params.arguments = { ...args, ocr: "never" };
             line = JSON.stringify(request);
           }
-          try {
-            const permission = escaped
-              ? { ok: false, message: stopped }
-              : await notify(control ? "prepare" : "check");
-            if (!permission.ok) {
-              refuse(request.id, permission.message ?? stopped);
+        }
+        try {
+          if ((!child && request.method !== "initialize") || request.method === "tools/call") {
+            const permission = await notify("check");
+            if (!permission.ok || version !== escapeVersion) {
+              if (request.id !== undefined)
+                rejectRequest(request.id, request.method, permission.message ?? stopped);
               return;
             }
-          } catch {
-            refuse(
-              request.id,
-              "Не удалось подключить предупреждение и Esc. Управление не началось. Проверьте, что MT Code запущен.",
-            );
-            return;
           }
-          if (escaped) {
+          if (closed) return;
+          const native = child ?? (await startChild(request.method !== "initialize"));
+          if (control && !(await notify("prepare")).ok) {
             refuse(request.id, stopped);
             return;
           }
-          if (control && request.id !== undefined) running.add(request.id);
+          if (closed) return;
+          if (version !== escapeVersion || child !== native) {
+            if (request.id !== undefined) rejectRequest(request.id, request.method, stopped);
+            return;
+          }
+          if (request.id !== undefined) {
+            forwarded.set(request.id, request.method);
+            if (control) running.add(request.id);
+          }
+          native.stdin.write(`${line}\n`);
+        } catch (error) {
+          if (request.id !== undefined)
+            rejectRequest(
+              request.id,
+              request.method,
+              version === escapeVersion ? String(error) : stopped,
+            );
         }
-        if (!child.stdin.destroyed) child.stdin.write(`${line}\n`);
       })
       .catch(() => {});
   });
-  NodeReadline.createInterface({ input: child.stdout, crlfDelay: Infinity }).on("line", (line) => {
-    try {
-      const response = JSON.parse(line);
-      if (denied.has(response.id)) return;
-      if (response.id !== undefined && running.delete(response.id) && running.size === 0)
-        void notify("waiting").catch(() => {});
-    } catch {
-      /* Preserve native protocol diagnostics. */
-    }
-    process.stdout.write(`${line}\n`);
-  });
-  child.stderr.pipe(process.stderr);
   const close = () => {
+    if (closed) return;
+    closed = true;
     clearInterval(heartbeat);
     input.close();
     socket?.destroy();
-    if (!child.killed) child.kill();
+    const previous = child;
+    child = undefined;
+    previous?.kill();
   };
   process.once("SIGTERM", close);
   process.once("SIGINT", close);
-  input.once("close", () => {
-    if (!child.killed) child.kill();
-  });
-  child.once("error", (error) => {
-    process.stderr.write(`${error.message}\n`);
-    close();
-    process.exitCode = 1;
-  });
-  child.once("exit", (code) => {
-    close();
-    process.exit(escaped ? 0 : (code ?? 0));
-  });
+  input.once("close", close);
 }
 if (
   process.argv[1] &&

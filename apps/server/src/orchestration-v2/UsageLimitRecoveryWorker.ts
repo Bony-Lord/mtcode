@@ -5,6 +5,7 @@ import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
 import * as Option from "effect/Option";
 import { availableAccountForModel } from "@t3tools/shared/providerAccountControl";
+import { isSmartModel, selectSmartModel } from "@t3tools/shared/smartModelRouting";
 import { resolveProjectProviderInstanceEnabled } from "@t3tools/contracts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import type { OrchestrationV2DomainEvent } from "@t3tools/contracts";
@@ -128,6 +129,7 @@ const makeSweep = Effect.gen(function* () {
     const candidates = yield* projections.getLimitRecoveryCandidates({
       now,
       autoResume: preferences.autoResumeLimitedThreads || preferences.autoSwitchLimitedAccounts,
+      autoSwitchAccounts: preferences.autoSwitchLimitedAccounts,
       snooze: preferences.snoozeLimitedThreads,
     });
     let acted = false;
@@ -136,10 +138,14 @@ const makeSweep = Effect.gen(function* () {
         const shell = yield* projections.getThreadShell(thread.id);
         if (
           shell?.status === "failed" &&
-          shell.lastErrorClass === "usage_limit" &&
+          (shell.lastErrorClass === "usage_limit" ||
+            (isSmartModel(shell.modelSelection.model) &&
+              (shell.lastErrorClass === "transport_error" ||
+                shell.lastErrorClass === "provider_error"))) &&
           shell.latestRunId &&
           shell.archivedAt === null &&
           shell.settledOverride !== "settled" &&
+          (shell.snoozedUntil == null || DateTime.toEpochMillis(shell.snoozedUntil) <= nowMs) &&
           shell.pendingRuntimeRequest === null
         ) {
           const providers = yield* providerRegistry.value.getProviders;
@@ -151,15 +157,26 @@ const makeSweep = Effect.gen(function* () {
           if (attempted.size > 1000) attempted.delete(attempted.keys().next().value!);
           attempted.set(thread.id, excluded);
           const target =
-            current &&
-            availableAccountForModel(
-              current,
-              providers,
-              preferences.providerInstances,
-              shell.modelSelection.model,
-              nowMs,
-              excluded,
-            );
+            isSmartModel(shell.modelSelection.model) && excluded.size >= 4
+              ? undefined
+              : isSmartModel(shell.modelSelection.model)
+                ? selectSmartModel({
+                    requested: shell.modelSelection,
+                    providers: providers.filter((provider) => !excluded.has(provider.instanceId)),
+                    settings: preferences,
+                    projectId: shell.projectId,
+                    text: shell.title,
+                    now: nowMs,
+                  })?.selection
+                : current &&
+                  availableAccountForModel(
+                    current,
+                    providers,
+                    preferences.providerInstances,
+                    shell.modelSelection.model,
+                    nowMs,
+                    excluded,
+                  );
           if (
             target &&
             resolveProjectProviderInstanceEnabled(preferences, shell.projectId, target.instanceId)
@@ -172,7 +189,7 @@ const makeSweep = Effect.gen(function* () {
                 commandId: CommandId.make(identity),
                 messageId: MessageId.make(identity),
                 threadId: thread.id,
-                usageLimitContinuationOfRunId: shell.latestRunId,
+                manualContinuationOfRunId: shell.latestRunId,
                 modelSelection: { ...shell.modelSelection, instanceId: target.instanceId },
                 text: "Continue where you left off using the selected saved account. Check the latest tool results before repeating any action.",
                 attachments: [],

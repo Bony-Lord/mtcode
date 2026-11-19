@@ -1,3 +1,7 @@
+import { isSmartModel, selectSmartModel } from "@t3tools/shared/smartModelRouting";
+import { accountUsageBudgetBlock } from "@t3tools/shared/usageLimits";
+import { AUTO_ESCALATION_PREFIX, resolveAgentWorkModes } from "@t3tools/shared/agentWorkProfiles";
+import { delegatedQuotaCooldown, DELEGATED_QUOTA_COOLDOWN_MS } from "./delegatedQuotaCooldown.ts";
 import {
   CommandId,
   type RunId,
@@ -397,7 +401,9 @@ const advertisedModel = (provider: ServerProvider, model: string) =>
 
 /** A provider that lists no models accepts any slug. */
 export const requireAdvertisedModel = (provider: ServerProvider, model: string) =>
-  provider.models.length > 0 && advertisedModel(provider, model) === undefined
+  !isSmartModel(model) &&
+  provider.models.length > 0 &&
+  advertisedModel(provider, model) === undefined
     ? Effect.fail(
         failure(
           "model_unavailable",
@@ -1613,6 +1619,23 @@ const make = Effect.gen(function* () {
     }
     if (requestedModel !== undefined) yield* requireAdvertisedModel(provider, requestedModel);
     const advertised = advertisedModel(provider, model);
+    const routingSettings = yield* serverSettings.getSettings.pipe(
+      Effect.mapError(
+        () =>
+          new OrchestratorMcpFailure({
+            code: "invalid_request",
+            message: "Не удалось проверить потолок расхода аккаунта.",
+          }),
+      ),
+    );
+    const budget = accountUsageBudgetBlock(
+      provider,
+      input.providers,
+      routingSettings,
+      DateTime.toEpochMillis(yield* DateTime.now),
+      model,
+    );
+    if (budget) return yield* failure("provider_unavailable", budget.message);
     const descriptors = advertised?.capabilities?.optionDescriptors;
     const requestedOptions = withLegacyUltracodeEffort(descriptors, input.target?.options);
     if (requestedOptions !== undefined) {
@@ -2668,9 +2691,49 @@ const make = Effect.gen(function* () {
         operation: "delegate-task",
       });
       const isRetryOfAcceptedDelegation = yield* threadManagement.hasReceipt(commandId);
+      const settings = yield* serverSettings.getSettings.pipe(
+        Effect.mapError(
+          (cause) =>
+            new OrchestratorMcpFailure({ code: "invalid_request", message: String(cause) }),
+        ),
+      );
+      const modes = resolveAgentWorkModes(settings, parent.thread.projectId);
+      let delegatedTarget = input.target;
+      if (
+        !isRetryOfAcceptedDelegation &&
+        delegatedTarget === undefined &&
+        modes.some((mode) => mode === "fast" || mode === "economy" || mode === "conductor")
+      ) {
+        const instanceIds = yield* loadOrchestrationCapableInstanceIds();
+        const now = DateTime.toEpochMillis(yield* DateTime.now);
+        const recentTasks = yield* loadThreadRecords(parent.thread.id, ["subagents"], {
+          failedSubagentsSince: new Date(now - DELEGATED_QUOTA_COOLDOWN_MS).toISOString(),
+        });
+        const blocked = delegatedQuotaCooldown(recentTasks.subagents, providers, now);
+        const routed = selectSmartModel({
+          requested: { ...parent.thread.modelSelection, model: "mt-auto/economy" },
+          providers: providers.filter(
+            (provider) => instanceIds.has(provider.instanceId) && !blocked.has(provider.instanceId),
+          ),
+          settings,
+          projectId: parent.thread.projectId,
+          text: input.task,
+          now,
+        });
+        if (!routed)
+          return yield* failure(
+            "provider_unavailable",
+            "Нет доступного маршрута для помощника: проверьте лимиты и подключённые модели.",
+          );
+        delegatedTarget = {
+          providerInstanceId: routed.selection.instanceId,
+          model: routed.selection.model,
+          ...(routed.selection.options ? { options: routed.selection.options } : {}),
+        };
+      }
       const target = yield* resolveTargetRechecking({
         parent,
-        target: input.target,
+        target: delegatedTarget,
         providers,
         skipProjectEnablementFilter: isRetryOfAcceptedDelegation,
       });
@@ -3391,7 +3454,36 @@ const make = Effect.gen(function* () {
       yield* assertLiveCallerForOtherThread(scope, parent, target);
       yield* assertTargetWithinLimits(limits, target.thread);
 
-      const mode = input.mode ?? "auto";
+      if (input.escalate) {
+        if (
+          scope.thread?.threadId !== input.threadId ||
+          !isSmartModel(target.thread.modelSelection.model)
+        )
+          return yield* failure(
+            "invalid_request",
+            "Escalation is available only for your own Auto thread.",
+          );
+        const { messages } = yield* threadManagement
+          .getThreadRecords(input.threadId, ["messages"], { messageRoles: ["user"] })
+          .pipe(Effect.mapError(threadManagementFailure));
+        const lastUser = messages.findLastIndex(
+          (message) => message.role === "user" && message.createdBy === "user",
+        );
+        const handoffs = messages
+          .slice(lastUser + 1)
+          .filter(
+            (message) =>
+              message.role === "user" &&
+              message.createdBy === "agent" &&
+              message.text.startsWith(AUTO_ESCALATION_PREFIX),
+          );
+        if (handoffs.length >= 2)
+          return yield* failure(
+            "invalid_request",
+            "Auto escalation limit reached. Explain the remaining blocker to the user.",
+          );
+      }
+      const mode = input.escalate ? "queue" : (input.mode ?? "auto");
       const key = yield* requestKey(input.clientRequestId);
       const messageId = stableOperationMessageId({
         scope,
@@ -3413,7 +3505,7 @@ const make = Effect.gen(function* () {
             ? { linkedSender: scope.client.senderThread }
             : {}),
           messageId,
-          text: input.message,
+          text: input.escalate ? `${AUTO_ESCALATION_PREFIX}${input.message}` : input.message,
           attachments: [],
           mode,
           ...(input.freshContext ? { freshContext: true } : {}),

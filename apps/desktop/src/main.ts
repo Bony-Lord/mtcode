@@ -296,23 +296,4 @@ if (DesktopPreReadyPlatform.isVersionRequest(process.argv)) {
 startComputerActivityBridge();
 startConfiguredModelGateway();
 
-// Periodic idle memory trim to prevent renderer and main process memory bloat
-if (typeof setInterval !== "undefined") {
-  const MEMORY_TRIM_INTERVAL_MS = 15 * 60 * 1000;
-  setInterval(() => {
-    try {
-      if (typeof global !== "undefined" && typeof (global as unknown as { gc?: () => void }).gc === "function") {
-        (global as unknown as { gc: () => void }).gc();
-      }
-      for (const window of Electron.BrowserWindow.getAllWindows()) {
-        if (!window.isDestroyed() && window.webContents) {
-          window.webContents.session?.clearCache?.().catch(() => {});
-        }
-      }
-    } catch {
-      // Ignore background trim errors
-    }
-  }, MEMORY_TRIM_INTERVAL_MS).unref?.();
-}
-
 DesktopApp.program.pipe(Effect.provide(layerDesktopRuntime), NodeRuntime.runMain);

@@ -124,7 +124,7 @@ import {
 } from "../hooks/useThreadActions";
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
 import { useOrderWhileOpen } from "../hooks/useOrderWhileOpen";
-import { useProjectPin } from "../hooks/useProjectGroupUpdate";
+import { useProjectGroupUpdate, useProjectPin } from "../hooks/useProjectGroupUpdate";
 import { useSidebarProjectGroups } from "../hooks/useSidebarProjectGroups";
 import { isCommandPaletteOpen, openCommandPalette } from "../commandPaletteBus";
 import { registerSettleAndAdvance } from "../settleAndAdvance";
@@ -1097,10 +1097,13 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
         );
   const threads = useQuietThreadShells();
   const promotingDraftThreadKeys = usePromotingDraftThreadKeys();
+  const archivedProjectRefs = new Set(projectGroups.filter((project) => project.archived)
+    .flatMap((project) => project.memberProjectRefs.map((member) => `${member.environmentId}:${member.projectId}`)));
+  const visibleThreads = threads.filter((thread) => !archivedProjectRefs.has(`${thread.environmentId}:${thread.projectId}`));
   const listedThreads =
     promotingDraftThreadKeys.length === 0
-      ? threads
-      : threads.map((thread) =>
+      ? visibleThreads
+      : visibleThreads.map((thread) =>
           promotingDraftThreadKeys.includes(threadShellKey(thread))
             ? asLaunchingThread(thread)
             : thread,
@@ -1236,6 +1239,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     setProjectGroupPinned,
     toggleProjectGroupPin,
   } = useProjectPin();
+  const { updateProjectGroup } = useProjectGroupUpdate();
   const handleProjectSettings = useStableCallback(
     (
       event: ReactMouseEvent<HTMLElement> | ReactKeyboardEvent<HTMLInputElement>,
@@ -1260,16 +1264,19 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
         const clicked = await settlePromise(() =>
           api.contextMenu.show(
             [
-              { id: "new-thread", label: "New thread" },
-              { id: "copy-path", label: "Copy path" },
+              { id: "new-thread", label: "Новый чат" },
+              { id: "copy-path", label: "Скопировать путь" },
               ...(canPinProject(group)
                 ? [
                     group.pinned
                       ? { id: "unpin", label: "Unpin project", icon: "pin-off" }
                       : { id: "pin", label: "Pin project", icon: "pin" },
+                    group.archived
+                      ? { id: "restore-project", label: "Восстановить проект" }
+                      : { id: "archive-project", label: "Архивировать проект" },
                   ]
                 : []),
-              { id: "project-settings", label: "Project settings", icon: "settings" },
+              { id: "project-settings", label: "Настройки проекта", icon: "settings" },
             ],
             position,
           ),
@@ -1285,6 +1292,14 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
           case "pin":
           case "unpin":
             setProjectGroupPinned(group, clicked.value === "pin");
+            return;
+          case "archive-project":
+          case "restore-project":
+            await updateProjectGroup(
+              group.memberProjects,
+              { archived: clicked.value === "archive-project" },
+              "Не удалось изменить состояние проекта",
+            );
             return;
           case "project-settings":
             openProjectSettings(group);
@@ -1341,8 +1356,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     routeRowThreadKey,
     folderGroups: boringSidebarEnabled
       ? scopedProjectGroups.length === 0
-        ? // An archived project keeps a folder for its active threads, below the rest.
-          [...scopeGroups, ...projectGroups.filter((project) => project.archived)]
+        ? scopeGroups
         : scopedProjectGroups
       : null,
     keepEmptyFolders: (group) =>
@@ -3360,7 +3374,8 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                           scopeThreadRef(thread.environmentId, thread.id),
                         );
                         const isCard =
-                          section === "active" || section === "pinned" || section === "working";
+                          !boringSidebarEnabled &&
+                          (section === "active" || section === "pinned" || section === "working");
                         const rowVariant = folderRow
                           ? folderRowsMultiline
                             ? "folder-multiline"

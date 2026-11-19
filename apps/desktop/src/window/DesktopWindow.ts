@@ -1079,6 +1079,9 @@ export const make = Effect.gen(function* () {
     if (environment.platform === "linux" || environment.platform === "win32") {
       revealSubscribers.push((fire) => window.webContents.once("did-finish-load", fire));
     }
+    if (environment.platform === "win32") {
+      revealSubscribers.push((fire) => window.webContents.once("dom-ready", fire));
+    }
     let rendererReady = false;
     let firstRevealComplete = false;
     const revealWhenReady = Effect.gen(function* () {

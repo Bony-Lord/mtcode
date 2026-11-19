@@ -3,6 +3,7 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./server/elicitationForm": "./src/server/elicitationForm.ts",
     "./server/AcpSessionRuntime": {
       "types": "./src/server/AcpSessionRuntime.ts",
       "import": "./src/server/AcpSessionRuntime.ts"

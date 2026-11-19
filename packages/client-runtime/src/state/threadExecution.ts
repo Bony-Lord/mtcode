@@ -346,11 +346,15 @@ export function deriveThreadStructureRuntime(
   projection: ThreadStructure,
 ): ThreadStructureRuntime | null {
   const latestRun = deriveLatestThreadRun(projection);
-  const providerSession = projection.providerSessions.findLast(
-    (session) => session.providerInstanceId === projection.thread.providerInstanceId,
-  );
   const usageLimitedRun = presentedUsageLimitRun(projection);
   const latestRunProjection = presentedLatestRun(projection);
+  const failure = latestRootProviderFailure(latestRunProjection, projection.turnItems);
+  const providerInstanceId =
+    (usageLimitedRun ?? (failure?.class === "usage_limit" ? latestRunProjection : null))
+      ?.providerInstanceId ?? projection.thread.providerInstanceId;
+  const providerSession = projection.providerSessions.findLast(
+    (session) => session.providerInstanceId === providerInstanceId,
+  );
   const activityRun = deriveThreadActivityRun(projection);
   const liveActivityRun = latestMatchingRun(projection, (run) =>
     ACTIVITY_RUN_STATUSES.has(run.status),
@@ -380,12 +384,9 @@ export function deriveThreadStructureRuntime(
       liveActivityRun === null
         ? null
         : DateTime.formatIso(orchestrationV2RunWorkStartedAt(liveActivityRun)),
-    providerInstanceId: projection.thread.providerInstanceId,
+    providerInstanceId,
     providerName: providerSession?.driver ?? null,
-    ...threadErrorSummary(
-      latestRootProviderFailure(latestRunProjection, projection.turnItems),
-      providerSession?.lastError ?? null,
-    ),
+    ...threadErrorSummary(failure, providerSession?.lastError ?? null),
   };
 }
 

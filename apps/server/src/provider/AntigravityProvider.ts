@@ -225,6 +225,7 @@ export const makeAntigravityProvider = Effect.fn("makeAntigravityProvider")(func
   // Preserve disk-discovered skills when callbacks replace workspace commands; the registry will not rescan them.
   const discoveredSkills = new Map<string, ServerProvider["skills"]>();
   const thinkingLevels = new Map<string, ThinkingConfig | null>();
+  let regionBlockedAt = 0;
   const observeThinkingLevels = (
     configOptions: ReadonlyArray<EffectAcpSchema.SessionConfigOption> | null | undefined,
   ) => {
@@ -235,8 +236,23 @@ export const makeAntigravityProvider = Effect.fn("makeAntigravityProvider")(func
       thinkingLevels.set(model.currentValue, antigravityThinkingConfig(configOptions) ?? null);
     }
   };
+  const stampSnapshot = (draft: ServerProviderDraft) => {
+    if (regionBlockedAt === 0) return options.stampIdentity(draft);
+    return DateTime.now.pipe(
+      Effect.flatMap((now) =>
+        DateTime.toEpochMillis(now) - regionBlockedAt > 900_000
+          ? options.stampIdentity(draft)
+          : options.stampIdentity({
+              ...draft,
+              message:
+                "Google отклонил Gemini по региону. Авто пропускает эти модели 15 минут; повторный вход не требуется.",
+              models: draft.models.filter((model) => !/gemini/i.test(model.slug)),
+            }),
+      ),
+    );
+  };
   const getSnapshot = SubscriptionRef.get(metadata).pipe(
-    Effect.flatMap((state) => options.stampIdentity(state.draft)),
+    Effect.flatMap((state) => stampSnapshot(state.draft)),
   );
 
   // The quota read can take 30 seconds, so it never blocks readiness or a session start.
@@ -348,7 +364,7 @@ export const makeAntigravityProvider = Effect.fn("makeAntigravityProvider")(func
       } satisfies AntigravityProviderState;
     });
     if (initialized !== undefined) yield* refreshUsage();
-    return yield* options.stampIdentity(next.draft);
+    return yield* stampSnapshot(next.draft);
   });
 
   const maintenanceCapabilities =
@@ -367,7 +383,7 @@ export const makeAntigravityProvider = Effect.fn("makeAntigravityProvider")(func
     enrichSnapshot: ({ publishSnapshot }) =>
       SubscriptionRef.changes(metadata).pipe(
         Stream.runForEach((state) =>
-          options.stampIdentity(state.draft).pipe(Effect.flatMap(publishSnapshot)),
+          stampSnapshot(state.draft).pipe(Effect.flatMap(publishSnapshot)),
         ),
       ),
   });
@@ -396,6 +412,9 @@ export const makeAntigravityProvider = Effect.fn("makeAntigravityProvider")(func
         authRevision: state.authRevision + 1,
         draft: {
           ...draft,
+          ...(options.probeUsage && draft.usageLimits?.unavailable
+            ? { usageLimits: undefined }
+            : {}),
           installed: true,
           status: "ready",
           version: started.initializeResult.agentInfo?.version || draft.version,
@@ -534,6 +553,16 @@ export const makeAntigravityProvider = Effect.fn("makeAntigravityProvider")(func
   return {
     snapshot: { ...managed, getSnapshot },
     onSessionStarted,
+    onRegionUnavailable: () =>
+      DateTime.now.pipe(
+        Effect.flatMap((now) =>
+          Effect.sync(() => {
+            regionBlockedAt = DateTime.toEpochMillis(now);
+          }),
+        ),
+        Effect.andThen(SubscriptionRef.update(metadata, (state) => ({ ...state }))),
+        Effect.asVoid,
+      ),
     onConfigOptionsUpdated,
     onAvailableCommands,
     // The new sign-in may be another account. Clear and republish its limits so a failed read

@@ -23,6 +23,9 @@ import { cn } from "~/lib/utils";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { ModelPickerContent, resolveModelPickerSelectedModel } from "./ModelPickerContent";
 import { retainedModelWhileProviderLocked } from "./ProviderModelPicker.logic";
+import { isSmartModel } from "@t3tools/shared/smartModelRouting";
+import { AUTO_APP_MODEL_OPTIONS } from "./ProviderModelPicker.logic";
+import { RouteIcon } from "lucide-react";
 import { ChatGptSharingControl } from "./ChatGptSharingControl";
 import { ProviderInstanceIcon } from "./ProviderInstanceIcon";
 import { ModelEsque, getDisplayModelName, getTriggerDisplayModelName } from "./providerIconUtils";
@@ -162,6 +165,7 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
   const activeInstanceId = props.activeInstanceId;
   const selectedInstanceOptions = props.modelOptionsByInstance.get(activeInstanceId) ?? [];
   const selectedModel =
+    AUTO_APP_MODEL_OPTIONS.find((option) => option.slug === props.model) ??
     resolveModelPickerSelectedModel({
       driverKind: activeEntry?.driverKind,
       model: props.model,
@@ -310,7 +314,9 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
       getModelDisabledReason={(instanceId, model) =>
         props.disabled
           ? "Model picker is disabled"
-          : (props.getModelDisabledReason?.(instanceId, model) ?? null)
+          : isSmartModel(model)
+            ? null
+            : (props.getModelDisabledReason?.(instanceId, model) ?? null)
       }
       onInstanceModelChange={handleInstanceModelChange}
       {...(docked
@@ -378,7 +384,9 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
         <span
           className={cn("flex min-w-0 flex-1 items-center", size === "xs" ? "gap-1" : "gap-1.5")}
         >
-          {selectedEntries && props.triggerLabel === undefined ? (
+          {isSmartModel(props.model) && props.triggerLabel === undefined ? (
+            <RouteIcon className="size-4 shrink-0" />
+          ) : selectedEntries && props.triggerLabel === undefined ? (
             <span
               data-chat-provider-model-picker-icon
               className="flex shrink-0 items-center -space-x-1"

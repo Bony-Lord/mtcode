@@ -3321,6 +3321,45 @@ describe.skipIf(HostProcess.Platform.defaultValue() === "win32")(
 );
 
 describe("parseAgentSessionTranscript", () => {
+  it("copies the complete visible transcript on explicit request without hidden reasoning", () => {
+    const contents = [
+      JSON.stringify({ type: "session_meta", payload: { id: "snapshot-source" } }),
+      ...Array.from({ length: 250 }, (_, i) =>
+        JSON.stringify({
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: i % 2 ? "assistant" : "user",
+            content: [{ type: "text", text: `Visible ${i}` }],
+          },
+        }),
+      ),
+      JSON.stringify({
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "assistant",
+          channel: "analysis",
+          content: [{ type: "text", text: "Private reasoning" }],
+        },
+      }),
+    ].join("\n");
+    const metadata = {
+      contents,
+      source: "codex" as const,
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      fallbackSessionId: "unused",
+      lastActiveAtMs: Date.parse("2026-11-17T00:00:00Z"),
+    };
+    expect(AgentSessionScanner.parseAgentSessionTranscript(metadata)?.messages).toHaveLength(200);
+    const full = AgentSessionScanner.parseAgentSessionTranscript({
+      ...metadata,
+      maxMessages: 10_000,
+    });
+    expect(full?.messages).toHaveLength(250);
+    expect(full?.omittedMessageCount).toBe(0);
+    expect(full?.messages.some((message) => message.text === "Private reasoning")).toBe(false);
+  });
   it.each([false, true])(
     "handles the exact record limit and an interior blank overflow=%s",
     (overflow) => {

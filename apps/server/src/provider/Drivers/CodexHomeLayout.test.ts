@@ -4,6 +4,7 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 
 import { CodexSettings } from "@t3tools/contracts";
 import {
@@ -65,6 +66,42 @@ it.layer(NodeServices.layer)("CodexHomeLayout", (it) => {
   });
 
   describe("materializeCodexShadowHome", () => {
+    it.effect("shares Windows settings and history without administrator symlink privileges", () =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const shared = yield* makeTempDir("mt-codex-shared-");
+        const shadow = yield* makeTempDir("mt-codex-account-");
+        yield* writeTextFile(path.join(shared, "config.toml"), "shared-settings");
+        yield* writeTextFile(path.join(shared, "auth.json"), "main-account");
+        yield* writeTextFile(path.join(shared, "state.sqlite"), "private-runtime");
+        yield* writeTextFile(path.join(shadow, "auth.json"), "second-account");
+        const layout = yield* resolveCodexHomeLayout(
+          decodeCodexSettings({ homePath: shared, shadowHomePath: shadow }),
+        );
+        yield* materializeCodexShadowHome(layout);
+        expect(yield* fileSystem.readFileString(path.join(shadow, "config.toml"))).toBe(
+          "shared-settings",
+        );
+        expect(yield* fileSystem.readFileString(path.join(shadow, "auth.json"))).toBe(
+          "second-account",
+        );
+        expect(yield* fileSystem.exists(path.join(shadow, "state.sqlite"))).toBe(false);
+        yield* writeTextFile(path.join(shared, "new-config.toml"), "updated-settings");
+        yield* fileSystem.rename(
+          path.join(shared, "new-config.toml"),
+          path.join(shared, "config.toml"),
+        );
+        yield* materializeCodexShadowHome(layout);
+        expect(yield* fileSystem.readFileString(path.join(shadow, "config.toml"))).toBe(
+          "updated-settings",
+        );
+        yield* writeTextFile(path.join(shadow, "sessions", "probe.jsonl"), "shared-history");
+        expect(yield* fileSystem.readFileString(path.join(shared, "sessions", "probe.jsonl"))).toBe(
+          "shared-history",
+        );
+      }).pipe(Effect.provideService(HostProcess.Platform, "win32")),
+    );
     it.effect.skipIf(!symlinksSupported)(
       "keeps Finder metadata local across repeated shadow home setup",
       () =>

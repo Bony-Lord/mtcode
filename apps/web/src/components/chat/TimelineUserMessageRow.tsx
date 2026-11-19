@@ -97,6 +97,7 @@ import {
 } from "./TimelineRowParts";
 import { UserMessageContextReferenceChip } from "./UserMessageContextChips";
 import {
+  importedCodexMessageMarkdown,
   resolvePreviewAnnotationImage,
   userMessageFileLabel,
 } from "./TimelineUserMessageRow.logic";
@@ -1344,7 +1345,7 @@ const UserMessageBody = memo(function UserMessageBody(props: {
   }
   return (
     <ChatMarkdown
-      text={props.text}
+      text={importedCodexMessageMarkdown(props.text)}
       cwd={props.markdownCwd}
       threadRef={ctx.threadRef ?? undefined}
       skills={props.skills}

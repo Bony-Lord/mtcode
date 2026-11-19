@@ -1,7 +1,10 @@
 import { ChildThreadApprovals } from "./chat/ChildThreadApprovals";
 import { workspaceAreaProps } from "../lib/workspaceFocus";
 import { sourceControlClients } from "@t3tools/client-runtime/source-control-clients";
-import { resolveNewThreadModelSelection } from "@t3tools/shared/usageLimits";
+import {
+  resolveNewThreadModelSelection,
+  usageLimitHasRecovered,
+} from "@t3tools/shared/usageLimits";
 import { queuedRunEditBlockedReason } from "@t3tools/client-runtime/queued-run-edit";
 import { ScrollToEndButton, WorkspaceFileDropOverlay } from "./chat/TimelineOverlays";
 import { usePasteToFocusComposer } from "./chat/usePasteToFocusComposer";
@@ -54,6 +57,7 @@ import { ThreadFind, ThreadFindCanvas } from "./chat/ThreadFindProvider";
 import { closeThreadFind, openThreadFind, useThreadFindOpen } from "./chat/threadFindStore";
 import { THREAD_FIND_BAR_RESERVED_HEIGHT } from "./chat/ThreadFindBar";
 import { usageLimitRecoveryBannerItem } from "./chat/UsageLimitRecoveryBanner";
+import { useDeadlinePassed } from "../hooks/useDeadline";
 import { isThreadEnvironmentLocked, resolveDraftHeroState } from "./ChatView.logic";
 import { useQueuedRunEdit } from "./chat/useQueuedRunEdit";
 import { recallCheckoutIsRepo, rememberCheckoutIsRepo } from "./ChatView.logic";
@@ -2677,10 +2681,31 @@ export default function ChatView(props: ChatViewProps) {
     });
     return item ? [item] : [];
   });
+  const usageLimitResetPassed = useDeadlinePassed(
+    limitRecoveryRun && serverRuntime?.usageLimitResetAt
+      ? Date.parse(serverRuntime.usageLimitResetAt)
+      : null,
+  );
+  const limitedRun = serverProjection?.runs.find((run) => run.id === limitRecoveryRun?.runId);
+  const limitedProvider = providerStatuses.find(
+    (provider) => provider.instanceId === limitedRun?.providerInstanceId,
+  );
   const limitRecoveryBanner =
-    limitRecoveryRun !== null && activeThreadShell !== null
+    limitRecoveryRun !== null &&
+    activeThreadShell !== null &&
+    !usageLimitResetPassed &&
+    !(
+      limitedRun &&
+      usageLimitHasRecovered({
+        provider: limitedProvider,
+        model: limitedRun.modelSelection.model,
+        stoppedAt: limitRecoveryRun.completedAt ?? activeThreadShell.updatedAt,
+        now: Date.parse(limitedProvider?.usageLimits?.checkedAt ?? ""),
+      })
+    )
       ? usageLimitRecoveryBannerItem({
           runId: limitRecoveryRun.runId,
+          accountName: limitedProvider?.displayName,
           errorCode: serverRuntime?.lastErrorCode ?? null,
           resetAt: serverRuntime?.usageLimitResetAt ?? null,
           stoppedAt: limitRecoveryRun.completedAt ?? activeThreadShell.updatedAt,

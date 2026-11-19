@@ -7,6 +7,7 @@ import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 import * as NodeOS from "node:os";
 import { app, BrowserWindow, globalShortcut, screen } from "electron";
+import { COMPUTER_USE_PAUSE_STATE_CHANNEL } from "../ipc/channels.ts";
 
 export const COMPUTER_WARNING_MS = 650;
 export const COMPUTER_IDLE_MS = 2300;
@@ -20,6 +21,7 @@ const labels: Record<Phase, string> = {
   stopped: "Управление остановлено",
 };
 const windows = new Map<number, BrowserWindow>();
+const windowLoads = new Map<number, Promise<void>>();
 const peers = new Set<NodeNet.Socket>();
 const leases = new Map<NodeNet.Socket, ReturnType<typeof setTimeout>>();
 let state: Phase | null = null;
@@ -56,8 +58,10 @@ function render(next: Phase): Promise<void> {
       .status{position:absolute;top:8px;left:50%;transform:translateX(-50%);padding:7px 14px;border-radius:20px;color:#ede9fe;background:#211935ed;font:13px system-ui;border:1px solid #a78bfa88}
       body[data-phase=done] .frame,body[data-phase=stopped] .frame{opacity:0}
       </style><div class="frame"></div><div class="status" role="status"></div>`;
-      await window.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
+      const load = window.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
+      windowLoads.set(display.id, load);
     }
+    await windowLoads.get(display.id);
     if (window.isDestroyed()) return;
     const value = state ?? next;
     await window.webContents.executeJavaScript(
@@ -71,6 +75,7 @@ function render(next: Phase): Promise<void> {
 function closeOverlay(): void {
   for (const window of windows.values()) if (!window.isDestroyed()) window.destroy();
   windows.clear();
+  windowLoads.clear();
   state = null;
   if (escRegistered) globalShortcut.unregister("Escape");
   escRegistered = false;
@@ -97,6 +102,13 @@ function keepAlive(peer: NodeNet.Socket): void {
     setTimeout(() => release(peer), LEASE_MS),
   );
 }
+function publishPause(): void {
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (!window.webContents.isDestroyed()) {
+      window.webContents.send(COMPUTER_USE_PAUSE_STATE_CHANNEL, paused);
+    }
+  }
+}
 function escape(): void {
   paused = true;
   if (stopMarker) {
@@ -110,12 +122,13 @@ function escape(): void {
   for (const lease of leases.values()) clearTimeout(lease);
   leases.clear();
   for (const peer of peers) peer.write('{"event":"escape"}\n');
+  publishPause();
   end("stopped");
 }
 export function resumeComputerUse(): void {
   if (stopMarker) NodeFS.rmSync(stopMarker, { force: true });
   paused = false;
-  for (const peer of peers) peer.write('{"event":"resume"}\n');
+  publishPause();
 }
 export function isComputerUsePaused(): boolean {
   return paused;
@@ -149,7 +162,7 @@ export function startComputerActivityBridge(): void {
           if (!peer.destroyed) peer.write(`${JSON.stringify({ id: request.id, ok, message })}\n`);
         };
         if (paused) {
-          send(false, "Управление остановлено. Разрешите его снова в настройках MT Code.");
+          send(false, "Управление остановлено. Снимите паузу в поле ввода MT Code.");
           return;
         }
         if (request.phase === "check") {

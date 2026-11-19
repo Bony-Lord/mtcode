@@ -5,6 +5,7 @@ import {
   OrchestratorMcpThreadListResult,
   OrchestratorMcpThreadReadResult,
   OrchestratorMcpThreadSendResult,
+  OrchestratorMcpThreadInterruptResult,
   OrchestratorMcpThreadWaitResult,
   ProjectId,
   RunId,
@@ -1062,6 +1063,30 @@ const threadShowCommand = Command.make("show", {
   ),
 );
 
+const threadStopCommand = Command.make("stop", {
+  ...projectLocationFlags,
+  thread: threadArgument,
+  json: jsonFlag,
+}).pipe(
+  Command.withDescription("Stop a thread and its delegated work, preserving queued messages."),
+  Command.withHandler((flags) =>
+    Effect.gen(function* () {
+      const threadId = yield* decodeThreadId(flags.thread);
+      yield* withThreadTools(
+        flags,
+        Effect.fn("cli.thread.stop")(function* (tools) {
+          const result = yield* tools.call(
+            "t3_thread_interrupt",
+            { threadId, stop: true },
+            OrchestratorMcpThreadInterruptResult,
+          );
+          yield* flags.json ? printJson(result) : Console.log(result.status);
+        }),
+      );
+    }).pipe(reportThreadErrors),
+  ),
+);
+
 export const threadCommand = Command.make("thread").pipe(
   Command.withDescription("Start, message, and read threads on the running server."),
   Command.withSubcommands([
@@ -1069,5 +1094,6 @@ export const threadCommand = Command.make("thread").pipe(
     threadStartCommand,
     threadSendCommand,
     threadShowCommand,
+    threadStopCommand,
   ]),
 );

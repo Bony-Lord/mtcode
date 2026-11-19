@@ -2,6 +2,7 @@ import {
   AuthEnvironmentMaintainScope,
   AuthDiagnosticsReadScope,
   AuthFilesystemReadScope,
+  AuthFilesystemWriteScope,
   AuthProvidersManageScope,
   AuthSettingsWriteScope,
   AuthAccessWriteScope,
@@ -258,6 +259,12 @@ describe("settings mutation authorization", () => {
           providerInstanceMutation,
         }).pipe(Effect.flip),
       ).toMatchObject({ requiredPermission: AuthSettingsWriteScope });
+      expect(
+        yield* client[WS_METHODS.serverUpdateSettings]({
+          patch: {},
+          refreshFreeModels: true,
+        }).pipe(Effect.flip),
+      ).toMatchObject({ requiredPermission: AuthFilesystemWriteScope });
       // Removing a secret provider clears settings fields that read from it.
       expect(
         yield* client[WS_METHODS.serverUpdateSettings]({

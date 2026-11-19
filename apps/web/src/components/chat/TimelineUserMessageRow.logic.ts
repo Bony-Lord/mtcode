@@ -2,6 +2,30 @@ import { type ChatFileAttachment, type ChatImageAttachment } from "../../types";
 import type { ComposerContextRecord, KnownComposerContextRecord } from "@t3tools/contracts";
 import { asKnownContextRecord } from "~/lib/composerContextRecords";
 
+/** Display the Codex clipboard image envelope using the existing local media viewer. */
+export function importedCodexMessageMarkdown(text: string): string {
+  let hasImage = false;
+  const rendered = text.replace(
+    /<image\s+name="([^"]*)"\s+path="([^"]+)"\s*>[\s\S]*?<\/image>/g,
+    (source, name: string, path: string) => {
+      const normalized = path.replaceAll("\\", "/");
+      if (
+        !/^(?:[A-Za-z]:\/|\/)/.test(normalized) ||
+        /[<>\r\n]/.test(normalized) ||
+        !/\.(?:png|jpe?g|webp|gif|avif|bmp)$/i.test(normalized)
+      )
+        return source;
+      hasImage = true;
+      const label = name.replace(/[[\]\\]/g, "") || "Изображение";
+      return `\n\n![${label}](<${normalized}>)\n\n`;
+    },
+  );
+  if (!hasImage) return text;
+  return rendered
+    .replace(/^\s*# Files mentioned by the user:[\s\S]*?^## My request:\s*/m, "")
+    .trim();
+}
+
 export function userMessageFileLabel(file: Pick<ChatFileAttachment, "name" | "source">) {
   return file.source?._tag === "pasted-text" ? "Pasted text" : file.name;
 }

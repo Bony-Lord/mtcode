@@ -754,7 +754,7 @@ it.layer(layerTest)("Antigravity provider snapshots", (it) => {
           Effect.andThen(Deferred.await(readResult)),
         ),
       });
-      const published = yield* harness.nextPublish((snapshot) => !!snapshot.usageLimits);
+      const published = yield* harness.nextPublish((snapshot) => (snapshot.usageLimits?.windows.length ?? 0) > 0);
       yield* harness.initialize;
       yield* Deferred.await(readStarted);
       yield* harness.provider.onSessionStarted(started, "/workspace");

@@ -1,3 +1,4 @@
+import { AUTO_ESCALATION_PREFIX } from "@t3tools/shared/agentWorkProfiles";
 import type {
   OrchestrationV2ThreadLinkMetadata,
   GuestShareId,
@@ -81,6 +82,12 @@ import {
 } from "@t3tools/contracts";
 import * as KeyedLock from "@t3tools/shared/KeyedLock";
 import { modelSelectionsEqual } from "@t3tools/shared/model";
+import { isSmartModel, selectSmartModel, routingTaskText } from "@t3tools/shared/smartModelRouting";
+import { ensureModelBenchmarks } from "../provider/ModelBenchmarks.ts";
+import { accountUsageBudgetBlock } from "@t3tools/shared/usageLimits";
+import { adviseAutoRouting, routingAdviceSelection } from "../provider/AutoRoutingAdvisor.ts";
+import * as HostProcess from "@t3tools/shared/HostProcess";
+import * as RoutingProviderRegistry from "../provider/ProviderRegistry.ts";
 import { modelSwitchSince } from "./modelSwitch.ts";
 import { isPlaceholderThreadTitle } from "./placeholderThreadTitle.ts";
 import { combinePullRequestWatchWakes, type PullRequestWatchWake } from "./pullRequestWatch.ts";
@@ -1574,11 +1581,138 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
 
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
+  const routingHome = yield* HostProcess.HomeDirectory;
   const providerAdapters = yield* ProviderAdapterRegistryV2;
   const continuationRequests = yield* ProviderContinuationRequests.ProviderContinuationRequests;
   const providerSessions = yield* ProviderSessionManagerV2;
   const providerSwitchService = yield* ProviderSwitchServiceV2;
   const serverSettings = yield* ServerSettings.ServerSettingsService;
+  const routingProviders = yield* Effect.serviceOption(RoutingProviderRegistry.ProviderRegistry);
+  const chooseAutomaticModel = Effect.fn("Orchestrator.chooseAutomaticModel")(function* (
+    projection: OrchestrationV2ThreadProjection,
+    requestedSelection: ModelSelection,
+    text: string,
+    images: boolean,
+    pinnedSelection?: ModelSelection,
+    escalate = false,
+  ) {
+    if (isSmartModel(requestedSelection.model))
+      yield* ensureModelBenchmarks().pipe(
+        Effect.provideService(ServerSettings.ServerSettingsService, serverSettings),
+      );
+    const settings = yield* serverSettings.getSettings.pipe(Effect.orDie);
+    const automaticModel =
+      requestedSelection.model === "auto" ? "mt-auto" : requestedSelection.model;
+    const automatic =
+      isSmartModel(requestedSelection.model) ||
+      (requestedSelection.model === "auto" &&
+        settings.providerInstances[requestedSelection.instanceId]?.driver !== "cursor");
+    if (!automatic && Option.isSome(routingProviders)) {
+      const providers = yield* routingProviders.value.getProviders;
+      const blocked = accountUsageBudgetBlock(
+        providers.find((provider) => provider.instanceId === requestedSelection.instanceId),
+        providers,
+        settings,
+        DateTime.toEpochMillis(yield* DateTime.now),
+        requestedSelection.model,
+      );
+      if (blocked)
+        return yield* new OrchestratorDispatchError({
+          commandId: CommandId.make(`command:system:account-budget:${projection.thread.id}`),
+          commandType: "message.dispatch",
+          cause: `${blocked.message} Выберите другой аккаунт или измените его потолок в настройках.`,
+        });
+    }
+    if (!automatic)
+      return { modelSelection: requestedSelection, automatic, automaticModel, route: null };
+    // Steering belongs to the live native turn even if discovery or quotas have since changed.
+    if (pinnedSelection)
+      return { modelSelection: pinnedSelection, automatic, automaticModel, route: null };
+    const lastUser = escalate
+      ? projection.messages.findLastIndex(
+          (message) => message.role === "user" && message.createdBy === "user",
+        )
+      : -1;
+    const currentRequest = new Set(
+      escalate ? projection.messages.slice(Math.max(0, lastUser)).map((message) => message.id) : [],
+    );
+    const nowMs = DateTime.toEpochMillis(yield* DateTime.now);
+    const providers = Option.isSome(routingProviders)
+      ? yield* routingProviders.value.getProviders
+      : [];
+    const taskText = routingTaskText(
+      text,
+      projection.messages
+        .filter((message) => message.role === "user" && message.createdBy === "user")
+        .map((message) => message.text),
+    );
+    const advice = yield* adviseAutoRouting({
+      threadId: projection.thread.id,
+      projectId: projection.thread.projectId,
+      text: taskText,
+      providers,
+      settings,
+    }).pipe(
+      Effect.provideService(FileSystem.FileSystem, fileSystem),
+      Effect.provideService(Path.Path, path),
+      Effect.provideService(HostProcess.HomeDirectory, routingHome),
+    );
+    const route = Option.isSome(routingProviders)
+      ? selectSmartModel({
+          requested: { ...requestedSelection, model: automaticModel },
+          providers,
+          settings,
+          projectId: projection.thread.projectId,
+          text: taskText,
+          ...(advice
+            ? { advice: { ...advice, preferredSelection: routingAdviceSelection(advice) } }
+            : {}),
+          images,
+          escalate,
+          excludedModels: escalate
+            ? projection.runs
+                .filter(
+                  (run) =>
+                    currentRequest.has(run.userMessageId) &&
+                    run.status !== "queued" &&
+                    run.status !== "cancelled",
+                )
+                .map((run) => run.modelSelection.model)
+            : [],
+          now: nowMs,
+          previous: latestExecutedRun(projection.runs)?.modelSelection,
+          observations: projection.runs
+            .filter(
+              (run) =>
+                run.completedAt !== null &&
+                nowMs - DateTime.toEpochMillis(run.completedAt) < 30 * 60_000,
+            )
+            .map((run) => ({
+              instanceId: run.providerInstanceId,
+              model: run.modelSelection.model,
+              failed: run.status === "failed",
+              blocked:
+                run.status === "failed" &&
+                nowMs - DateTime.toEpochMillis(run.completedAt!) < 5 * 60_000,
+              ...(run.startedAt && run.completedAt
+                ? {
+                    latencyMs:
+                      DateTime.toEpochMillis(run.completedAt) -
+                      DateTime.toEpochMillis(run.startedAt),
+                  }
+                : {}),
+            })),
+        })
+      : null;
+    if (!route)
+      return yield* new OrchestratorDispatchError({
+        commandId: CommandId.make(`command:system:auto-route:${projection.thread.id}`),
+        commandType: "message.dispatch",
+        cause:
+          "Авто: нет доступных бесплатных моделей или подключённых подписок. Проверьте вход и лимиты в настройках провайдеров.",
+      });
+    return { modelSelection: route.selection, automatic, automaticModel, route };
+  });
   const runtimePolicy = yield* RuntimePolicyV2;
   const threadForkService = yield* ThreadForkServiceV2;
   const threadDispatch = yield* ThreadCommandExecutor.ThreadCommandExecutor;
@@ -2467,7 +2601,21 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       const queuedMessage = projection.messages.find(
         (candidate) => candidate.id === storedQueuedRun.userMessageId,
       );
-      const modelSelection = queuedRunModelSelection(projection, storedQueuedRun);
+      const requestedSelection = queuedRunModelSelection(projection, storedQueuedRun);
+      const { modelSelection, automatic, automaticModel, route } = yield* chooseAutomaticModel(
+        projection,
+        requestedSelection,
+        queuedMessage?.createdBy === "agent"
+          ? (projection.messages.findLast(
+              (message) => message.role === "user" && message.createdBy === "user",
+            )?.text ?? queuedMessage.text)
+          : (queuedMessage?.text ?? ""),
+        queuedMessage?.attachments.some((attachment) => attachment.type === "image") ?? false,
+        undefined,
+        queuedMessage?.createdBy === "agent" &&
+          queuedMessage.text.startsWith(AUTO_ESCALATION_PREFIX),
+      );
+      const settings = yield* serverSettings.getSettings.pipe(Effect.orDie);
       const queuedRun = {
         ...storedQueuedRun,
         modelSelection,
@@ -2503,7 +2651,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         failedRun?.id === endedRunId &&
         failedRun?.workspacePreparation?.type === "worktree" &&
         projection.thread.worktreePath === null;
-      const settings = yield* serverSettings.getSettings.pipe(Effect.orDie);
       const projectOverride =
         settings.projectSettingsOverrides[projection.thread.projectId]?.providerInstances?.[
           queuedRun.providerInstanceId
@@ -3124,7 +3271,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                   payload: {
                     ...projection.thread,
                     providerInstanceId: queuedRun.providerInstanceId,
-                    modelSelection: queuedRun.modelSelection,
+                    modelSelection: automatic
+                      ? { ...queuedRun.modelSelection, model: automaticModel }
+                      : queuedRun.modelSelection,
                     updatedAt: now,
                   },
                 },
@@ -3242,6 +3391,39 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             occurredAt: now,
             payload: startingRun,
           },
+          ...(route === null
+            ? []
+            : [
+                {
+                  type: "turn-item.updated" as const,
+                  threadId,
+                  runId: queuedRun.id,
+                  nodeId: rootNodeId,
+                  providerInstanceId: queuedRun.providerInstanceId,
+                  occurredAt: now,
+                  payload: {
+                    id: idAllocator.derive.runSignalTurnItem({
+                      runId: queuedRun.id,
+                      signal: "auto-route",
+                    }),
+                    threadId,
+                    runId: queuedRun.id,
+                    nodeId: rootNodeId,
+                    providerThreadId: queuedProviderThread.id,
+                    providerTurnId: null,
+                    nativeItemRef: null,
+                    parentItemId: null,
+                    ordinal: ordinal * 100 - 2,
+                    status: "completed" as const,
+                    title: "Автоматический выбор модели",
+                    type: "system_notice" as const,
+                    message: `Авто → ${queuedRun.modelSelection.model} (${queuedRun.providerInstanceId}): ${route.reason}`,
+                    startedAt: now,
+                    completedAt: now,
+                    updatedAt: now,
+                  },
+                },
+              ]),
         ],
         [
           ...sessionsToDetach.map((session) => ({
@@ -4513,7 +4695,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                 .map((session) => session.id)
             : (providerSwitchPlan?.releaseProviderSessionIds ?? []),
     );
-    const liveSessions = (providerContext?.providerSessions ?? []).filter(
+    let liveSessions = (providerContext?.providerSessions ?? []).filter(
       (session) =>
         detachSessionIds.has(session.id) &&
         session.status !== "stopped" &&
@@ -4533,6 +4715,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         .pipe(mapDispatchError(command));
       for (const session of liveSessions) {
         if (yield* sessionHasBackgroundWork(session, providerThreads)) {
+          if (providerSwitchPlan?.transition.type === "create_with_handoff") {
+            liveSessions = liveSessions.filter((candidate) => candidate.id !== session.id);
+            continue;
+          }
           return yield* new OrchestratorDispatchError({
             commandId: command.commandId,
             commandType: command.type,
@@ -6813,7 +6999,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         command.dispatchMode.type !== "start_immediately" ||
         source === undefined ||
         (source.status !== "interrupted" &&
-          !(source.status === "failed" && limited?.class === "usage_limit")) ||
+          !(
+            source.status === "failed" &&
+            (limited?.class === "usage_limit" ||
+              (isSmartModel(projection.thread.modelSelection.model) &&
+                (limited?.class === "transport_error" || limited?.class === "provider_error")))
+          )) ||
         latestExecutedRun(projection.runs)?.id !== source.id ||
         projection.thread.archivedAt !== null ||
         projection.thread.deletedAt !== null ||
@@ -7064,7 +7255,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       ]);
       projection = applyToProjection(projection, event);
     }
-    let modelSelection = command.modelSelection ?? projection.thread.modelSelection;
+    const requestedSelection = command.modelSelection ?? projection.thread.modelSelection;
     let dispatchMode = resolveMessageDispatchIntent(
       projection,
       command.dispatchMode,
@@ -7093,6 +7284,23 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         dispatchMode = { type: "start_immediately" };
       }
     }
+    const steerTargetRunId =
+      dispatchMode.type === "steer_active" ? dispatchMode.targetRunId : undefined;
+    const routing = yield* chooseAutomaticModel(
+      projection,
+      requestedSelection,
+      command.createdBy === "agent"
+        ? (projection.messages.findLast(
+            (message) => message.role === "user" && message.createdBy === "user",
+          )?.text ?? command.text)
+        : command.text,
+      command.attachments.some((attachment) => attachment.type === "image"),
+      steerTargetRunId
+        ? projection.runs.find((run) => run.id === steerTargetRunId)?.modelSelection
+        : undefined,
+      command.createdBy === "agent" && command.text.startsWith(AUTO_ESCALATION_PREFIX),
+    );
+    let modelSelection = routing.modelSelection;
     // Stop leaves the run reading as running until its provider stops. A plain
     // send in that window queues behind the stopped queue instead of steering
     // text the agent never receives, and like any user send it releases the
@@ -7481,6 +7689,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       });
     }
     if (shouldQueue) {
+      if (routing.automatic) modelSelection = { ...modelSelection, model: routing.automaticModel };
       if (pendingMergeBackTransfers.length > 0) {
         return yield* new OrchestratorDispatchError({
           commandId: command.commandId,
@@ -7870,7 +8079,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         payload: {
           ...projection.thread,
           providerInstanceId: modelSelection.instanceId,
-          modelSelection,
+          modelSelection: routing.automatic
+            ? { ...modelSelection, model: routing.automaticModel }
+            : modelSelection,
           updatedAt: now,
         },
       });
@@ -7933,6 +8144,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const sessionsToDetach: Array<OrchestrationV2ProviderSession> = [];
     for (const detaching of releasableSessions) {
       if (yield* sessionHasBackgroundWork(detaching, projection.providerThreads)) {
+        if (!freshContext && providerSwitchPlan?.transition.type === "create_with_handoff")
+          continue;
         // A schedule has nobody to wait or press Stop; like a queued fresh start, leave it running.
         if (freshContext && command.scheduledTaskId !== undefined) continue;
         return yield* new OrchestratorDispatchError({
@@ -7940,7 +8153,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           commandType: command.type,
           cause: freshContext
             ? "The current session is still running background agents or commands, and a fresh session would end them. Wait for them to finish, or press Stop, then send the message again."
-            : "The previous provider is still running background agents or commands, and switching would end them. Wait for them to finish, or press Stop, then send the message again.",
+            : "Предыдущий провайдер ещё выполняет фоновые задачи. Дождитесь завершения или нажмите «Стоп», чтобы перенести его нативную сессию.",
         });
       }
       sessionsToDetach.push(detaching);
@@ -8315,6 +8528,33 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           } satisfies PendingOrchestrationEffectV2,
         ]);
       }
+      if (routing.route)
+        yield* emitEvent({
+          type: "turn-item.updated",
+          threadId: command.threadId,
+          runId,
+          nodeId: rootNodeId,
+          providerInstanceId: modelSelection.instanceId,
+          occurredAt: now,
+          payload: {
+            id: idAllocator.derive.runSignalTurnItem({ runId, signal: "auto-route" }),
+            threadId: command.threadId,
+            runId,
+            nodeId: rootNodeId,
+            providerThreadId,
+            providerTurnId: null,
+            nativeItemRef: null,
+            parentItemId: null,
+            ordinal: ordinal * 100 - 2,
+            status: "completed",
+            title: "Автоматический выбор модели",
+            type: "system_notice",
+            message: `Авто → ${modelSelection.model} (${modelSelection.instanceId}): ${routing.route.reason}`,
+            startedAt: now,
+            completedAt: now,
+            updatedAt: now,
+          },
+        });
       const pendingEffect = {
         id: `effect:${command.commandId}:provider-turn.start:${runId}`,
         commandId: command.commandId,
@@ -9345,6 +9585,33 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         } satisfies PendingOrchestrationEffectV2,
       ]);
     }
+    if (routing.route)
+      yield* emitEvent({
+        type: "turn-item.updated",
+        threadId: command.threadId,
+        runId,
+        nodeId: rootNodeId,
+        providerInstanceId: modelSelection.instanceId,
+        occurredAt: now,
+        payload: {
+          id: idAllocator.derive.runSignalTurnItem({ runId, signal: "auto-route" }),
+          threadId: command.threadId,
+          runId,
+          nodeId: rootNodeId,
+          providerThreadId: providerThread.id,
+          providerTurnId: null,
+          nativeItemRef: null,
+          parentItemId: null,
+          ordinal: ordinal * 100 - 2,
+          status: "completed",
+          title: "Автоматический выбор модели",
+          type: "system_notice",
+          message: `Авто → ${modelSelection.model} (${modelSelection.instanceId}): ${routing.route.reason}`,
+          startedAt: now,
+          completedAt: now,
+          updatedAt: now,
+        },
+      });
     const pendingEffect = {
       id: `effect:${command.commandId}:provider-turn.start:${runId}`,
       commandId: command.commandId,

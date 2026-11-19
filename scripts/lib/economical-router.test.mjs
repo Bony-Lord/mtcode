@@ -19,7 +19,7 @@ NodeTest.test(
   async () => {
     let calls = 0;
     await NodeAssert.rejects(
-      delegate({ domain: "extraction", input: "extract A" }, async () => {
+      delegate({ domain: "extraction", input: "extract A", route: "ovh/gpt-oss-20b" }, async () => {
         calls++;
         return { ok: false, status: 429 };
       }),
@@ -27,7 +27,7 @@ NodeTest.test(
     );
     NodeAssert.equal(calls, 1);
     const result = await delegate(
-      { domain: "classification", input: "classify A" },
+      { domain: "classification", input: "classify A", route: "ovh/gpt-oss-20b" },
       async (_url, options) => {
         NodeAssert.equal(JSON.parse(options.body).model, "gpt-oss-20b");
         return { ok: true, json: async () => ({ choices: [{ message: { content: "A" } }] }) };

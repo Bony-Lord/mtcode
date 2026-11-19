@@ -295,13 +295,36 @@ export const OpenCodeDriver: ProviderDriver<
       accentColor,
       continuationGroupKey: continuationIdentity.continuationKey,
     });
+    const homeDirectory = yield* HostProcess.HomeDirectory;
+    const platform = yield* HostProcess.Platform;
+    let resolvedBinaryPath = expandHomePath(config.binaryPath, homeDirectory);
+    if (resolvedBinaryPath === "opencode") {
+      const v2Path = pathService.join(
+        homeDirectory,
+        ".mt",
+        "tools",
+        "opencode2",
+        "node_modules",
+        "@opencode",
+        "cli",
+        "bin",
+        platform === "win32" ? "opencode.exe" : "opencode",
+      );
+      if (yield* fileSystem.exists(v2Path).pipe(Effect.orElseSucceed(() => false))) {
+        resolvedBinaryPath = v2Path;
+      }
+    }
     const effectiveConfig = {
       ...config,
       enabled,
-      binaryPath: expandHomePath(config.binaryPath, yield* HostProcess.HomeDirectory),
+      binaryPath: resolvedBinaryPath,
       // The instance registry has already read a referenced password from its secret provider.
       serverPassword: settingsSecretLiteral(config.serverPassword),
     } satisfies OpenCodeSettings;
+    const useConfiguredCatalog =
+      effectiveConfig.configuredCatalogOnly === true &&
+      effectiveConfig.customModels.length > 0 &&
+      effectiveConfig.serverUrl.trim().length === 0;
     const probeRuntime = (probeEnv: NodeJS.ProcessEnv) =>
       probeOpenCodeRuntime(effectiveConfig, probeEnv).pipe(
         Effect.provideService(HttpClient.HttpClient, httpClient),
@@ -525,14 +548,20 @@ export const OpenCodeDriver: ProviderDriver<
         provider: checkOpenCodeProviderStatus(
           effectiveConfig,
           host.paths.cwd,
-          runtimeProbe.refresh,
+          // A health scan and its usage check must share the same in-flight version probe.
+          // 2.x stays cached until an explicit update check or driver reconfiguration.
+          runtimeProbe.get,
           loadOpenCode2Models,
           processEnv,
         ).pipe(
           Effect.annotateLogs({ providerInstanceId: instanceId }),
           Effect.annotateSpans({ providerInstanceId: instanceId }),
         ),
-        usageLimits: checkUsageLimits,
+        usageLimits: useConfiguredCatalog
+          ? Effect.map(DateTime.now, (now) =>
+              makeUsageLimits({ checkedAt: DateTime.formatIso(now), windows: [] }),
+            )
+          : checkUsageLimits,
       },
       { concurrency: "unbounded" },
     ).pipe(
@@ -541,7 +570,7 @@ export const OpenCodeDriver: ProviderDriver<
           ...provider,
           ...(installedVersion === undefined ? {} : { installedVersion }),
         };
-        return effectiveConfig.enabled && !effectiveConfig.serverUrl.trim()
+        return effectiveConfig.enabled && !effectiveConfig.serverUrl.trim() && !useConfiguredCatalog
           ? loadOpenCodeUsageLimits({ environment: processEnv }).pipe(
               Effect.map((subscriptions) => ({
                 ...probed,
@@ -721,7 +750,7 @@ export const OpenCodeDriver: ProviderDriver<
       // A scan never installs OpenCode: without an offline probe result it fails and keeps the
       // last inventory rather than guessing 1.x.
       snapshotForCwd: (cwd) =>
-        !effectiveConfig.enabled
+        !effectiveConfig.enabled || useConfiguredCatalog
           ? snapshot.getSnapshot
           : runtimeProbe.get.pipe(
               Effect.mapError(

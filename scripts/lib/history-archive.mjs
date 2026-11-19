@@ -77,6 +77,7 @@ export async function archiveCodexHistory({
   home = NodePath.join(NodeOS.homedir(), ".codex"),
   destination,
   chunkChars = 48_000,
+  threadId,
 }) {
   if (!destination) throw Error("Archive destination is required");
   await NodeFSP.mkdir(destination, { recursive: true });
@@ -97,7 +98,7 @@ export async function archiveCodexHistory({
   const sources = [
     ...(await filesIn(NodePath.join(home, "sessions"))),
     ...(await filesIn(NodePath.join(home, "archived_sessions"))),
-  ];
+  ].filter((file) => !threadId || (safeId(threadId) && file.includes(threadId)));
   let updated = 0;
   let reused = 0;
   let sourceBytes = 0;
@@ -426,7 +427,7 @@ export async function historyMain(args) {
   );
   const destination =
     options.archive ?? NodePath.join(NodeOS.homedir(), "Documents", "MT Code History", "archive");
-  if (command === "archive") return archiveCodexHistory({ home: options.home, destination });
+  if (command === "archive") return archiveCodexHistory({ home: options.home, destination, threadId: options.thread });
   if (command === "compact") return compactHistory(destination);
   if (command === "search")
     return searchHistory(destination, options.query ?? "", { limit: Number(options.limit ?? 5) });

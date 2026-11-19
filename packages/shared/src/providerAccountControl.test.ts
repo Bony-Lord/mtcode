@@ -43,6 +43,27 @@ it("switches only to a different verified saved account with fresh allowance and
       { driver: current.driver, accountTier: "subscription" as const },
     ]),
   );
+  const managed = {
+    ...available,
+    auth: { ...available.auth, subscriptionSharing: true },
+    usageLimits: {
+      ...available.usageLimits!,
+      windows: [],
+      unavailable: { reason: "unsupported" as const, message: "Plan usage is shown by ChatGPT" },
+    },
+  };
+  expect(
+    availableAccountForModel(
+      current,
+      [managed],
+      { ...instances, b: { driver: current.driver } },
+      "gpt-test",
+      now,
+    )?.instanceId,
+  ).toBe("b");
+  expect(
+    availableAccountForModel(current, [managed], instances, "gpt-test", now, new Set(["b"])),
+  ).toBeUndefined();
   expect(
     availableAccountForModel(current, [current, exhausted, available], instances, "gpt-test", now)
       ?.instanceId,

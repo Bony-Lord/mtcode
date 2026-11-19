@@ -21,6 +21,11 @@ export function availableAccountForModel(
     .filter((provider) => {
       const config = instances[provider.instanceId];
       const limits = provider.usageLimits;
+      const chatGptAccount =
+        provider.driver === "codex" &&
+        (provider.auth.type === "chatgpt" || provider.auth.subscriptionSharing === true);
+      const externalAllowance =
+        provider.auth.subscriptionSharing === true && limits?.unavailable?.reason === "unsupported";
       return (
         provider.instanceId !== current.instanceId &&
         provider.driver === current.driver &&
@@ -30,26 +35,31 @@ export function availableAccountForModel(
         provider.status === "ready" &&
         provider.auth.status === "authenticated" &&
         isProviderAvailable(provider) &&
-        (config?.accountTier === "free" || config?.accountTier === "subscription") &&
-        !config.freeAccountPaused &&
-        resolveProviderInstanceEnabled(config) &&
+        (config?.accountTier === "free" ||
+          config?.accountTier === "subscription" ||
+          (chatGptAccount &&
+            (config?.accountTier === undefined || config.accountTier === "unknown"))) &&
+        !config?.freeAccountPaused &&
+        (config === undefined || resolveProviderInstanceEnabled(config)) &&
         provider.models.some((entry) => entry.slug === model) &&
         limits !== undefined &&
-        !limits.unavailable &&
-        limits.windows.length > 0 &&
+        (externalAllowance || (!limits.unavailable && limits.windows.length > 0)) &&
         now - Date.parse(limits.checkedAt) >= 0 &&
         now - Date.parse(limits.checkedAt) < 5 * 60_000 &&
         !exhaustedUsageWindow(provider, now, model) &&
         (!current.auth.email ||
           provider.auth.email?.toLowerCase() !== current.auth.email.toLowerCase()) &&
         (!current.usageLimits?.credentialFingerprint ||
-          limits.credentialFingerprint !== current.usageLimits.credentialFingerprint)
+          limits.credentialFingerprint !== current.usageLimits.credentialFingerprint) &&
+        (!current.auth.profileId ||
+          current.auth.email !== undefined ||
+          provider.auth.profileId !== current.auth.profileId)
       );
     })
     .sort(
       (a, b) =>
-        Math.min(...b.usageLimits!.windows.map(remainingPercent)) -
-        Math.min(...a.usageLimits!.windows.map(remainingPercent)),
+        Math.min(100, ...b.usageLimits!.windows.map(remainingPercent)) -
+        Math.min(100, ...a.usageLimits!.windows.map(remainingPercent)),
     )[0];
 }
 

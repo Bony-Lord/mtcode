@@ -199,19 +199,24 @@ export const make = Effect.gen(function* () {
         if (url !== null && isDesktopClerkOAuthCallback(url, scheme)) {
           url = null;
         }
+        if (url === null) {
+          const existing = yield* electronWindow.main;
+          if (Option.isSome(existing)) yield* electronWindow.reveal(existing.value);
+          else yield* desktopWindow.revealOrCreateMain;
+          return;
+        }
+
         // Registered main only. currentMainOrFirst can be the WSL splash.
         const mainWindow = yield* electronWindow.main;
         if (Option.isSome(mainWindow)) {
           yield* electronWindow.reveal(mainWindow.value);
-          if (url !== null) {
-            yield* Effect.sync(() => {
-              // Queue then apply so a later waiter cannot load a stale
-              // fiber-local URL over a newer deep link, and createMain cannot
-              // replay the older pending slot.
-              queuePendingDesktopProtocolUrl(url);
-              applyPendingDesktopProtocolUrl(mainWindow.value);
-            });
-          }
+          yield* Effect.sync(() => {
+            // Queue then apply so a later waiter cannot load a stale
+            // fiber-local URL over a newer deep link, and createMain cannot
+            // replay the older pending slot.
+            queuePendingDesktopProtocolUrl(url);
+            applyPendingDesktopProtocolUrl(mainWindow.value);
+          });
           return;
         }
 
@@ -240,6 +245,8 @@ export const make = Effect.gen(function* () {
         const fallbackWindow = yield* electronWindow.currentMainOrFirst;
         if (Option.isSome(fallbackWindow)) {
           yield* electronWindow.reveal(fallbackWindow.value);
+        } else {
+          yield* desktopWindow.revealOrCreateMain;
         }
       });
 

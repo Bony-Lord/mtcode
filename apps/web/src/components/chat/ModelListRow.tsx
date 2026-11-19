@@ -1,6 +1,6 @@
 import { type ProviderDriverKind, type ProviderInstanceId } from "@t3tools/contracts";
 import { memo } from "react";
-import { CheckIcon, StarIcon } from "lucide-react";
+import { CheckIcon, ExternalLinkIcon, StarIcon, RouteIcon } from "lucide-react";
 import { getDisplayModelName } from "./providerIconUtils";
 import { ComboboxItem } from "../ui/combobox";
 import { Button } from "../ui/button";
@@ -10,6 +10,9 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { cn } from "~/lib/utils";
 import { modelPickerModelKey } from "./modelPickerKeys";
 import { ProviderInstanceIcon } from "./ProviderInstanceIcon";
+import { ModelManufacturerIcon } from "./ModelManufacturerIcon";
+import { ensureLocalApi } from "../../localApi";
+import { modelCatalogBrand } from "./modelCatalogBrand";
 
 export const ModelListRow = memo(function ModelListRow(props: {
   index: number;
@@ -34,12 +37,17 @@ export const ModelListRow = memo(function ModelListRow(props: {
   jumpLabel?: string | null;
   disabledReason?: string | null;
   onToggleFavorite: (instanceId: ProviderInstanceId, slug: string) => void;
+  onSelectSupplier: (instanceId: ProviderInstanceId) => void;
+  manufacturerHeader?: string | undefined;
+  insights?: { tags: readonly string[]; detail: string } | undefined;
 }) {
   const model = {
     slug: props.slug,
     name: props.name,
     subProvider: props.subProvider,
   };
+  const catalog = modelCatalogBrand(props.instanceId, props.slug, props.driverKind);
+  const manufacturer = catalog?.manufacturer;
 
   const row = (
     <ComboboxItem
@@ -55,60 +63,109 @@ export const ModelListRow = memo(function ModelListRow(props: {
       )}
     >
       {/* One row shape in every tab: the logo names the provider, so Favorites needs no second line. */}
-      <ProviderInstanceIcon
-        driverKind={props.driverKind}
-        displayName={props.providerDisplayName}
-        accentColor={props.providerAccentColor}
-        acpRegistryAgentId={props.acpRegistryAgentId}
-        acpRegistryIconUrl={props.acpRegistryIconUrl}
-        showBadge={props.showInstanceBadge}
-        className="size-4"
-        iconClassName="size-4"
-        indicatorBackground="var(--popover)"
-        badgeClassName="right-[-0.125rem] bottom-[-0.125rem] h-3 min-w-3 px-0.5 text-5xs"
-      />
-      <div className="flex min-w-0 flex-1 items-center gap-2 text-left">
-        <div
-          className="min-w-0 truncate text-sm font-normal leading-snug"
-          // Names the row in full on hover only when it is cut off.
-          onPointerEnter={(event) => {
-            const name = event.currentTarget;
-            name.title = name.scrollWidth > name.clientWidth ? getDisplayModelName(model) : "";
-          }}
-        >
-          {getDisplayModelName(model)}
-          {/* The logo is decorative, so name the provider for screen readers. */}
-          <span className="sr-only">, {props.providerDisplayName}</span>
+      {props.slug.startsWith("mt-auto") ? (
+        <RouteIcon className="size-4 shrink-0" />
+      ) : manufacturer ? (
+        <ModelManufacturerIcon name={manufacturer} slug={props.slug} />
+      ) : (
+        <ProviderInstanceIcon
+          driverKind={props.driverKind}
+          displayName={props.providerDisplayName}
+          accentColor={props.providerAccentColor}
+          acpRegistryAgentId={props.acpRegistryAgentId}
+          acpRegistryIconUrl={props.acpRegistryIconUrl}
+          showBadge={props.showInstanceBadge}
+          className="size-4"
+          iconClassName="size-4"
+          indicatorBackground="var(--popover)"
+          badgeClassName="right-[-0.125rem] bottom-[-0.125rem] h-3 min-w-3 px-0.5 text-5xs"
+        />
+      )}
+      <div className="flex min-w-0 flex-1 flex-col text-left">
+        <div className="flex min-w-0 w-full items-center gap-2">
+          <div
+            className="min-w-0 flex-1 truncate text-sm font-normal leading-snug"
+            // Names the row in full on hover only when it is cut off.
+            onPointerEnter={(event) => {
+              const name = event.currentTarget;
+              name.title = name.scrollWidth > name.clientWidth ? getDisplayModelName(model) : "";
+            }}
+          >
+            {getDisplayModelName(model)}
+            {/* The logo is decorative, so name the provider for screen readers. */}
+            {!props.slug.startsWith("mt-auto") ? (
+              <span className="sr-only">, {props.providerDisplayName}</span>
+            ) : null}
+          </div>
+          {props.isSelected ? <CheckIcon className="size-3.5 shrink-0" aria-hidden="true" /> : null}
+          {catalog ? (
+            <span className="inline-flex shrink-0 items-center rounded bg-muted text-3xs text-muted-foreground">
+              <button
+                type="button"
+                className="inline-flex shrink-0 items-center gap-0.5 rounded bg-muted px-1 text-3xs text-muted-foreground hover:text-foreground"
+                aria-label={`Показать модели ${catalog.supplier.name}`}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  props.onSelectSupplier(props.instanceId);
+                }}
+                onKeyDown={(event) => event.stopPropagation()}
+              >
+                {catalog.supplier.name}
+              </button>
+              <button
+                type="button"
+                className="p-0.5 hover:text-foreground"
+                aria-label={`Открыть интерфейс ${catalog.supplier.name}`}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  void ensureLocalApi().shell.openExternal(catalog.supplier.url);
+                }}
+                onKeyDown={(event) => event.stopPropagation()}
+              >
+                <ExternalLinkIcon className="size-2.5" aria-hidden="true" />
+              </button>
+            </span>
+          ) : props.subProvider ? (
+            <span className="min-w-0 shrink truncate text-xs text-muted-foreground/70">
+              {props.subProvider}
+            </span>
+          ) : null}
+          {props.showNewBadge && !props.slug.startsWith("mt-auto") ? (
+            <span
+              className="shrink-0 rounded border border-update/35 bg-update/15 px-0.5 py-px text-3xs font-bold uppercase leading-none tracking-wide text-update-foreground"
+              aria-label="New model"
+            >
+              New
+            </span>
+          ) : null}
+          {props.isHandoff && !props.slug.startsWith("mt-auto") ? (
+            <span
+              className="shrink-0 rounded border border-primary/30 bg-primary/10 px-1 py-0.5 text-3xs font-medium leading-none text-primary"
+              aria-label="Handoff to new thread"
+            >
+              Handoff
+            </span>
+          ) : null}
+          {props.unavailable ? (
+            <Badge variant="outline" size="sm">
+              Unavailable
+            </Badge>
+          ) : null}
         </div>
-        {props.isSelected ? <CheckIcon className="size-3.5 shrink-0" aria-hidden="true" /> : null}
-        {props.subProvider ? (
-          <span className="min-w-0 shrink truncate text-xs text-muted-foreground/70">
-            {props.subProvider}
-          </span>
-        ) : null}
-        {props.showNewBadge ? (
-          <span
-            className="shrink-0 rounded border border-update/35 bg-update/15 px-0.5 py-px text-3xs font-bold uppercase leading-none tracking-wide text-update-foreground"
-            aria-label="New model"
+
+        {props.insights ? (
+          <div
+            className="flex min-w-0 gap-1 truncate pt-0.5 text-4xs text-muted-foreground"
+            title={props.insights.detail}
           >
-            New
-          </span>
-        ) : null}
-        {props.isHandoff ? (
-          <span
-            className="shrink-0 rounded border border-primary/30 bg-primary/10 px-1 py-0.5 text-[10px] font-medium leading-none text-primary"
-            aria-label="Handoff to new thread"
-          >
-            Handoff
-          </span>
-        ) : null}
-        {props.unavailable ? (
-          <Badge variant="outline" size="sm">
-            Unavailable
-          </Badge>
+            {props.insights.tags.map((tag) => (
+              <span key={tag} className="shrink-0 rounded bg-muted px-1">
+                {tag}
+              </span>
+            ))}
+          </div>
         ) : null}
       </div>
-
       <div className="flex shrink-0 items-center gap-1.5">
         <Tooltip>
           <TooltipTrigger
@@ -146,16 +203,23 @@ export const ModelListRow = memo(function ModelListRow(props: {
     </ComboboxItem>
   );
 
-  if (!props.disabledReason) {
-    return row;
-  }
-
   return (
-    <Tooltip>
-      <TooltipTrigger render={row} />
-      <TooltipPopup side="left" align="center">
-        {props.disabledReason}
-      </TooltipPopup>
-    </Tooltip>
+    <>
+      {props.manufacturerHeader ? (
+        <div className="px-3 pb-1 pt-2 text-xs font-medium text-muted-foreground">
+          {props.manufacturerHeader}
+        </div>
+      ) : null}
+      {props.disabledReason ? (
+        <Tooltip>
+          <TooltipTrigger render={row} />
+          <TooltipPopup side="left" align="center">
+            {props.disabledReason}
+          </TooltipPopup>
+        </Tooltip>
+      ) : (
+        row
+      )}
+    </>
   );
 });

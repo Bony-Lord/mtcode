@@ -14,6 +14,7 @@ import {
   type ServerProviderResetCredits,
   type ServerProviderUsageLimits,
   type ServerProviderUsageWindow,
+  type ProviderInstanceConfig,
   type UsageLimitSourceSnapshot,
   type UsageLimitSourceSnapshots,
 } from "@t3tools/contracts";
@@ -25,6 +26,82 @@ import { isLocalLoopbackHost, isWildcardHost } from "./hostClassification.ts";
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
 const DAY = 24 * HOUR;
+
+export function usageBudgetBlock(
+  provider: ServerProvider | undefined,
+  policy: ProviderInstanceConfig["usagePolicy"],
+  now: number,
+  model?: string,
+) {
+  for (const [kind, maximum] of [
+    ["session", policy?.sessionMaxUsedPercent],
+    ["weekly", policy?.weeklyMaxUsedPercent],
+  ] as const) {
+    if (maximum === undefined) continue;
+    const limits = provider?.usageLimits;
+    const window = limits?.windows.find(
+      (entry) =>
+        entry.kind === kind &&
+        (!model || !entry.modelIds || entry.modelIds.includes(model)) &&
+        (!model || !entry.providerIds || entry.providerIds.includes(model.split("/")[0] ?? "")),
+    );
+    const fresh =
+      limits &&
+      Number.isFinite(Date.parse(limits.checkedAt)) &&
+      now - Date.parse(limits.checkedAt) < 10 * MINUTE;
+    if (
+      !window ||
+      limits?.unavailable ||
+      !fresh ||
+      (window.resetsAt && Date.parse(window.resetsAt) <= now)
+    )
+      return {
+        kind,
+        maximum,
+        reason: "unknown" as const,
+        message: "Для сохранения заданного остатка квоты нужны свежие числовые лимиты аккаунта.",
+      };
+    if (window.usedPercent >= maximum)
+      return {
+        kind,
+        maximum,
+        reason: "reached" as const,
+        window,
+        message: `Достигнут минимальный остаток квоты аккаунта: ${kind === "session" ? "5 часов" : "неделя"}, осталось ${Number((100 - window.usedPercent).toFixed(1))}%, сохранять не менее ${Number((100 - maximum).toFixed(1))}%.`,
+      };
+  }
+  return undefined;
+}
+
+export function accountUsageBudgetBlock(
+  provider: ServerProvider | undefined,
+  providers: readonly ServerProvider[],
+  settings: ServerSettings,
+  now: number,
+  model?: string,
+) {
+  if (!provider) return undefined;
+  const email = provider.auth.email?.trim().toLowerCase();
+  const accounts = providers.filter(
+    (candidate) =>
+      candidate.instanceId === provider.instanceId ||
+      (email &&
+        candidate.driver === provider.driver &&
+        candidate.auth.email?.trim().toLowerCase() === email),
+  );
+  const policies = accounts.flatMap(
+    (candidate) => settings.providerInstances[candidate.instanceId]?.usagePolicy ?? [],
+  );
+  const policy: { sessionMaxUsedPercent?: number; weeklyMaxUsedPercent?: number } = {};
+  for (const key of ["sessionMaxUsedPercent", "weeklyMaxUsedPercent"] as const) {
+    const values = policies.flatMap((entry) => (entry[key] === undefined ? [] : [entry[key]]));
+    if (values.length) policy[key] = Math.min(...values);
+  }
+  const measured = accounts
+    .filter((entry) => entry.usageLimits?.windows.length && !entry.usageLimits.unavailable)
+    .sort((a, b) => Date.parse(b.usageLimits!.checkedAt) - Date.parse(a.usageLimits!.checkedAt))[0];
+  return usageBudgetBlock(measured ?? provider, policy, now, model);
+}
 
 export function exhaustedUsageWindow(
   provider: ServerProvider | undefined,
@@ -76,6 +153,31 @@ export function exhaustedUsageWindow(
     default:
       return exhausted[0];
   }
+}
+
+export function usageLimitHasRecovered(input: {
+  readonly provider: ServerProvider | null | undefined;
+  readonly model: string;
+  readonly stoppedAt: string;
+  readonly now: number;
+}): boolean {
+  const limits = input.provider?.usageLimits;
+  if (
+    !limits ||
+    limits.unavailable ||
+    limits.zeroSpendCap ||
+    Date.parse(limits.checkedAt) <= Date.parse(input.stoppedAt)
+  )
+    return false;
+  const applicable = limits.windows.some(
+    (window) =>
+      (!window.modelIds || window.modelIds.includes(input.model)) &&
+      (!window.providerIds || window.providerIds.includes(input.model.split("/")[0] ?? "")),
+  );
+  return (
+    applicable &&
+    exhaustedUsageWindow(input.provider ?? undefined, input.now, input.model) === undefined
+  );
 }
 
 export function resolveNewThreadModelSelection(input: {
@@ -251,6 +353,51 @@ function accountKeyResolver(reports: Iterable<AccountReport>) {
     if (!known) return key;
     return known.size === 1 ? `${key}:${[...known][0]}` : null;
   };
+}
+
+/** A managed connection can display native Codex quota for the same signed-in account. */
+export function providerUsageDisplaySource(
+  selected: ServerProvider | undefined,
+  providers: readonly ServerProvider[],
+): ServerProvider | undefined {
+  if (
+    selected?.driver !== "codex" ||
+    selected.auth.subscriptionSharing !== true ||
+    selected.auth.status !== "authenticated" ||
+    !selected.auth.email?.trim() ||
+    (selected.usageLimits && limitsNotice(selected.usageLimits) === null)
+  ) {
+    return selected;
+  }
+  const logins = providers.filter(
+    (provider) =>
+      provider.enabled && provider.driver === "codex" && provider.auth.status === "authenticated",
+  );
+  const resolveKey = accountKeyResolver(logins.map(nativeReport));
+  const key = resolveKey(nativeReport(selected));
+  if (key === null) return selected;
+  const native = logins.filter(
+    (provider) =>
+      provider.auth.type === "chatgpt" &&
+      provider.auth.subscriptionSharing !== true &&
+      (selected.auth.workspaceId !== undefined ||
+        /^ChatGPT (?:Free|Go|Plus|Pro (?:100|200|500)) Subscription$/.test(
+          provider.auth.label ?? "",
+        )) &&
+      resolveKey(nativeReport(provider)) === key &&
+      provider.usageLimits !== undefined &&
+      limitsNotice(provider.usageLimits) === null,
+  );
+  return (
+    native.reduce<ServerProvider | undefined>(
+      (latest, provider) =>
+        latest === undefined ||
+        Date.parse(provider.usageLimits!.checkedAt) > Date.parse(latest.usageLimits!.checkedAt)
+          ? provider
+          : latest,
+      undefined,
+    ) ?? selected
+  );
 }
 
 const hubAccountName = (account: { readonly id: string }) => account.id.replace(/\.json$/i, "");

@@ -54,9 +54,16 @@ export const OpenCodeSettings = makeProviderSettingsSchema(
       Schema.withDecodingDefault(Effect.succeed([])),
       Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
     ),
+    configuredCatalogOnly: Schema.optionalKey(Schema.Boolean).pipe(
+      Schema.annotateKey({
+        title: "Use configured models only",
+        description:
+          "Use the saved model list and start OpenCode only for actual requests. Suitable for a curated free profile without OpenCode subscription limits.",
+      }),
+    ),
   },
   {
-    order: ["binaryPath", "serverUrl", "serverPassword"],
+    order: ["binaryPath", "serverUrl", "serverPassword", "configuredCatalogOnly"],
   },
 );
 export type OpenCodeSettings = typeof OpenCodeSettings.Type;

@@ -52,7 +52,7 @@ const MUNIM: DesktopDistroIdentity = {
   artifactName: "MT-Code-${version}-${arch}.${ext}",
   description: "MT Code — Munim Technologies fork of T3 Code",
   author: "Munim, Inc.",
-  updateRepository: "munimtechnologies/mtcode",
+  updateRepository: "Bony-Lord/mtcode",
   protocolSchemes: ["mtcode", "mtcode-dev"],
   protocolName: "MT Code",
   linuxExecutableName: "mtcode",

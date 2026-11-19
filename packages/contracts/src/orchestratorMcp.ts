@@ -552,6 +552,12 @@ export const OrchestratorMcpThreadSendInput = Schema.Struct({
   threadId: ThreadId,
   message: OrchestratorMcpPrompt,
   mode: Schema.optional(Schema.Literals(["auto", "queue", "steer", "restart"])),
+  escalate: Schema.optional(
+    Schema.Boolean.annotate({
+      description:
+        "Auto only: queue a handoff to a different capable model in your own thread when you cannot complete the task reliably. Put progress, evidence and the blocker in message. Maximum two handoffs per user request.",
+    }),
+  ),
   freshContext: Schema.optional(
     Schema.Boolean.annotate({
       description:

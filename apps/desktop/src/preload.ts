@@ -291,6 +291,13 @@ contextBridge.exposeInMainWorld("desktopBridge", {
     ipcRenderer.invoke(IpcChannels.OPEN_PRIVATE_EXTERNAL_CHANNEL, url),
   computerUsePause: (resume = false) =>
     ipcRenderer.invoke(IpcChannels.COMPUTER_USE_PAUSE_CHANNEL, resume),
+  onComputerUsePauseChange: (listener) => {
+    const receive = (_event: Electron.IpcRendererEvent, paused: unknown) => {
+      if (typeof paused === "boolean") listener(paused);
+    };
+    ipcRenderer.on(IpcChannels.COMPUTER_USE_PAUSE_STATE_CHANNEL, receive);
+    return () => ipcRenderer.removeListener(IpcChannels.COMPUTER_USE_PAUSE_STATE_CHANNEL, receive);
+  },
   readMedia: (url: string) => ipcRenderer.invoke(IpcChannels.READ_MEDIA_CHANNEL, url),
   checkSystemPermission: (pane: string) =>
     ipcRenderer.invoke(IpcChannels.CHECK_SYSTEM_PERMISSION_CHANNEL, pane),

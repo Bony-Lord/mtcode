@@ -65,6 +65,20 @@ import {
   SpeechPostProcessingPromptSettings,
 } from "./speech.ts";
 
+export const ModelBenchmarkSnapshot = Schema.Struct({
+  checkedAt: Schema.String,
+  terminalVersion: Schema.String,
+  coding: Schema.Array(
+    Schema.Struct({
+      model: Schema.String,
+      score: Schema.Number,
+      harness: Schema.String,
+      effort: Schema.String,
+    }),
+  ),
+  intelligence: Schema.Array(Schema.Struct({ model: Schema.String, score: Schema.Number })),
+});
+
 export const TimestampFormat = Schema.Literals(["locale", "12-hour", "24-hour"]);
 export type TimestampFormat = typeof TimestampFormat.Type;
 const DEFAULT_TIMESTAMP_FORMAT: TimestampFormat = "locale";
@@ -625,7 +639,7 @@ export const ClientSettingsSchema = Schema.Struct({
   ),
   proactivePanelsEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   showSkillsInSlashMenu: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
-  boringSidebarEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  boringSidebarEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   boringSidebarMultilineRows: Schema.Boolean.pipe(
     Schema.withDecodingDefault(Effect.succeed(false)),
   ),
@@ -1409,6 +1423,11 @@ export type ProjectProviderInstanceOverride = typeof ProjectProviderInstanceOver
 /** Absent keys inherit; null is a value for nullable settings.
  * providerInstances overrides fields per instance; other keys replace the whole setting. */
 export const ProjectSettingsOverrides = Schema.Struct({
+  agentWorkModes: Schema.optionalKey(
+    Schema.Array(
+      Schema.Literals(["fast", "economy", "research", "thinking", "web", "conductor"]),
+    ).check(Schema.isMaxLength(6)),
+  ),
   worktreeCleanup: Schema.optionalKey(WorktreeCleanup),
   defaultModelSelection: Schema.optionalKey(Schema.NullOr(ModelSelection)),
   defaultRuntimeMode: Schema.optionalKey(RuntimeMode),
@@ -1441,7 +1460,10 @@ export const ProjectSettingsOverrides = Schema.Struct({
   providerInstances: Schema.optionalKey(
     Schema.Record(ProviderInstanceId, ProjectProviderInstanceOverride),
   ),
-} satisfies Record<ProjectScopedServerSettingKey | "providerInstances", unknown>);
+} satisfies Record<
+  ProjectScopedServerSettingKey | "providerInstances" | "agentWorkModes",
+  unknown
+>);
 export type ProjectSettingsOverrides = typeof ProjectSettingsOverrides.Type;
 
 // Whole-entry writers must round-trip unknown keys; keep the type closed to catch misspellings.
@@ -1676,6 +1698,16 @@ export const ServerSettings = Schema.Struct({
   snoozeLimitedThreads: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   autoResumeLimitedThreads: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   autoSwitchLimitedAccounts: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  agentWorkProfile: Schema.optionalKey(
+    Schema.Literals(["balanced", "fast", "economy", "research", "thinking", "web", "conductor"]),
+  ),
+  webAssistantRepairSelection: Schema.optionalKey(ModelSelection),
+  modelBenchmarkSnapshot: Schema.optionalKey(ModelBenchmarkSnapshot),
+  agentWorkModes: Schema.optionalKey(
+    Schema.Array(
+      Schema.Literals(["fast", "economy", "research", "thinking", "web", "conductor"]),
+    ).check(Schema.isMaxLength(6)),
+  ),
   sidebarAutoSettleScope: Schema.Literals(["all", "without-pr"]).pipe(
     Schema.withDecodingDefault(Effect.succeed("all")),
   ),
@@ -2001,6 +2033,7 @@ export const ServerSettingsOperation = Schema.Literals([
   "prepare-directory",
   "write-managed-setting",
   "use-disallowed-provider",
+  "refresh-free-models",
 ]);
 export type ServerSettingsOperation = typeof ServerSettingsOperation.Type;
 
@@ -2024,6 +2057,9 @@ export class ServerSettingsError extends Schema.TaggedError<ServerSettingsError>
   },
 ) {
   override get message(): string {
+    if (this.operation === "refresh-free-models") {
+      return `Не удалось обновить каталоги ${this.providerInstanceId ?? "бесплатных моделей"}. Сохранённые модели доступны. Повтори обновление позже.`;
+    }
     if (this.operation === "write-managed-setting") {
       return `${this.managedSetting ?? "This setting"} is managed by ${this.managedBy ?? "your organization"} and cannot be changed.`;
     }
@@ -2174,6 +2210,16 @@ export const ServerSettingsPatch = Schema.Struct({
   sidebarAutoSettlePinnedThreads: Schema.optionalKey(Schema.Boolean),
   autoResumeLimitedThreads: Schema.optionalKey(Schema.Boolean),
   autoSwitchLimitedAccounts: Schema.optionalKey(Schema.Boolean),
+  agentWorkProfile: Schema.optionalKey(
+    Schema.Literals(["balanced", "fast", "economy", "research", "thinking", "web", "conductor"]),
+  ),
+  webAssistantRepairSelection: Schema.optionalKey(ModelSelection),
+  modelBenchmarkSnapshot: Schema.optionalKey(ModelBenchmarkSnapshot),
+  agentWorkModes: Schema.optionalKey(
+    Schema.Array(
+      Schema.Literals(["fast", "economy", "research", "thinking", "web", "conductor"]),
+    ).check(Schema.isMaxLength(6)),
+  ),
   snoozeLimitedThreads: Schema.optionalKey(Schema.Boolean),
   snoozePresets: Schema.optionalKey(SnoozePresetSettings),
   hiddenThreadTags: Schema.optionalKey(Schema.Array(Schema.String)),

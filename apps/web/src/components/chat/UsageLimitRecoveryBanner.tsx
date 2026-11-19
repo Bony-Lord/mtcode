@@ -23,6 +23,7 @@ import { copyAdminRequest } from "./ThreadErrorBanner";
 
 type RecoveryProps = {
   runId: RunId;
+  accountName?: string | undefined;
   errorCode: string | null;
   resetAt: string | null;
   stoppedAt: string;
@@ -69,7 +70,7 @@ export function usageLimitRecoveryBannerItem(props: RecoveryProps): ComposerBann
       variant: "warning",
       group: "environment",
       icon: <GaugeIcon />,
-      title: "Usage limit reached",
+      title: props.accountName ? `Лимит исчерпан · ${props.accountName}` : "Usage limit reached",
       description: resetDescription,
       actions: recoveryActions,
     };
@@ -80,7 +81,9 @@ export function usageLimitRecoveryBannerItem(props: RecoveryProps): ComposerBann
     variant: "warning",
     group: "environment",
     icon: <OpenAI aria-hidden="true" />,
-    title: "ChatGPT usage limit reached",
+    title: props.accountName
+      ? `Лимит исчерпан · ${props.accountName}`
+      : "ChatGPT usage limit reached",
     description: workspaceLimit
       ? "You've reached your workspace's limit for using your ChatGPT plan in other apps."
       : resetDescription,

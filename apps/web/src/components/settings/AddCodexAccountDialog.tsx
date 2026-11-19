@@ -7,7 +7,7 @@ import {
   type EnvironmentId,
   type ServerProvider,
 } from "@t3tools/contracts";
-import { useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { usesChatGptSharing } from "@t3tools/shared/usageLimits";
 
 import { useEnvironmentSettings } from "../../hooks/useSettings";
@@ -41,32 +41,80 @@ export function AddCodexAccountDialog({
   const settings = useEnvironmentSettings(environmentId);
   const providers = useAtomValue(serverEnvironment.providersValueAtom(environmentId));
   const update = useAtomCommand(serverEnvironment.updateSettings, "Add ChatGPT account");
-  const [name, setName] = useState("Personal");
-  const displayName = `ChatGPT - ${name.trim()}`;
+  const [name, setName] = useState("");
+  const displayName = name.trim() ? `ChatGPT · ${name.trim()}` : "Аккаунт ChatGPT";
   const [instanceId, setInstanceId] = useState<ProviderInstanceId | null>(null);
   const [pending, setPending] = useState(false);
   const provider = providers?.find((candidate) => candidate.instanceId === instanceId);
   // Closes itself once the new account connects; the owner unmounts it after
   // the close animation.
   const connected = usesChatGptSharing(provider);
+  const namedAccount = useRef<ProviderInstanceId | null>(null);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Persist provider-reported identity once after the new account signs in.
+  useEffect(() => {
+    const instance = instanceId && settings.providerInstances[instanceId];
+    if (
+      !instance ||
+      !connected ||
+      (!provider?.auth.email && !provider?.usageLimits?.plan) ||
+      namedAccount.current === instanceId
+    )
+      return;
+    namedAccount.current = instanceId;
+    void update({
+      environmentId,
+      input: {
+        patch: {},
+        providerInstanceMutation: {
+          operation: "upsert",
+          instanceId: instanceId!,
+          instance: {
+            ...instance,
+            ...(!name.trim() && provider?.auth.email
+              ? { displayName: `ChatGPT · ${provider.auth.email}` }
+              : {}),
+            ...(!instance.accountTier && provider?.usageLimits?.plan
+              ? {
+                  accountTier:
+                    provider.usageLimits.plan.toLowerCase() === "free"
+                      ? ("free" as const)
+                      : ("subscription" as const),
+                }
+              : {}),
+          },
+        },
+      },
+    });
+  }, [
+    connected,
+    environmentId,
+    instanceId,
+    name,
+    provider?.auth.email,
+    provider?.usageLimits?.plan,
+    settings.providerInstances,
+    update,
+  ]);
 
   const createAccount = async () => {
-    if (pending || !name.trim() || !readEnvironmentScope(environmentId, AuthProvidersManageScope))
-      return;
+    if (pending || !readEnvironmentScope(environmentId, AuthProvidersManageScope)) return;
     setPending(true);
     const id = ProviderInstanceId.make(`codex_${randomUUID()}`);
     const result = await update({
       environmentId,
       input: {
-        patch: {
-          providerInstances: {
-            ...settings.providerInstances,
-            [id]: {
-              driver: CODEX_DRIVER_KIND,
-              displayName,
-              enabled: true,
-              config: { enabled: true, setupMode: "managed" },
-            },
+        patch: {},
+        providerInstanceMutation: {
+          operation: "create",
+          instanceId: id,
+          instance: {
+            driver: CODEX_DRIVER_KIND,
+            displayName,
+            enabled: true,
+            ...(settings.providerInstances[ProviderInstanceId.make("codex")]
+              ? { settingsProfileId: ProviderInstanceId.make("codex") }
+              : {}),
+            config: { enabled: true, setupMode: "managed" },
           },
         },
       },
@@ -91,7 +139,7 @@ export function AddCodexAccountDialog({
       <WizardPopup size="wide">
         <WizardHeader
           title={instanceId ? displayName : "Add ChatGPT account"}
-          description="Each account has its own Codex instance and sign-in. Choose the other account on the sign-in page."
+          description="Общая установка Codex и настройки основного профиля. Имя аккаунта заполнится после входа."
         />
         <WizardPanel>
           {instanceId ? (
@@ -111,14 +159,14 @@ export function AddCodexAccountDialog({
             >
               <SettingsRow
                 title="Account name"
-                description="Shown in the provider list and model picker."
+                description="Необязательно. Можно оставить пустым и использовать имя из аккаунта."
                 control={
                   <Input
                     aria-label="Account name"
                     value={name}
                     disabled={pending}
                     onChange={(event) => setName(event.target.value)}
-                    placeholder="e.g. Personal or Work"
+                    placeholder="Автоматически после входа"
                   />
                 }
               />
@@ -139,7 +187,7 @@ export function AddCodexAccountDialog({
               <Button
                 type="submit"
                 form="add-codex-account"
-                disabled={pending || !name.trim() || !canManageProviders}
+                disabled={pending || !canManageProviders}
               >
                 {pending ? "Adding account…" : "Continue"}
               </Button>

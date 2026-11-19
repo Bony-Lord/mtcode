@@ -1,5 +1,6 @@
 import { settingsScopeEnvironmentLabels } from "./settingsScopeAxis";
 import { Spinner } from "~/components/ui/spinner";
+import { Link } from "@tanstack/react-router";
 import { ArchiveIcon, ArchiveX, Trash2Icon } from "lucide-react";
 import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
 import { presentThreadShell } from "@t3tools/client-runtime/state/shell";
@@ -11,6 +12,7 @@ import {
 } from "@t3tools/client-runtime/state/runtime";
 import { useSettingsScope } from "./SettingsScopeContext";
 import { useThreadActions } from "../../hooks/useThreadActions";
+import { useProjectGroupUpdate } from "../../hooks/useProjectGroupUpdate";
 import { readLocalApi } from "../../localApi";
 import { useArchivedThreadSnapshots } from "../../lib/archivedThreadsState";
 import { RelativeTime } from "../RelativeTime";
@@ -24,14 +26,17 @@ import { useRef, useState } from "react";
 import { Tooltip, TooltipTrigger, TooltipPopup } from "../ui/tooltip";
 
 const ARCHIVE_ACTIONS = [
-  { action: "unarchive", label: "Unarchive", Icon: ArchiveX },
-  { action: "delete", label: "Delete", Icon: Trash2Icon },
+  { action: "unarchive", label: "Восстановить", Icon: ArchiveX },
+  { action: "delete", label: "Удалить", Icon: Trash2Icon },
 ] as const;
 type ArchiveAction = (typeof ARCHIVE_ACTIONS)[number]["action"];
 
 export function ArchivedThreadsPanel() {
   const { scope, groups: projectGroups, environments } = useSettingsScope();
   const { unarchiveThread, confirmAndDeleteThread } = useThreadActions();
+  const { canOrganizeProjectGroup, updateProjectGroup } = useProjectGroupUpdate();
+  const [restoringProject, setRestoringProject] = useState<string | null>(null);
+  const archivedProjectGroups = projectGroups.filter((project) => project.archived);
   const pendingActionsRef = useRef(new Set<string>());
   const [pendingKeys, setPendingKeys] = useState<ReadonlySet<string>>(() => new Set());
   const {
@@ -188,6 +193,37 @@ export function ArchivedThreadsPanel() {
 
   return (
     <SettingsPageContainer>
+      <SettingsSection title="Архив проектов">
+        {archivedProjectGroups.length === 0 ? (
+          <SettingsRow title="Нет архивных проектов" />
+        ) : (
+          archivedProjectGroups.map((group) => (
+            <SettingsRow
+              key={group.projectKey}
+              title={group.title}
+              control={
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={
+                    restoringProject !== null || !canOrganizeProjectGroup(group.memberProjects)
+                  }
+                  onClick={() => {
+                    setRestoringProject(group.projectKey);
+                    void updateProjectGroup(
+                      group.memberProjects,
+                      { archived: false },
+                      "Не удалось восстановить проект",
+                    ).finally(() => setRestoringProject(null));
+                  }}
+                >
+                  Восстановить
+                </Button>
+              }
+            />
+          ))
+        )}
+      </SettingsSection>
       {archivedGroups.length === 0 ? (
         <SettingsSection
           id={isLoadingArchive ? undefined : searchableSetting("archive").id}
@@ -202,16 +238,16 @@ export function ArchivedThreadsPanel() {
                   <ArchiveIcon className="size-3.5 text-muted-foreground" />
                 )}
                 {isLoadingArchive
-                  ? "Loading archived threads"
+                  ? "Загружаем архив чатов"
                   : archiveError
-                    ? "Could not load archived threads"
-                    : "No archived threads"}
+                    ? "Не удалось загрузить архив чатов"
+                    : "Нет архивных чатов"}
               </span>
             }
             description={
               isLoadingArchive
-                ? "Checking connected environments."
-                : (archiveError ?? "Archived threads will appear here.")
+                ? "Проверяем подключённые компьютеры."
+                : (archiveError ?? "Здесь появятся архивированные чаты.")
             }
           />
         </SettingsSection>
@@ -232,18 +268,18 @@ export function ArchivedThreadsPanel() {
                     event.preventDefault();
                     void handleContextMenu(thread, { x: event.clientX, y: event.clientY });
                   }}
-                  title={thread.title}
+                    title={<Link to="/$environmentId/$threadId" params={{ environmentId: thread.environmentId, threadId: thread.id }} className="hover:underline">{thread.title}</Link>}
                   description={
                     <span className={hasMultipleEnvironments ? "block truncate" : undefined}>
                       {hasMultipleEnvironments ? `${thread.environmentLabel} · ` : null}
-                      Archived <RelativeTime timestamp={thread.archivedAt ?? thread.createdAt} />
-                      {" \u00b7 Created "}
+                      {thread.archivedAt ? <>В архиве <RelativeTime timestamp={thread.archivedAt} /></> : "В архивном проекте"}
+                      {" · Создан "}
                       <RelativeTime timestamp={thread.createdAt} />
                     </span>
                   }
                   control={
                     <div className="flex shrink-0 items-center gap-2">
-                      {ARCHIVE_ACTIONS.map(({ action, label, Icon }) => (
+                      {ARCHIVE_ACTIONS.filter(({ action }) => action !== "unarchive" || thread.archivedAt !== null).map(({ action, label, Icon }) => (
                         <Tooltip key={action}>
                           <TooltipTrigger
                             render={

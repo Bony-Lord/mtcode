@@ -7,8 +7,9 @@ import * as NodeReadline from "node:readline";
 import * as NodeTimersPromises from "node:timers/promises";
 import * as NodeURL from "node:url";
 
-const sites = {
+export const sites = {
   chatgpt: {
+    name: "ChatGPT · Веб",
     url: "https://chatgpt.com/",
     composer: [
       "ask anything",
@@ -25,6 +26,49 @@ const sites = {
       '"отправить"',
     ],
     readySelector: '[contenteditable="true"]',
+  },
+  gemini: {
+    name: "Gemini · Веб",
+    url: "https://gemini.google.com/app",
+    composer: ["enter a prompt", "ask gemini", "введите запрос", "спросите gemini"],
+    submit: ["send message", "send prompt", "отправить"],
+    readySelector: '[contenteditable="true"]',
+  },
+  qwen: {
+    name: "Qwen · Веб",
+    url: "https://chat.qwen.ai/",
+    composer: ["how can i help", "message qwen", "type a message", "ask anything", "спросить qwen"],
+    submit: ["send message", "send", "отправить"],
+    submitWithEnter: true,
+    focusBeforeSubmit: true,
+    readySelector: 'textarea, [contenteditable="true"]',
+  },
+  deepseek: {
+    name: "DeepSeek · Веб",
+    url: "https://chat.deepseek.com/",
+    composer: [
+      "message deepseek",
+      "send a message",
+      "сообщение deepseek",
+      "сообщение для deepseek",
+    ],
+    submit: ["send message", "send", "отправить"],
+    submitWithEnter: true,
+    readySelector: "textarea",
+  },
+  glm: {
+    name: "GLM · Веб",
+    url: "https://chat.z.ai/",
+    composer: ["how can i help", "ask anything", "message", "напишите сообщение"],
+    submit: ["send message", "send", "отправить"],
+    readySelector: 'textarea, [contenteditable="true"]',
+  },
+  grok: {
+    name: "Grok · Веб",
+    url: "https://grok.com/",
+    composer: ["ask grok", "ask anything", "type a message", "спросите", "задай grok"],
+    submit: ["send message", "submit", "отправить"],
+    readySelector: '[contenteditable="true"], textarea',
   },
 };
 class Intervention extends Error {
@@ -54,18 +98,51 @@ export async function runWebAssistant(
     recipe,
     wait = NodeTimersPromises.setTimeout,
     token = NodeCrypto.randomBytes(6).toString("hex"),
+    signal,
+    conversationUrl,
   },
 ) {
   const defaults = sites[site];
   if (!defaults) throw new Intervention("setup", "This website has no verified runner recipe.");
   if (!input.trim() || input.length > 24000)
     throw new Intervention("setup", "Use a nonempty input up to 24,000 characters.");
-  const config = { ...defaults, ...recipe, url: defaults.url };
+  const config = { ...defaults };
+  if (recipe) {
+    for (const key of ["composer", "submit"]) {
+      const value = recipe[key];
+      if (value !== undefined) {
+        if (
+          !Array.isArray(value) ||
+          value.length === 0 ||
+          value.length > 24 ||
+          value.some((entry) => typeof entry !== "string" || entry.length > 160)
+        ) {
+          throw new Intervention("setup", "The saved site recipe has invalid control labels.");
+        }
+        config[key] = value;
+      }
+    }
+    if (typeof recipe.readySelector === "string" && recipe.readySelector.length <= 2000)
+      config.readySelector = recipe.readySelector;
+    if (typeof recipe.submitWithEnter === "boolean")
+      config.submitWithEnter = recipe.submitWithEnter;
+    if (typeof recipe.focusBeforeSubmit === "boolean")
+      config.focusBeforeSubmit = recipe.focusBeforeSubmit;
+  }
+  if (conversationUrl) {
+    const target = new URL(conversationUrl);
+    if (target.origin !== new URL(defaults.url).origin || target.username || target.password) {
+      throw new Intervention("setup", "The saved chat URL belongs to a different website.");
+    }
+    config.url = target.href;
+  }
   const session_id = `web-assistant-${token}`;
   let tab_id;
   let submitted = false;
   const read = (name, args = {}) =>
-    call(name, { session_id, ...(tab_id === undefined ? {} : { tab_id }), ...args });
+    name === "browser_close_tab" || !signal?.aborted
+      ? call(name, { session_id, ...(tab_id === undefined ? {} : { tab_id }), ...args })
+      : Promise.reject(signal.reason);
   try {
     const opened = await read("browser_open_tab", { url: config.url });
     tab_id = Number(/tab_id=(\d+)/.exec(opened)?.[1]);
@@ -87,16 +164,23 @@ export async function runWebAssistant(
       );
     const openMarker = `MT_BEGIN_${token}`,
       closeMarker = `MT_END_${token}`;
-    const prompt = `${input}\n\nReturn only the requested answer. On separate lines immediately around the answer, print these markers: ${openMarker} and ${closeMarker}.`;
-    const filled = await read("browser_fill", {
-      index: composer,
-      text: prompt,
-      return_state: true,
+    const richOutput =
+      /интерактив|визуализ|симуляц|график|interactive|visualiz|simulation|chart/i.test(input)
+        ? "\nFor an interactive result, include a complete self-contained HTML widget in a fenced code block named mt-html. Inline CSS/JS only; no external dependencies, network, file access or tool calls. MT Code can render it. Keep explanations outside that block."
+        : "";
+    const prompt = `${input}${richOutput}\n\nReturn only the requested answer. On separate lines immediately around the answer, print these markers: ${openMarker} and ${closeMarker}.`;
+    const fill = (index) => read("browser_fill", { index, text: prompt, return_state: true });
+    const filled = await fill(composer).catch(async (error) => {
+      if (!/element \d+ is no longer on the page/i.test(error.message)) throw error;
+      const fresh = await read("browser_snapshot");
+      const index = pickControl(fresh, config.composer, /textbox|textarea|editable/);
+      if (index === undefined) throw error;
+      return fill(index);
     });
     if (/not exact|did not match|differ from the text|password field/i.test(filled))
       throw new Intervention("fill", "The prompt field did not accept the complete text.");
     const submit = pickControl(filled, config.submit, /button/);
-    if (submit === undefined)
+    if (submit === undefined && !config.submitWithEnter)
       throw new Intervention(
         "submit",
         "The send button changed. The runner has not submitted.",
@@ -106,21 +190,60 @@ export async function runWebAssistant(
           .join("\n"),
       );
     submitted = true;
-    await read("browser_click", { index: submit });
+    if (config.submitWithEnter) {
+      if (config.focusBeforeSubmit) {
+        submitted = false;
+        const current = await read("browser_snapshot");
+        const promptLabel = prompt.trimStart().split(/\r?\n/, 1)[0].slice(0, 50);
+        const inputIndex = pickControl(current, [promptLabel], /textbox|textarea|editable/);
+        if (inputIndex === undefined)
+          throw new Intervention("submit", "The prompt field changed before submission.");
+        await read("browser_click", { index: inputIndex });
+        submitted = true;
+      }
+      await read("browser_press_key", { key: "Enter", return_state: true });
+    } else {
+      await read("browser_click", { index: submit }).catch(async (error) => {
+        if (!/Nothing was pressed/i.test(error.message)) throw error;
+        submitted = false;
+        const current = await read("browser_snapshot");
+        const fresh = pickControl(current, config.submit, /button/);
+        if (fresh === undefined) throw error;
+        submitted = true;
+        await read("browser_click", { index: fresh });
+      });
+    }
     const answerPattern = new RegExp(
       `(?:^|\\n)${openMarker}\\s*\\n([\\s\\S]+?)\\n\\s*${closeMarker}(?:\\s|$)`,
     );
+    let lastPage = "";
     for (let attempt = 0; attempt < 28; attempt++) {
-      await wait(attempt === 0 ? 900 : 2400);
+      await wait(attempt === 0 ? 900 : 2400, undefined, { signal });
       const page = await read("browser_read", { max_chars: 50000 });
+      lastPage = page;
       const answer = answerPattern.exec(page)?.[1]?.trim();
-      if (answer) return { status: "completed", site, answer, verified: false };
+      if (answer) {
+        const url = /\[(https?:\/\/[^\]\s]+)\]/.exec(page.slice(0, 1000))?.[1];
+        const savedUrl =
+          url && new URL(url).origin === new URL(defaults.url).origin ? url : undefined;
+        const formatted = /^(?:mt-html|interactive-html)\s*\n\s*</.test(answer)
+          ? `\`\`\`mt-html\n${answer.replace(/^(?:mt-html|interactive-html)\s*\n/, "")}\n\`\`\``
+          : answer;
+        return {
+          status: "completed",
+          site,
+          answer: formatted,
+          verified: false,
+          conversationUrl: savedUrl,
+        };
+      }
       if (/verify you are human|captcha|проверка, что вы человек/i.test(page))
         throw new Intervention("challenge", "The site requires the user to handle a challenge.");
     }
     throw new Intervention(
       "answer",
       "The answer could not be verified before the deadline. Inspect the existing site chat before retrying.",
+      lastPage.slice(-2400),
     );
   } catch (error) {
     return {
@@ -137,7 +260,7 @@ export async function runWebAssistant(
   }
 }
 
-async function withBrowserBridge(run) {
+export async function withBrowserBridge(run, { signal } = {}) {
   const binary =
     process.env.MTCODE_BROWSER_MCP ??
     NodePath.join(
@@ -224,20 +347,48 @@ async function withBrowserBridge(run) {
       ) {
         throw Error("Computer Use is paused. Resume it in MT Code before using the web helper.");
       }
-      const result = await request("tools/call", { name, arguments: args });
-      const text =
-        result.content
-          ?.filter((item) => item.type === "text")
-          .map((item) => item.text)
-          .join("\n") ?? "";
-      if (result.isError) throw Error(text.slice(0, 1200));
-      return text;
+      for (let attempt = 0; ; attempt++) {
+        if (name !== "browser_close_tab") signal?.throwIfAborted();
+        const result = await request("tools/call", { name, arguments: args });
+        const text =
+          result.content
+            ?.filter((item) => item.type === "text")
+            .map((item) => item.text)
+            .join("\n") ?? "";
+        if (!result.isError) return text;
+        if (
+          name !== "browser_open_tab" ||
+          attempt >= 32 ||
+          !text.includes("native host is not connected")
+        ) {
+          throw Error(text.slice(0, 1200));
+        }
+        await NodeTimersPromises.setTimeout(2000, undefined, { signal });
+      }
     });
   } finally {
     child.stdin.end();
     await NodeTimersPromises.setTimeout(100);
     if (child.exitCode === null) child.kill();
   }
+}
+
+export async function runConfiguredWebAssistant(site, input, { signal, conversationUrl } = {}) {
+  const path = NodePath.join(
+    NodeOS.homedir(),
+    ".mt",
+    "tools",
+    "workspace",
+    "web-assistant-recipes.json",
+  );
+  const saved = await NodeFSP.readFile(path, "utf8").then(JSON.parse, (error) => {
+    if (error.code === "ENOENT") return {};
+    throw error;
+  });
+  return withBrowserBridge(
+    (call) => runWebAssistant(call, { site, input, recipe: saved[site], signal, conversationUrl }),
+    { signal },
+  );
 }
 
 if (
@@ -247,19 +398,9 @@ if (
   const [site, source, output] = process.argv.slice(2);
   try {
     if (!site || !source || !output || !Object.hasOwn(sites, site))
-      throw Error("Usage: web-assistant-runner.mjs chatgpt INPUT OUTPUT");
-    const path = NodePath.join(
-      NodeOS.homedir(),
-      ".mt",
-      "tools",
-      "workspace",
-      "web-assistant-recipes.json",
-    );
-    const saved = await NodeFSP.readFile(path, "utf8").then(JSON.parse, () => ({}));
+      throw Error(`Usage: web-assistant-runner.mjs ${Object.keys(sites).join("|")} INPUT OUTPUT`);
     const input = await NodeFSP.readFile(source, "utf8");
-    const result = await withBrowserBridge((call) =>
-      runWebAssistant(call, { site, input, recipe: saved[site] }),
-    );
+    const result = await runConfiguredWebAssistant(site, input);
     await NodeFSP.writeFile(output, JSON.stringify(result, null, 2), "utf8");
     console.log(JSON.stringify({ status: result.status, stage: result.stage, output }));
     if (result.status !== "completed") process.exitCode = 2;

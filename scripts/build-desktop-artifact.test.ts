@@ -81,6 +81,7 @@ import {
 } from "./update-release-package-versions.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { symlinksSupported } from "@t3tools/shared/testing/symlinks";
+import { resolveDesktopDistroIdentity } from "./lib/desktop-distro.ts";
 
 const encodeModuleUrl = Schema.encodeEffect(Schema.fromJsonString(Schema.String));
 const decodePackageVersion = Schema.decodeUnknownEffect(
@@ -1901,6 +1902,20 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     assert.equal(resolveDesktopUpdateChannel("0.0.17", "default"), "latest");
     assert.equal(resolveDesktopUpdateChannel("0.0.17-nightly.20260413.42", "munim"), "latest");
   });
+
+  it.effect("points the personal desktop installer at the fork releases", () =>
+    Effect.gen(function* () {
+      const config = yield* resolveGitHubPublishConfig("latest", resolveDesktopDistroIdentity("munim")).pipe(
+        Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} }))),
+      );
+      assert.deepStrictEqual(config, {
+        provider: "github",
+        owner: "Bony-Lord",
+        repo: "mtcode",
+        releaseType: "release",
+      });
+    }),
+  );
 
   it("keeps the plain desktop product name for personal fork packaging", () => {
     assert.equal(resolveDesktopProductName("0.0.17"), "T3 Code");

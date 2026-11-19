@@ -112,6 +112,7 @@ import {
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
 import { SshPasswordPrompt } from "@t3tools/ssh/auth";
 import {
+  FetchHttpClient,
   HttpRouter,
   HttpServerRequest,
   HttpServerRespondable,
@@ -184,6 +185,8 @@ import * as OrchestrationEventStore from "./persistence/OrchestrationEventStore.
 import { userFacingDispatchErrorMessage } from "./orchestration-v2/UserFacingErrors.ts";
 import { ProviderAccountLoginRunner } from "./provider/ProviderAccountLoginRunner.ts";
 import * as ProviderRegistry from "./provider/ProviderRegistry.ts";
+import { syncFreeModelCatalogs } from "./provider/FreeModelCatalog.ts";
+import { refreshModelBenchmarks } from "./provider/ModelBenchmarks.ts";
 import * as SecretCheck from "./secrets/SecretCheck.ts";
 import * as AcpRegistrySessions from "./provider/AcpRegistrySessions.ts";
 import * as ProviderInstanceRegistry from "./provider/ProviderInstanceRegistry.ts";
@@ -1913,7 +1916,22 @@ export const layerWsRpc = (
     const getOrchestrationV2ArchivedShellSnapshot = Effect.gen(function* () {
       const { threads, projects, snapshotSequence } = yield* loadShellSnapshotParts({
         sql,
-        readThreads: threadManagement.readShellSnapshot({ location: "archive" }),
+        readThreads: Effect.gen(function* () {
+          const decodeSnapshot = yield* threadManagement.readShellSnapshot();
+          const projects = yield* projectStore.listShells();
+          const archivedProjectIds = new Set(
+            projects.filter((project) => project.archivedAt != null).map((project) => project.id),
+          );
+          return decodeSnapshot.pipe(
+            Effect.map((snapshot) => ({
+              ...snapshot,
+              archivedThreads: [
+                ...snapshot.archivedThreads,
+                ...snapshot.threads.filter((thread) => archivedProjectIds.has(thread.projectId)),
+              ],
+            })),
+          );
+        }),
         listProjects: projectStore.listShells(),
         latestSequence: applicationEvents.latestApplicationSequence,
       });
@@ -2729,7 +2747,7 @@ export const layerWsRpc = (
         ),
       [WS_METHODS.serverUpdateSettings]:
         /* Request instrumentation already owns the span; keep this helper in that context. */
-        Effect.fnUntraced(function* ({ patch, providerInstanceMutation }) {
+        Effect.fnUntraced(function* ({ patch, providerInstanceMutation, refreshFreeModels }) {
           const deviceHosts = patch.deviceHosts
             ? yield* remoteSshDeviceHosts(patch.deviceHosts).pipe(Effect.provide(deviceHostContext))
             : undefined;
@@ -2737,6 +2755,16 @@ export const layerWsRpc = (
           const settings = yield* providerInstanceMutation === undefined
             ? serverSettings.updateSettings(nextPatch)
             : serverSettings.updateProviderInstance(providerInstanceMutation, nextPatch);
+          if (refreshFreeModels === true) {
+            yield* refreshModelBenchmarks(true).pipe(
+              Effect.provide(FetchHttpClient.layer),
+              Effect.ignoreCause({ log: true }),
+            );
+            const refreshed = yield* syncFreeModelCatalogs().pipe(
+              Effect.provide(FetchHttpClient.layer),
+            );
+            return ServerSettings.redactServerSettingsForClient(refreshed, settingsClient);
+          }
           return ServerSettings.redactServerSettingsForClient(settings, settingsClient);
         }),
       [WS_METHODS.serverDiscoverSourceControl]: (_input) => sourceControlDiscovery.discover,

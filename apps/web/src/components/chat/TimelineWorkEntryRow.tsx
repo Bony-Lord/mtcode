@@ -9,8 +9,10 @@ import {
 import {
   ORCHESTRATION_V2_WORKSPACE_PREPARATION_FAILURE_CODE,
   type EnvironmentId,
+  type ProviderInstanceId,
   ThreadId,
 } from "@t3tools/contracts";
+import { useAtomValue } from "@effect/atom-react";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { Link } from "@tanstack/react-router";
 import { notificationChildThreadId } from "@t3tools/client-runtime/state/thread-execution";
@@ -39,6 +41,7 @@ import { ChevronRightIcon, CircleAlertIcon, XIcon, RotateCcwIcon } from "lucide-
 import { Button, InlineButton } from "../ui/button";
 import { useAssetUrls } from "../../assets/assetUrls";
 import { useThreadShell } from "../../state/entities";
+import { serverEnvironment } from "../../state/server";
 import {
   threadReadLabelPrefix,
   threadReadTargetId,
@@ -209,6 +212,27 @@ export function ViewedImagesTimelineRow({
   );
 }
 
+function UsageLimitWorkLabel({
+  environmentId,
+  instanceId,
+  resetTime,
+}: {
+  environmentId: EnvironmentId;
+  instanceId: ProviderInstanceId | undefined;
+  resetTime: string | null;
+}) {
+  const providers = useAtomValue(serverEnvironment.providersValueAtom(environmentId));
+  const accountName = instanceId
+    ? providers?.find((provider) => provider.instanceId === instanceId)?.displayName
+    : undefined;
+  return (
+    <>
+      {accountName ? `Лимит исчерпан · ${accountName}` : "Лимит исчерпан"}
+      {resetTime && ` · Повторить после ${resetTime}`}
+    </>
+  );
+}
+
 function WorkEntryLogRow(props: WorkEntryRowProps) {
   const { workEntry, workspaceRoot, displayLabel } = props;
   const ctx = use(TimelineRowCtx);
@@ -257,9 +281,9 @@ function WorkEntryLogRow(props: WorkEntryRowProps) {
     const resetTime = resetAt
       ? `${formatUpcomingTimestamp(resetAt, timestampFormat, undefined, timeZone)} (${timeZone})`
       : null;
-    const label = warning
-      ? `Usage limit reached.${resetTime ? ` Retry after ${resetTime}.` : ""}`
-      : workEntry.label;
+    const failedInstanceId = warning
+      ? ctx.runs.find((run) => run.id === failureItem.runId)?.providerInstanceId
+      : undefined;
     const retryRunId =
       failureItem.runId !== null &&
       retryableWorkspacePreparationRunIds.has(failureItem.runId) &&
@@ -280,7 +304,15 @@ function WorkEntryLogRow(props: WorkEntryRowProps) {
           <span
             className={cn("text-sm font-medium", warning ? "text-warning" : "text-destructive")}
           >
-            {label}
+            {warning ? (
+              <UsageLimitWorkLabel
+                environmentId={ctx.activeThreadEnvironmentId}
+                instanceId={failedInstanceId}
+                resetTime={resetTime}
+              />
+            ) : (
+              workEntry.label
+            )}
           </span>
         }
         trailing={

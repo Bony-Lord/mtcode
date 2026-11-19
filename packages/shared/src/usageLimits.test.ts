@@ -25,9 +25,115 @@ import {
   paceRemainingPercent,
   usesChatGptSharing,
   resolveNewThreadModelSelection,
+  usageLimitHasRecovered,
+  usageBudgetBlock,
+  accountUsageBudgetBlock,
+  providerUsageDisplaySource,
 } from "./usageLimits.ts";
 
 const now = Date.parse("2026-09-03T12:00:00.000Z");
+
+it("preserves 25% session and 4% weekly remaining at both boundaries and recovers after reset", () => {
+  const policy = { sessionMaxUsedPercent: 75, weeklyMaxUsedPercent: 96 };
+  const report = (session: number, weekly: number) =>
+    provider({
+      usageLimits: {
+        checkedAt: new Date(now).toISOString(),
+        windows: [
+          { id: "primary", kind: "session", label: "5h", usedPercent: session },
+          { id: "secondary", kind: "weekly", label: "week", usedPercent: weekly },
+        ],
+      },
+    });
+  expect(usageBudgetBlock(report(74.9, 95.9), policy, now)).toBeUndefined();
+  expect(usageBudgetBlock(report(75, 95), policy, now)).toMatchObject({
+    kind: "session",
+    reason: "reached",
+    message: expect.stringContaining("осталось 25%"),
+  });
+  expect(usageBudgetBlock(report(70, 96), policy, now)).toMatchObject({
+    kind: "weekly",
+    reason: "reached",
+    message: expect.stringContaining("осталось 4%"),
+  });
+  expect(usageBudgetBlock(report(0, 0), policy, now)).toBeUndefined();
+});
+
+it("enforces per-account ceilings, missing data and reset freshness", () => {
+  const policy = { sessionMaxUsedPercent: 25, weeklyMaxUsedPercent: 4 };
+  const limits = {
+    checkedAt: new Date(now).toISOString(),
+    windows: [
+      {
+        id: "primary",
+        kind: "session" as const,
+        label: "5h",
+        usedPercent: 24,
+        resetsAt: new Date(now + 1000).toISOString(),
+      },
+      {
+        id: "secondary",
+        kind: "weekly" as const,
+        label: "week",
+        usedPercent: 3,
+        resetsAt: new Date(now + 2000).toISOString(),
+      },
+    ],
+  };
+  const p = provider({ usageLimits: limits });
+  expect(usageBudgetBlock(p, policy, now)).toBeUndefined();
+  expect(
+    usageBudgetBlock(
+      {
+        ...p,
+        usageLimits: {
+          ...limits,
+          windows: limits.windows.map((w) => ({ ...w, usedPercent: w.kind === "weekly" ? 4 : 24 })),
+        },
+      },
+      policy,
+      now,
+    ),
+  ).toMatchObject({ kind: "weekly", reason: "reached" });
+  expect(
+    usageBudgetBlock(
+      {
+        ...p,
+        usageLimits: {
+          ...limits,
+          windows: [{ ...limits.windows[0]!, usedPercent: 25 }, limits.windows[1]!],
+        },
+      },
+      policy,
+      now,
+    ),
+  ).toMatchObject({ kind: "session", reason: "reached" });
+  expect(usageBudgetBlock(provider({}), policy, now)?.reason).toBe("unknown");
+  expect(usageBudgetBlock(p, policy, now + 600_001)?.reason).toBe("unknown");
+  expect(usageBudgetBlock(p, undefined, now + 600_001)).toBeUndefined();
+  expect(usageBudgetBlock(p, policy, now + 1001)?.reason).toBe("unknown");
+  const duplicate = {
+    ...p,
+    instanceId: ProviderInstanceId.make("alias"),
+    auth: { status: "authenticated" as const, email: "same@example.test" },
+    usageLimits: undefined,
+  };
+  const measured = {
+    ...p,
+    auth: duplicate.auth,
+    usageLimits: {
+      ...limits,
+      windows: [{ ...limits.windows[0]!, usedPercent: 25 }, limits.windows[1]!],
+    },
+  };
+  const budgetSettings = {
+    ...DEFAULT_SERVER_SETTINGS,
+    providerInstances: { codex: { driver: ProviderDriverKind.make("codex"), usagePolicy: policy } },
+  };
+  expect(
+    accountUsageBudgetBlock(duplicate, [duplicate, measured], budgetSettings, now)?.reason,
+  ).toBe("reached");
+});
 
 const window = {
   id: "five_hour",
@@ -54,6 +160,72 @@ function provider(overrides: Partial<ServerProvider>): ServerProvider {
     ...overrides,
   };
 }
+
+it("displays native Codex quota only for the selected ChatGPT account and unambiguous workspace", () => {
+  const native = provider({
+    auth: {
+      status: "authenticated",
+      type: "chatgpt",
+      email: "pogo@example.test",
+      label: "ChatGPT Plus Subscription",
+      workspaceId: "personal",
+    },
+    usageLimits: { checkedAt: new Date(now).toISOString(), windows: [window] },
+  });
+  const managed = provider({
+    instanceId: ProviderInstanceId.make("codex-connected"),
+    auth: {
+      status: "authenticated",
+      type: "chatgpt",
+      subscriptionSharing: true,
+      email: " POGO@example.test ",
+    },
+    usageLimits: {
+      checkedAt: new Date(now).toISOString(),
+      windows: [],
+      unavailable: { reason: "unsupported" },
+    },
+  });
+  expect(providerUsageDisplaySource(managed, [managed, native])).toBe(native);
+  const otherAccount = { ...native, auth: { ...native.auth, email: "smith@example.test" } };
+  expect(providerUsageDisplaySource(managed, [managed, otherAccount])).toBe(managed);
+  const otherWorkspace = {
+    ...native,
+    instanceId: ProviderInstanceId.make("codex-work"),
+    auth: { ...native.auth, workspaceId: "work", label: "ChatGPT Business Subscription" },
+  };
+  expect(providerUsageDisplaySource(managed, [managed, otherWorkspace])).toBe(managed);
+  expect(providerUsageDisplaySource(managed, [managed, native, otherWorkspace])).toBe(managed);
+  const knownWorkspace = { ...managed, auth: { ...managed.auth, workspaceId: "personal" } };
+  expect(providerUsageDisplaySource(knownWorkspace, [knownWorkspace, native, otherWorkspace])).toBe(
+    native,
+  );
+  const hasOwnQuota = { ...managed, usageLimits: native.usageLimits };
+  expect(providerUsageDisplaySource(hasOwnQuota, [hasOwnQuota, native])).toBe(hasOwnQuota);
+});
+
+it("clears a limit notice only when a fresh applicable quota confirms recovery", () => {
+  const input = { model: "gpt-6.1-sol", stoppedAt: "2026-09-03T10:30:00.000Z", now };
+  const limits = { checkedAt: "2026-09-03T11:00:00.000Z", windows: [window] };
+  expect(usageLimitHasRecovered({ ...input, provider: provider({ usageLimits: limits }) })).toBe(
+    true,
+  );
+  for (const override of [
+    { checkedAt: "2026-09-03T10:00:00.000Z" },
+    { windows: [] },
+    { windows: [{ ...window, usedPercent: 100 }] },
+    { windows: [{ ...window, modelIds: ["another-model"] }] },
+    { unavailable: { reason: "probeFailed" as const } },
+    { zeroSpendCap: true },
+  ]) {
+    expect(
+      usageLimitHasRecovered({
+        ...input,
+        provider: provider({ usageLimits: { ...limits, ...override } }),
+      }),
+    ).toBe(false);
+  }
+});
 
 describe("new thread model fallback", () => {
   const selection = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6.1-sol" };

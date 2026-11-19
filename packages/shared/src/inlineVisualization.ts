@@ -1,5 +1,6 @@
 const CONTENT_REFERENCE_PATTERN =
   /^\s*[\uE200\uFFFD]visualize[\uE202\uFFFD](\{.*\})[\uE201\uFFFD]\s*$/u;
+const VISIBLE_REFERENCE_PATTERN = /^\s*::visualize(\{.*\})\s*$/u;
 const CODE_FENCE_PATTERN = /^ {0,3}(`{3,}|~{3,})/u;
 
 export interface InlineVisualizationReference {
@@ -14,7 +15,7 @@ export type InlineVisualizationPart =
   | (InlineVisualizationReference & { readonly key: string });
 
 function parseInlineVisualizationReference(line: string): InlineVisualizationReference | null {
-  const match = CONTENT_REFERENCE_PATTERN.exec(line);
+  const match = CONTENT_REFERENCE_PATTERN.exec(line) ?? VISIBLE_REFERENCE_PATTERN.exec(line);
   if (!match?.[1]) return null;
 
   try {
@@ -40,7 +41,7 @@ function parseInlineVisualizationReference(line: string): InlineVisualizationRef
 
 /** Splits only standalone references; examples inside fenced code stay Markdown. */
 export function splitInlineVisualizations(text: string): InlineVisualizationPart[] {
-  if (!/[\uE200\uFFFD]visualize[\uE202\uFFFD]/u.test(text)) {
+  if (!/(?:[\uE200\uFFFD]visualize[\uE202\uFFFD]|::visualize\{)/u.test(text)) {
     return [{ key: "markdown:0", kind: "markdown", text }];
   }
   const parts: InlineVisualizationPart[] = [];

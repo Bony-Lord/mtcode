@@ -292,7 +292,10 @@ export class ProviderSessionManagerV2 extends Context.Service<
 
 interface LiveSessionEntry {
   readonly attachedThreadIds: ReadonlySet<ThreadId>;
-  readonly loadedProviderThreadKeyByThread: ReadonlyMap<ThreadId, string>;
+  readonly loadedProviderThreadKeyByThread: ReadonlyMap<
+    ThreadId,
+    { readonly key: string; readonly providerThread: OrchestrationV2ProviderThread }
+  >;
   /** null marks an unknown catalog; undefined means MCP refresh is not configured. */
   readonly openedWithLinkedEnvironments: boolean | null | undefined;
   readonly linkedEnvironmentsByThread: ReadonlyMap<ThreadId, boolean | null>;
@@ -525,6 +528,10 @@ export const layerWithOptions = (
         readonly threadId: ThreadId;
       }) => `${input.providerSessionId}\u0000${input.threadId}`;
       const idleTimeoutMs = Math.max(1, options.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS);
+      const sessionIdleTimeoutMs = (driver: string) =>
+        options.idleTimeoutMs === undefined && (driver === "opencode" || driver === "antigravity")
+          ? 60_000
+          : idleTimeoutMs;
       const maxIdlePinMs = Math.max(0, options.maxIdlePinMs ?? DEFAULT_MAX_IDLE_PIN_MS);
       interface PreparedMcpCredential {
         readonly mcpCredentialId: string | undefined;
@@ -1523,7 +1530,7 @@ export const layerWithOptions = (
                 pinnedForMs: now - pinnedSinceMs,
               });
               // Recheck on this fiber; scheduleIdleReleaseInternal would interrupt it and self-deadlock.
-              yield* Effect.sleep(Duration.millis(idleTimeoutMs));
+              yield* Effect.sleep(Duration.millis(sessionIdleTimeoutMs(probedRuntime.driver)));
               return yield* releaseIfStillIdle(input);
             }
             yield* Effect.logWarning("orchestration-v2.driver-session.idle-release-pin-expired", {
@@ -1592,7 +1599,9 @@ export const layerWithOptions = (
 
         yield* cancelIdleFiber(entry.idleFiber);
         const generation = entry.idleGeneration + 1;
-        const idleFiber = yield* Effect.sleep(Duration.millis(idleTimeoutMs)).pipe(
+        const idleFiber = yield* Effect.sleep(
+          Duration.millis(sessionIdleTimeoutMs(entry.runtime.driver)),
+        ).pipe(
           Effect.andThen(releaseIfStillIdle({ providerSessionId, generation })),
           Effect.forkIn(layerScope),
         );
@@ -1685,7 +1694,8 @@ export const layerWithOptions = (
             (current) =>
               current
                 .get(sessionKey(input.providerSessionId))
-                ?.loadedProviderThreadKeyByThread.get(input.threadId) === input.providerThreadKey,
+                ?.loadedProviderThreadKeyByThread.get(input.threadId)?.key ===
+              input.providerThreadKey,
           ),
         );
 
@@ -1694,6 +1704,7 @@ export const layerWithOptions = (
         readonly providerSessionId: ProviderSessionId;
         readonly threadId: ThreadId;
         readonly providerThreadKey: string;
+        readonly providerThread: OrchestrationV2ProviderThread;
         readonly linkedEnvironments: boolean | null | undefined;
       }) =>
         Ref.update(sessions, (current) => {
@@ -1703,7 +1714,10 @@ export const layerWithOptions = (
             return current;
           }
           const loadedProviderThreadKeyByThread = new Map(entry.loadedProviderThreadKeyByThread);
-          loadedProviderThreadKeyByThread.set(input.threadId, input.providerThreadKey);
+          loadedProviderThreadKeyByThread.set(input.threadId, {
+            key: input.providerThreadKey,
+            providerThread: input.providerThread,
+          });
           const linkedEnvironmentsByThread = new Map(entry.linkedEnvironmentsByThread);
           if (
             input.linkedEnvironments !== undefined &&
@@ -2341,6 +2355,7 @@ export const layerWithOptions = (
                 markProviderThreadLoaded({
                   providerSessionId,
                   threadId: input.threadId,
+                  providerThread,
                   providerThreadKey: providerThreadLoadKey({
                     runtime,
                     providerThread,
@@ -2402,6 +2417,7 @@ export const layerWithOptions = (
                 markProviderThreadLoaded({
                   providerSessionId,
                   threadId,
+                  providerThread,
                   providerThreadKey: providerThreadLoadKey({
                     runtime,
                     providerThread,
@@ -2432,6 +2448,7 @@ export const layerWithOptions = (
                 markProviderThreadLoaded({
                   providerSessionId,
                   threadId: input.targetThreadId,
+                  providerThread,
                   providerThreadKey: providerThreadLoadKey({
                     runtime,
                     providerThread,
@@ -3251,6 +3268,12 @@ export const layerWithOptions = (
             const currentEntry = (yield* Ref.get(sessions)).get(key);
             let detachedProviderThreads: ReadonlyArray<OrchestrationV2ProviderThread> = [];
             if (currentEntry?.supportsMultipleProviderThreads === true) {
+              // The new account may already own this thread in the projection. The old
+              // app-server still owns the native thread until this detach effect runs.
+              const loadedThread = currentEntry.loadedProviderThreadKeyByThread.get(
+                input.threadId,
+              )?.providerThread;
+              if (loadedThread !== undefined) detachedProviderThreads = [loadedThread];
               const projection = yield* Effect.option(
                 projectionStore.getThreadRecords(input.threadId, [
                   "providerThreads",
@@ -3263,6 +3286,17 @@ export const layerWithOptions = (
                     .filter((thread) => thread.providerSessionId === input.providerSessionId)
                     .map((thread) => [thread.id, thread] as const),
                 );
+                if (
+                  loadedThread !== undefined &&
+                  ![...providerThreads.values()].some(
+                    (thread) =>
+                      thread.id === loadedThread.id ||
+                      (loadedThread.nativeThreadRef !== null &&
+                        thread.nativeThreadRef?.nativeId === loadedThread.nativeThreadRef.nativeId),
+                  )
+                ) {
+                  providerThreads.set(loadedThread.id, loadedThread);
+                }
                 detachedProviderThreads = [...providerThreads.values()];
                 const activeTurns = projection.value.providerTurns.filter(
                   (turn) => turn.status === "running" && providerThreads.has(turn.providerThreadId),
@@ -3382,7 +3416,7 @@ export const layerWithOptions = (
                     ) {
                       return;
                     }
-                    yield* unloadThread({ providerThread }).pipe(
+                    yield* unloadThread({ providerThread, waitForClose: true }).pipe(
                       Effect.timeout(UNLOAD_THREAD_TIMEOUT_MS),
                       Effect.catchCause((cause) =>
                         Effect.logWarning("orchestration-v2.driver-session.detach-unload-failed", {

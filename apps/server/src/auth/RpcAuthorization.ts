@@ -270,6 +270,7 @@ export const rpcAuthorizationError = (requiredScope: AuthEnvironmentScope) =>
 const SettingsUpdate = Schema.Struct({
   patch: ServerSettingsPatch,
   providerInstanceMutation: Schema.optionalKey(ProviderInstanceMutation),
+  refreshFreeModels: Schema.optionalKey(Schema.Boolean),
 });
 // Middleware receives the payload already decoded, so it is checked against the decoded shape.
 const decodeSettingsUpdate = Schema.decodeUnknownSync(Schema.toType(SettingsUpdate));
@@ -277,6 +278,12 @@ const decodeSettingsUpdate = Schema.decodeUnknownSync(Schema.toType(SettingsUpda
 const requiredScopesForSettingsUpdate = (payload: unknown) => {
   const input = decodeSettingsUpdate(payload);
   const scopes = requiredScopesForServerSettingsPatch(input.patch);
+  if (input.refreshFreeModels === true) {
+    const patchScopes = Object.values(input.patch).every((value) => value === undefined)
+      ? []
+      : scopes;
+    return [...new Set([...patchScopes, AuthProvidersManageScope, AuthFilesystemWriteScope])];
+  }
   if (input.providerInstanceMutation === undefined) return scopes;
   return Object.values(input.patch).every((value) => value === undefined)
     ? [AuthProvidersManageScope]
@@ -287,10 +294,11 @@ const requiredScopesForSettingsUpdate = (payload: unknown) => {
  * MT Code: a project transfer reads on the source environment and writes on the destination;
  * finishing one also registers the project there.
  */
+const decodeProjectTransferInput = Schema.decodeUnknownSync(ProjectTransferInput);
 const requiredScopesForProjectTransfer = (
   payload: unknown,
 ): ReadonlyArray<AuthEnvironmentScope> => {
-  const { operation } = Schema.decodeUnknownSync(ProjectTransferInput)(payload);
+  const { operation } = decodeProjectTransferInput(payload);
   switch (operation) {
     case "prepare":
     case "read":

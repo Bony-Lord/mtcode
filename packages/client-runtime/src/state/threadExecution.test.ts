@@ -181,6 +181,20 @@ describe("thread execution presentation", () => {
       lastErrorClass: "usage_limit",
     });
     expect(deriveResumableRunId(projection, deriveThreadRuntime(projection))).toBe(failed.id);
+    const nextAccount = ProviderInstanceId.make("next-account");
+    expect(
+      deriveThreadRuntime({
+        ...projection,
+        thread: {
+          ...projection.thread,
+          providerInstanceId: nextAccount,
+          modelSelection: { ...projection.thread.modelSelection, instanceId: nextAccount },
+        },
+      }),
+    ).toMatchObject({
+      providerInstanceId: failed.providerInstanceId,
+      lastErrorClass: "usage_limit",
+    });
     expect(
       deriveThreadRuntime({
         ...projection,

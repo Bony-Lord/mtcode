@@ -15,6 +15,76 @@ import { __setClientSettingsForTests } from "../../hooks/useSettings";
 import { deriveProviderInstanceEntries } from "../../providerInstances";
 import { ProviderModelPicker } from "./ProviderModelPicker";
 
+it("offers Auto as a single choice in a new chat with shift selection available", async () => {
+  const instanceId = ProviderInstanceId.make("codex");
+  const omniId = ProviderInstanceId.make("omniroute-free");
+  const entries = deriveProviderInstanceEntries([
+    {
+      instanceId,
+      driver: ProviderDriverKind.make("codex"),
+      enabled: true,
+      installed: true,
+      version: null,
+      status: "ready",
+      auth: { status: "authenticated" },
+      checkedAt: "2026-01-01T00:00:00.000Z",
+      models: [{ slug: "model-a", name: "Model A", isCustom: false, capabilities: {} }],
+      slashCommands: [],
+      skills: [],
+    },
+    {
+      instanceId: omniId,
+      displayName: "OmniRoute · чат-помощники",
+      driver: ProviderDriverKind.make("opencode"),
+      enabled: true,
+      installed: true,
+      version: null,
+      status: "ready",
+      auth: { status: "authenticated" },
+      checkedAt: "2026-01-01T00:00:00.000Z",
+      models: [
+        {
+          slug: "omniroute/ddgw/gpt-5.4-mini",
+          name: "DDG GPT Mini",
+          isCustom: true,
+          capabilities: {},
+        },
+      ],
+      slashCommands: [],
+      skills: [],
+    },
+  ]);
+  const onToggleModel = vi.fn();
+  const onInstanceModelChange = vi.fn();
+  await using screen = await render(
+    <ProviderModelPicker
+      environmentId={null}
+      activeInstanceId={instanceId}
+      model="model-a"
+      lockedProvider={null}
+      instanceEntries={entries}
+      modelOptionsByInstance={new Map(entries.map((entry) => [entry.instanceId, entry.models]))}
+      onToggleModel={onToggleModel}
+      onInstanceModelChange={onInstanceModelChange}
+    />,
+  );
+  await screen.getByRole("button", { name: "Model A", exact: true }).click();
+  await page.getByRole("button", { name: "OmniRoute · чат-помощники", exact: true }).click();
+  await expect.element(page.getByRole("option", { name: /DDG GPT Mini/ })).toBeVisible();
+  await page.getByRole("button", { name: "Авто · все провайдеры", exact: true }).click();
+  const autoOption = page.getByRole("option", { name: /Авто · все провайдеры/ });
+  expect(autoOption.element().querySelector('button[aria-label^="Показать модели"]')).toBeNull();
+  expect(autoOption.element().textContent).not.toContain("Новый");
+  await userEvent.keyboard("{Shift>}");
+  try {
+    await page.getByRole("option", { name: /Авто · все провайдеры/ }).click();
+  } finally {
+    await userEvent.keyboard("{/Shift}");
+  }
+  expect(onInstanceModelChange).toHaveBeenCalledWith(instanceId, "mt-auto");
+  expect(onToggleModel).not.toHaveBeenCalled();
+});
+
 it("keeps each registry image when adding a model from another ACP agent", async () => {
   const icons = [
     "https://cdn.agentclientprotocol.com/registry/icons/picker-explicit.svg",
@@ -166,11 +236,11 @@ it("keeps a docked picker open after a pick and hands focus to that model's effo
   await userEvent.keyboard("{ArrowLeft}");
   await expect.element(search).toHaveFocus();
 
-  await page.getByRole("option", { name: /Second model/ }).click();
+  await page.getByText("Second model", { exact: false }).click();
   await expect.element(page.getByRole("radio", { name: "Medium" })).toHaveFocus();
 
-  await page.getByRole("option", { name: /Plain model/ }).click();
-  await page.getByRole("option", { name: /Second model/ }).click();
+  await page.getByText("Plain model", { exact: false }).click();
+  await page.getByText("Second model", { exact: false }).click();
   await expect.element(page.getByRole("radio", { name: "Medium" })).toHaveFocus();
   await userEvent.keyboard("{Escape}");
   await expect.element(search).not.toBeInTheDocument();

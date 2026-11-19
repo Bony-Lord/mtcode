@@ -167,7 +167,11 @@ export function transformUi(code: string, file: string): { code: string; strings
       });
       return;
     }
-    if (ts.isJsxExpression(node) && node.expression) {
+    if (
+      ts.isJsxExpression(node) &&
+      node.expression &&
+      (ts.isJsxElement(node.parent) || ts.isJsxFragment(node.parent))
+    ) {
       const before = changes.length;
       const leaf = (value: ts.Expression): void => {
         if (ts.isStringLiteral(value) || ts.isNoSubstitutionTemplateLiteral(value))

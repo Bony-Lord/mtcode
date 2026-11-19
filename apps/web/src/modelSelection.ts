@@ -18,6 +18,7 @@ import {
   resolveSelectableModel,
 } from "@t3tools/shared/model";
 import { getComposerProviderState } from "./components/chat/composerProviderState";
+import { isSmartModel } from "@t3tools/shared/smartModelRouting";
 import { type ClientSettings, UnifiedSettings } from "@t3tools/contracts/settings";
 import { resolveModelPreferences } from "@t3tools/shared/serverSettings";
 import * as Arr from "effect/Array";
@@ -72,15 +73,6 @@ export interface AppModelOption {
   isLegacy?: boolean;
   isUnavailable?: boolean;
 }
-
-export const AUTO_APP_MODEL_OPTION: AppModelOption = {
-  slug: "auto",
-  name: "Auto (Smart Routing)",
-  shortName: "Auto",
-  badge: "new",
-  isDefault: true,
-  isCustom: false,
-};
 
 function appendUnavailableDynamicModelSelection(
   options: AppModelOption[],
@@ -188,10 +180,6 @@ function getAppModelOptions(
     .filter((model) => !model.isCustom)
     .map((model) => toAppModelOption(model, provider));
   const seen = new Set(options.map((option) => option.slug));
-  if (!seen.has("auto")) {
-    options.unshift(AUTO_APP_MODEL_OPTION);
-    seen.add("auto");
-  }
   const builtInModelSlugs = new Set(
     Arr.filterMap(getProviderModels(providers, provider), (model) =>
       model.isCustom ? Result.failVoid : Result.succeed(model.slug),
@@ -234,10 +222,6 @@ export function getAppModelOptionsForInstance(
     .filter((model) => !model.isCustom)
     .map((model) => toAppModelOption(model, entry.driverKind));
   const seen = new Set(options.map((option) => option.slug));
-  if (!seen.has("auto")) {
-    options.unshift(AUTO_APP_MODEL_OPTION);
-    seen.add("auto");
-  }
   const builtInModelSlugs = new Set(
     Arr.filterMap(entry.models, (model) =>
       model.isCustom ? Result.failVoid : Result.succeed(model.slug),
@@ -276,6 +260,7 @@ export function resolveAppModelSelection(
   providers: ReadonlyArray<ServerProvider>,
   selectedModel: string | null | undefined,
 ): string {
+  if (selectedModel && isSmartModel(selectedModel)) return selectedModel;
   const resolvedProvider = resolveSelectableProvider(providers, provider);
   const options = getAppModelOptions(settings, providers, resolvedProvider, selectedModel);
   return (
@@ -291,6 +276,7 @@ export function resolveAppModelSelectionForInstance(
   selectedModel: string | null | undefined,
   resolutionOptions?: { readonly preserveUnavailableSelection?: boolean },
 ): string | null {
+  if (selectedModel && isSmartModel(selectedModel)) return selectedModel;
   const entry = deriveProviderInstanceEntries(providers).find(
     (candidate) => candidate.instanceId === instanceId,
   );

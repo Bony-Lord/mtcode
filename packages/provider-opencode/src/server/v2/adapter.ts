@@ -1,6 +1,7 @@
 import * as Path from "effect/Path";
 import * as Option from "effect/Option";
 import * as NodeURL from "node:url";
+import { retryDecision } from "./retryPolicy.ts";
 
 import {
   AbsolutePath,
@@ -730,8 +731,7 @@ const modelRef = (
   selection: ProviderAdapter.ProviderAdapterV2TurnInput["modelSelection"],
   listedVariants: ReadonlySet<string> | undefined,
 ) => {
-  const modelSlug = selection.model === "auto" ? "opencode/big-pickle" : selection.model;
-  const parsed = OpenCodeRuntime.parseOpenCodeModelSlug(modelSlug);
+  const parsed = OpenCodeRuntime.parseOpenCodeModelSlug(selection.model);
   if (parsed === null) return undefined;
   const selected = getModelSelectionStringOptionValue(selection, "variant");
   const variant =
@@ -1505,17 +1505,45 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
       { attempt, error }: Pick<EventOf<"session.retry.scheduled">["data"], "attempt" | "error">,
       delayMs: number,
     ) {
+      const message = readableProviderErrorMessage(
+        error.message,
+        error.status,
+        error.response?.body,
+      );
+      const usageLimit = isUsageLimit(error);
+      const decision = retryDecision(attempt, message ?? "", { usageLimit });
+      if (decision !== "retry") {
+        const failure = makeProviderFailure({
+          message,
+          code: error.type,
+          class:
+            decision === "invalid-input"
+              ? "validation_error"
+              : usageLimit
+                ? "usage_limit"
+                : "provider_error",
+          retryable: false,
+          // The recovery worker needs the window's end to resume the turn later.
+          resetAt: usageLimit ? (claudeUsageLimit(error.message)?.resetAt ?? null) : null,
+        });
+        yield* client.session
+          .interrupt({ sessionID: Session.ID.make(state.sessionId) })
+          .pipe(Effect.timeout(INTERRUPT_TIMEOUT), Effect.ignore({ log: true }));
+        yield* endExecution(state, turn, { status: "failed", failure });
+        return;
+      }
       turn.retry = {
         retry: {
           // OpenCode counts the first request as attempt 1, so its first retry is attempt 2.
           attempt: Math.max(1, attempt - 1),
-          maxAttempts: null,
+          maxAttempts: 2,
           retryDelayMs: Math.max(0, Math.trunc(delayMs)),
         },
         failure: makeProviderFailure({
           message: readableProviderErrorMessage(error.message, error.status, error.response?.body),
           code: error.type,
-          class: isUsageLimit(error) ? "usage_limit" : "provider_error",
+          // Usage limits never reach this branch; only transient failures are retried.
+          class: "provider_error",
           retryable: true,
         }),
         startedAt: turn.retry?.startedAt ?? (yield* DateTime.now),

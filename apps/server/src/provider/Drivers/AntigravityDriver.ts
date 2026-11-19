@@ -470,6 +470,7 @@ export const AntigravityDriver: ProviderDriver<
       ),
       profileDirectory,
       onSessionStarted: provider.onSessionStarted,
+      onRegionUnavailable: provider.onRegionUnavailable,
       onSessionEvent: (event) => {
         if (event._tag === "ConfigOptionsUpdated") {
           return provider.onConfigOptionsUpdated(event.configOptions);

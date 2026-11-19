@@ -1,234 +1,175 @@
 import { useAtomValue } from "@effect/atom-react";
-import { collectLimitAccounts, remainingPercent } from "@t3tools/shared/usageLimits";
+import { providerUsageDisplaySource, remainingPercent } from "@t3tools/shared/usageLimits";
+import { isSmartModel } from "@t3tools/shared/smartModelRouting";
 import { refreshUsageLimits } from "@t3tools/client-runtime/state/usage";
 import { environmentPresentations } from "../../state/presentation";
 import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { SidebarMenuButton, SidebarMenuItem } from "../ui/sidebar";
-import { useThreadRouteRef } from "../../hooks/useThreadRouteTarget";
-import { useQuietThreadShell } from "../../state/entities";
+import { useThreadRouteTarget } from "../../hooks/useThreadRouteTarget";
+import { useQuietThreadShell, useThreadProjection } from "../../state/entities";
+import { useComposerDraftModelState, useComposerDraftStore } from "../../composerDraftStore";
+import { threadHasStarted } from "../../lib/chatThreadActions";
+import { selectedUsageModel } from "./QuickUsageLimits.logic";
+
+const arcs = ["M9.771 6.674 A14 14 0 0 1 26.229 6.674", "M29.326 9.771 A14 14 0 1 1 6.674 9.771"];
 
 export function QuickUsageLimits({ onOpenUsage }: { readonly onOpenUsage: () => void }) {
-  const threadRef = useThreadRouteRef();
+  const target = useThreadRouteTarget();
+  const threadRef = target?.kind === "server" ? target.threadRef : null;
   const thread = useQuietThreadShell(threadRef);
-  const presentations = useAtomValue(environmentPresentations.presentationsWithProvidersAtom);
-  const accounts = collectLimitAccounts(presentations);
-
-  const activeModel = thread?.modelSelection?.model;
-  const activeInstanceId = thread?.modelSelection?.instanceId;
-  const activeProvider = thread?.modelSelection?.provider;
-
-  const activeAccount =
-    activeInstanceId || activeProvider
-      ? accounts.find(
-          (entry) =>
-            (activeInstanceId && entry.key === activeInstanceId) ||
-            (activeProvider && entry.driver === activeProvider),
-        )
-      : undefined;
-
-  const defaultAccount =
-    accounts.find(
-      (entry) =>
-        entry.driver === "codex" && entry.limits.windows.length > 0 && !entry.limits.unavailable,
-    ) ??
-    accounts.find((entry) => entry.limits.windows.length > 0 && !entry.limits.unavailable) ??
-    accounts[0];
-
-  const currentAccount = activeAccount ?? defaultAccount;
-  const hasAccountLimits =
-    (currentAccount?.limits?.windows?.length ?? 0) > 0 && !currentAccount?.limits?.unavailable;
-
-  // If there's an active thread with a local, free, or unlimited provider (or no limit windows)
-  const isUnlimited = Boolean(
-    thread &&
-      (!hasAccountLimits ||
-        activeModel?.toLowerCase().includes("free") ||
-        activeModel?.toLowerCase().includes("ollama") ||
-        activeModel?.toLowerCase().includes("ovh") ||
-        activeModel?.toLowerCase().includes("bifrost")),
+  const detail = useThreadProjection(threadRef);
+  const activeRun = detail?.projection.runs.find((run) => run.id === thread?.runtime?.activeRunId);
+  const execution =
+    activeRun ??
+    detail?.projection.runs.findLast(
+      (run) => run.status !== "queued" && run.status !== "cancelled",
+    );
+  const runIsActive =
+    activeRun !== undefined &&
+    ["preparing", "queued", "starting", "running", "waiting"].includes(activeRun.status);
+  const draftTarget = target?.kind === "draft" ? target.draftId : threadRef;
+  const draft = useComposerDraftModelState(draftTarget);
+  const draftEnvironmentId = useComposerDraftStore((state) =>
+    target?.kind === "draft" ? state.getDraftThread(target.draftId)?.environmentId : undefined,
   );
-
-  const windows = currentAccount?.limits.windows ?? [];
-
+  const presentations = useAtomValue(environmentPresentations.presentationsWithProvidersAtom);
+  const selection = selectedUsageModel(
+    draft,
+    thread?.modelSelection,
+    threadHasStarted(thread),
+    execution?.modelSelection,
+    runIsActive,
+  );
+  const environmentId = draftEnvironmentId ?? threadRef?.environmentId;
+  const automatic = selection !== undefined && isSmartModel(selection.model);
+  const providers = environmentId
+    ? presentations.get(environmentId)?.serverConfig?.providers
+    : undefined;
+  const provider =
+    selection && !automatic
+      ? providers?.find((entry) => entry.instanceId === selection.instanceId)
+      : undefined;
+  const source = providerUsageDisplaySource(provider, providers ?? []);
+  const limits = source?.usageLimits;
+  const windows =
+    limits?.windows.filter(
+      (window) =>
+        !selection ||
+        ((!window.modelIds || window.modelIds.includes(selection.model)) &&
+          (!window.providerIds ||
+            window.providerIds.includes(selection.model.split("/")[0] ?? ""))),
+    ) ?? [];
+  const session =
+    windows.find((window) => window.kind === "session") ??
+    windows.find((window) => window.kind !== "weekly");
+  const weekly = windows.find((window) => window.kind === "weekly");
+  const name =
+    provider?.displayName ??
+    (provider?.driver === "codex" ? "Codex" : provider?.driver) ??
+    (automatic ? "Авто · все провайдеры" : "Лимиты");
   const refreshProviders = useAtomCommand(serverEnvironment.refreshProviders, {
     reportFailure: false,
   });
-
-  const refreshOnHover = (open: boolean) => {
-    if (!open) return;
-    for (const [environmentId, presentation] of presentations) {
-      if (presentation.connection.phase === "connected") {
-        void refreshUsageLimits(
-          environmentId,
-          () => refreshProviders({ environmentId, input: {} }),
-          true,
-        ).catch(() => {});
-      }
-    }
+  const refresh = (open: boolean) => {
+    if (!open || !environmentId || !source) return;
+    if (presentations.get(environmentId)?.connection.phase !== "connected") return;
+    void refreshUsageLimits(
+      environmentId,
+      () => refreshProviders({ environmentId, input: { instanceId: source.instanceId } }),
+      true,
+    ).catch(() => {});
   };
-
-  const sessionLimit = windows.find((item) => item.kind !== "weekly");
-  const weeklyLimit = windows.find((item) => item.kind === "weekly");
-
-  const sessionPercent = isUnlimited
-    ? 100
-    : sessionLimit
-      ? Math.max(0, Math.min(100, remainingPercent(sessionLimit)))
-      : null;
-  const weeklyPercent = isUnlimited
-    ? 100
-    : weeklyLimit
-      ? Math.max(0, Math.min(100, remainingPercent(weeklyLimit)))
-      : null;
-
-  const formatReset = (resetsAt: number | string | undefined | null) => {
-    if (!resetsAt) return null;
-    const date = new Date(resetsAt);
-    if (Number.isNaN(date.getTime())) return null;
-    return date.toLocaleString("ru-RU", {
-      month: "short",
-      day: "numeric",
-      hour: "2-digit",
-      minute: "2-digit",
-    });
-  };
-
-  const sessionReset = formatReset(sessionLimit?.resetsAt);
-  const weeklyReset = formatReset(weeklyLimit?.resetsAt);
-
   return (
     <SidebarMenuItem className="shrink-0">
-      <Tooltip onOpenChange={refreshOnHover}>
+      <Tooltip onOpenChange={refresh}>
         <TooltipTrigger
           delay={100}
           render={
-            <SidebarMenuButton
-              size="icon"
-              aria-label="Лимиты использования"
-              onClick={onOpenUsage}
-            >
-              <svg className="size-4.5" viewBox="0 0 24 24" fill="none" aria-hidden>
-                {/* Top arc: 1 quarter (session limit), centered strictly at 12 o'clock above the rhombus */}
-                <path
-                  d="M 6.46 4.91 A 9 9 0 0 1 17.54 4.91"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                  opacity="0.3"
-                />
-                {sessionPercent !== null && sessionPercent > 0 ? (
-                  <path
-                    d="M 6.46 4.91 A 9 9 0 0 1 17.54 4.91"
-                    stroke="currentColor"
-                    strokeWidth="2"
-                    strokeLinecap="round"
-                    pathLength="100"
-                    strokeDasharray={`${sessionPercent} 100`}
-                    opacity="1"
-                  />
-                ) : null}
-
-                {/* Bottom arc: 3 quarters (weekly limit), on the same circle, separated by gaps */}
-                <path
-                  d="M 19.09 6.46 A 9 9 0 1 1 4.91 6.46"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                  opacity="0.3"
-                />
-                {weeklyPercent !== null && weeklyPercent > 0 ? (
-                  <path
-                    d="M 19.09 6.46 A 9 9 0 1 1 4.91 6.46"
-                    stroke="currentColor"
-                    strokeWidth="2"
-                    strokeLinecap="round"
-                    pathLength="100"
-                    strokeDasharray={`${weeklyPercent} 100`}
-                    opacity="1"
-                  />
-                ) : null}
-
-                {/* Central rhombus: strictly centered with top point under the 1/4 arc center */}
-                <path
-                  d="M 12 8.5 L 15.5 12 L 12 15.5 L 8.5 12 Z"
-                  fill="currentColor"
-                  opacity="0.8"
-                />
+            <SidebarMenuButton size="icon" aria-label="Лимиты использования" onClick={onOpenUsage}>
+              <svg className="size-8" viewBox="0 0 36 36" fill="none" aria-hidden>
+                {arcs.map((path, index) => {
+                  const window = index === 0 ? session : weekly;
+                  const percent = window ? remainingPercent(window) : null;
+                  return (
+                    <g key={path}>
+                      <path
+                        d={path}
+                        stroke="currentColor"
+                        strokeWidth="2.7"
+                        strokeLinecap="round"
+                        opacity="0.35"
+                      />
+                      {percent !== null && percent > 0 ? (
+                        <path
+                          d={path}
+                          stroke="currentColor"
+                          strokeWidth="2.7"
+                          strokeLinecap="round"
+                          pathLength="100"
+                          strokeDasharray={`${percent} 100`}
+                          strokeDashoffset={-(100 - percent) / 2}
+                        />
+                      ) : null}
+                    </g>
+                  );
+                })}
+                <path d="M18 12.5 L23.5 18 L18 23.5 L12.5 18 Z" fill="currentColor" opacity="0.8" />
               </svg>
             </SidebarMenuButton>
           }
         />
-        <TooltipPopup side="top" align="center" className="p-2 min-w-[220px]">
-          <div className="space-y-2 text-xs">
-            <div className="flex items-center justify-between border-b pb-1">
-              <span className="font-semibold text-foreground">
-                {isUnlimited
-                  ? (activeModel ?? "Бесплатная модель")
-                  : (currentAccount?.driver === "codex"
-                      ? "Лимиты Codex"
-                      : (currentAccount?.displayName ?? "Лимиты провайдера"))}
-              </span>
-              {isUnlimited ? (
-                <span className="text-[10px] text-emerald-500 font-medium">Free / Local</span>
-              ) : currentAccount?.label ? (
-                <span className="text-[10px] text-muted-foreground font-normal truncate max-w-[100px]">
-                  {currentAccount.label}
-                </span>
-              ) : null}
-            </div>
-
-            {isUnlimited ? (
-              <div className="space-y-1 py-0.5">
-                <div className="flex items-center justify-between gap-3 text-emerald-500 font-medium">
-                  <span>Без ограничений квоты</span>
-                  <span>100%</span>
-                </div>
-                <div className="text-[10px] text-muted-foreground leading-tight">
-                  Для активной модели ({activeModel}) не действуют ограничения по сессионной или недельной квоте.
-                </div>
+        <TooltipPopup side="top" align="center" className="max-w-80">
+          <div className="space-y-1 text-xs">
+            <div className="font-medium">{name}</div>
+            {selection ? (
+              <div className="break-all text-muted-foreground">{selection.model}</div>
+            ) : null}
+            {provider?.auth.email ? (
+              <div className="text-muted-foreground">{provider.auth.email}</div>
+            ) : null}
+            {source !== provider ? (
+              <div className="text-muted-foreground">Лимиты подписки Codex для этого аккаунта</div>
+            ) : null}
+            {windows.length === 0 ? (
+              <div>
+                {automatic
+                  ? "Авто выберет модель при отправке запроса."
+                  : provider?.auth.subscriptionSharing
+                    ? "Лимиты можно посмотреть в ChatGPT → Настройки → Использование. Для процентов здесь нужен вход под этим же аккаунтом в Codex."
+                    : "Провайдер не передаёт числовые лимиты."}
               </div>
             ) : (
-              <>
-                {activeModel && (
-                  <div className="text-[10px] text-muted-foreground -mt-1 pb-0.5">
-                    Модель: <span className="text-foreground font-medium">{activeModel}</span>
-                  </div>
-                )}
-                <div className="space-y-0.5">
-                  <div className="flex items-center justify-between gap-3">
-                    <span className="text-muted-foreground">5 часов (сессия):</span>
-                    <span className="font-medium text-foreground">
-                      {sessionPercent !== null ? `${sessionPercent}%` : "—"}
-                    </span>
-                  </div>
-                  {sessionReset ? (
-                    <div className="text-[10px] text-muted-foreground/80">
-                      Сброс: {sessionReset}
+              [session, weekly]
+                .filter((window) => window !== undefined)
+                .map((window) => (
+                  <div key={window.id}>
+                    <div>
+                      {window.kind === "weekly"
+                        ? "Недельный лимит"
+                        : window.kind === "session"
+                          ? window.windowDurationMins === 300
+                            ? "5 часов"
+                            : "Сессия"
+                          : window.label}
+                      : осталось {remainingPercent(window)}%
                     </div>
-                  ) : null}
-                </div>
-
-                <div className="space-y-0.5">
-                  <div className="flex items-center justify-between gap-3">
-                    <span className="text-muted-foreground">Недельный лимит:</span>
-                    <span className="font-medium text-foreground">
-                      {weeklyPercent !== null ? `${weeklyPercent}%` : "—"}
-                    </span>
+                    {window.resetsAt && Number.isFinite(Date.parse(window.resetsAt)) ? (
+                      <div className="text-muted-foreground">
+                        Сброс:{" "}
+                        {new Date(window.resetsAt).toLocaleString("ru-RU", {
+                          day: "numeric",
+                          month: "short",
+                          hour: "2-digit",
+                          minute: "2-digit",
+                        })}
+                      </div>
+                    ) : null}
                   </div>
-                  {weeklyReset ? (
-                    <div className="text-[10px] text-muted-foreground/80">
-                      Сброс: {weeklyReset}
-                    </div>
-                  ) : null}
-                </div>
-              </>
+                ))
             )}
-
-            <div className="border-t pt-1 text-[10px] text-muted-foreground/70">
-              Нажми, чтобы открыть страницу Usage
-            </div>
+            <div className="pt-1 text-muted-foreground">Нажми, чтобы открыть использование</div>
           </div>
         </TooltipPopup>
       </Tooltip>

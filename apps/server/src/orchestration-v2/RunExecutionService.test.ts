@@ -78,6 +78,7 @@ const driver = ProviderDriverKind.make("codex");
 const rootAppThread = (id: ThreadId) =>
   ({
     id,
+    modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
     lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: id },
   }) as OrchestrationV2AppThread;
 
@@ -963,6 +964,8 @@ it.effect("passes the thread's MCP app context to the provider under a safe key"
     });
 
     const input = yield* Deferred.await(started);
+    assert.include(input.message.text, "progress update");
+    assert.include(input.message.text, "What is on my list?");
     assert.deepEqual(input.appContext, [
       { key: "mcp_app_turn-item_provider_codex_native-item_call-1", text: "2 overdue" },
     ]);

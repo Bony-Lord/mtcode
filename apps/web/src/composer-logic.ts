@@ -70,6 +70,9 @@ export function composerSubmissionIntentForKey(input: {
   if (event.isComposing || event.keyCode === 229 || event.repeat) return null;
   if (input.isSoftwareKeyboardOpen && event.key === "Enter" && !event.metaKey && !event.ctrlKey)
     return null;
+  if (input.isRunning && event.key === "Enter" && !event.shiftKey && !event.altKey) {
+    return event.ctrlKey || event.metaKey ? "alternate" : "foreground";
+  }
   const command = resolveShortcutCommand(event, input.keybindings, {
     ...(input.platform === undefined ? {} : { platform: input.platform }),
     context: {

@@ -67,7 +67,8 @@ const WINDOWS_RESERVED_NAME = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/;
 export function foldLatinDiacritics(text: string): string {
   return text
     .normalize("NFKD")
-    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/(\p{Script=Latin})\p{M}+/gu, "$1")
+    .normalize("NFC")
     .replace(/đ/g, "d") // d-with-stroke has no Unicode decomposition
     .replace(/Đ/g, "D");
 }
@@ -75,7 +76,7 @@ export function foldLatinDiacritics(text: string): string {
 export function newProjectFolderName(name: string): string {
   const slug = foldLatinDiacritics(name)
     .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/[^\p{L}\p{N}]+/gu, "-")
     .replace(/^-+/, "")
     .slice(0, 64)
     .replace(/-+$/, "");

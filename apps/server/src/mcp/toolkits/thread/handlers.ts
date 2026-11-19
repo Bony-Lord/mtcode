@@ -8,6 +8,8 @@ import {
   type OrchestrationV2Command,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
+import { McpServerClient } from "effect/ai/McpSchema";
 import { modelSelectionCommandType } from "@t3tools/shared/model";
 
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
@@ -91,6 +93,63 @@ const writesThread = <P extends { readonly threadId?: ThreadId | undefined }, A,
 ) => McpToolAccess.writesThreads((params: P) => [params.threadId], handle);
 
 export const layer = McpToolAccess.toLayer(ThreadToolkit, {
+  ask_user: McpToolAccess.writesThreads(
+    () => [undefined],
+    (input) =>
+      Effect.gen(function* () {
+        yield* readCaller();
+        const client = yield* Effect.serviceOption(McpServerClient);
+        if (Option.isNone(client))
+          return yield* new OrchestratorMcpFailure({
+            code: "invalid_request",
+            message:
+              "This connection cannot display questions. Ask the user in your response and wait.",
+          });
+        const choices = [...new Set(input.options ?? [])];
+        const connection = yield* client.value.getClient;
+        const response = yield* connection
+          .elicit({
+            mode: "form",
+            message: `[MT question] ${input.question}`,
+            _meta: { mt_question_choices: choices },
+            requestedSchema: {
+              type: "object",
+              properties: {
+                answer: {
+                  type: "string",
+                  title: "Ответ",
+                  description: input.question,
+                  ...(choices.length ? { enum: choices } : {}),
+                },
+                ...(choices.length
+                  ? { answer__other: { type: "string", title: "Свой ответ" } }
+                  : {}),
+              },
+              required: choices.length ? [] : ["answer"],
+            },
+          })
+          .pipe(
+            Effect.mapError(
+              () =>
+                new OrchestratorMcpFailure({
+                  code: "invalid_request",
+                  message: "Пользователь отменил вопрос или соединение не поддерживает вопросы.",
+                }),
+            ),
+          );
+        const answer = response.action === "accept" ? (response.content ?? {}) : {};
+        const value =
+          "answer__other" in answer && typeof answer.answer__other === "string"
+            ? answer.answer__other
+            : answer.answer;
+        if (typeof value !== "string" || !value.trim())
+          return yield* new OrchestratorMcpFailure({
+            code: "invalid_request",
+            message: "Ответ не отправлен. Дождитесь ответа пользователя.",
+          });
+        return { answer: value };
+      }).pipe(Effect.scoped),
+  ),
   run_scheduled_task_now: McpToolAccess.writesEnvironment((input) =>
     Effect.gen(function* () {
       const scheduler = yield* ScheduledTasks.ScheduledTaskService;

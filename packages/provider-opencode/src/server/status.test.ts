@@ -52,7 +52,7 @@ it.effect("reads Go limits with the instance's XDG credentials and preserves res
         FileSystem.FileSystem,
         FileSystem.makeNoop({
           readFileString: (path) => {
-            NodeAssert.equal(path, "/instance/data/opencode/auth.json");
+            NodeAssert.equal(path.replaceAll("\\", "/"), "/instance/data/opencode/auth.json");
             return Effect.succeed(
               JSON.stringify({ "opencode-go": { type: "api", key: "instance-key" } }),
             );
@@ -528,6 +528,27 @@ const checkProvider = Effect.fn("checkProvider")(function* (
 });
 
 it.layer(layerTest)("checkOpenCodeProviderStatus", (it) => {
+  it.effect("uses a curated catalog without starting OpenCode for discovery", () =>
+    Effect.gen(function* () {
+      runtimeMock.state.versionStdout = "opencode v2.3.0\n";
+      const snapshot = yield* checkProvider(
+        makeOpenCodeSettings({
+          configuredCatalogOnly: true,
+          customModels: ["opencode/glm-5.3-flash-free"],
+        }),
+        process.cwd(),
+        undefined,
+        undefined,
+        Effect.die("discovery must not run for the saved catalog"),
+      );
+      NodeAssert.equal(snapshot.status, "ready");
+      NodeAssert.deepEqual(
+        snapshot.models.map((model) => model.slug),
+        ["opencode/glm-5.3-flash-free"],
+      );
+      NodeAssert.equal(runtimeMock.state.startCalls, 0);
+    }),
+  );
   it.effect.each(["version", "inventory", "models", "empty-v1", "empty-v2"] as const)(
     "records %s discovery failures in the existing trace and logger",
     (failure) =>

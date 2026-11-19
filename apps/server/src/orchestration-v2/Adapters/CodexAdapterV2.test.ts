@@ -190,6 +190,20 @@ describe("CodexAdapterV2 runtime policy", () => {
             // Some Responses providers reject `detailed`; `auto` is the most detailed a model supports.
             assert.equal(params.summary, "auto");
             assert.equal(params.additionalContext !== undefined, hasT3Mcp === true);
+            assert.deepEqual(
+              params.approvalPolicy,
+              hasT3Mcp
+                ? {
+                    granular: {
+                      sandbox_approval: false,
+                      rules: false,
+                      skill_approval: false,
+                      request_permissions: false,
+                      mcp_elicitations: true,
+                    },
+                  }
+                : "never",
+            );
           }
         }
       }),

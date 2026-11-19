@@ -74,7 +74,7 @@ export function useNewProject() {
   }): Promise<boolean> => {
     const result = await createNew({
       environmentId: input.environmentId,
-      input: { name: input.name },
+      input: { name: input.name, initializeGit: input.publishTo !== null },
     });
     if (result._tag === "Failure") {
       if (!isAtomCommandInterrupted(result)) {

@@ -9,7 +9,7 @@ import * as NodeReadline from "node:readline";
 import { describe, expect, it } from "@effect/vitest";
 
 describe("desktop activity proxy", () => {
-  it("waits for the warning, suppresses default OCR, and interrupts an action on Esc", async () => {
+  it("keeps the client connected while Esc stops the helper until explicit resume", async () => {
     const name = `mtcode-probe-${NodeCrypto.randomUUID()}`;
     // oxlint-disable-next-line t3code/no-global-process-runtime -- The test launches a real child using the host's IPC path syntax.
     const platform = NodeOS.platform();
@@ -17,6 +17,7 @@ describe("desktop activity proxy", () => {
       platform === "win32" ? `\\\\.\\pipe\\${name}` : NodePath.join(NodeOS.tmpdir(), name);
     const phases: string[] = [];
     let activePeer: NodeNet.Socket | undefined;
+    let paused = false;
     let allowInput: (() => void) | undefined;
     let sawPrepare: (() => void) | undefined;
     const prepared = new Promise<void>((resolve) => {
@@ -27,7 +28,7 @@ describe("desktop activity proxy", () => {
       NodeReadline.createInterface({ input: peer }).on("line", (line) => {
         const event = JSON.parse(line) as { id: number; phase: string };
         phases.push(event.phase);
-        const reply = () => peer.write(`${JSON.stringify({ id: event.id, ok: true })}\n`);
+        const reply = () => peer.write(`${JSON.stringify({ id: event.id, ok: !paused })}\n`);
         if (event.phase === "prepare") {
           allowInput = reply;
           sawPrepare?.();
@@ -40,8 +41,15 @@ describe("desktop activity proxy", () => {
     });
     const fixture = `
       import { createInterface } from "node:readline";
+      let ready = false;
       createInterface({ input: process.stdin }).on("line", (line) => {
         const msg = JSON.parse(line);
+        if (msg.method === "initialize") {
+          console.log(JSON.stringify({ id: msg.id, result: { protocolVersion: "2024-11-05" } }));
+          return;
+        }
+        if (msg.method === "notifications/initialized") { ready = true; return; }
+        if (!ready) throw new Error("native handshake required");
         if (msg.id === 3) { process.stderr.write("native action pending\\n"); return; }
         console.log(JSON.stringify({ id: msg.id, result: msg.params.arguments }));
       });
@@ -66,11 +74,14 @@ describe("desktop activity proxy", () => {
         `${JSON.stringify({ jsonrpc: "2.0", id, method: "tools/call", params: { name, arguments: {} } })}\n`,
       );
     try {
+      child.stdin.write('{"jsonrpc":"2.0","id":0,"method":"initialize"}\n');
+      expect(JSON.parse((await lines.next()).value!).id).toBe(0);
+      child.stdin.write('{"jsonrpc":"2.0","method":"notifications/initialized"}\n');
       send(1, "get_app_state");
       expect(JSON.parse((await lines.next()).value!)).toEqual({ id: 1, result: { ocr: "never" } });
       send(2, "click");
       await prepared;
-      expect(phases).toEqual(["check", "prepare"]);
+      expect(phases).toEqual(["check", "check", "prepare"]);
       allowInput?.();
       expect(JSON.parse((await lines.next()).value!)).toEqual({ id: 2, result: {} });
       const passedToNative = new Promise<void>((resolve) =>
@@ -82,10 +93,19 @@ describe("desktop activity proxy", () => {
       });
       allowInput?.();
       await passedToNative;
+      paused = true;
       activePeer?.write('{"event":"escape"}\n');
       const stopped = JSON.parse((await lines.next()).value!);
       expect(stopped.id).toBe(3);
       expect(stopped.result.isError).toBe(true);
+      send(4, "get_app_state");
+      expect(JSON.parse((await lines.next()).value!)).toMatchObject({
+        id: 4,
+        result: { isError: true },
+      });
+      paused = false;
+      send(5, "get_app_state");
+      expect(JSON.parse((await lines.next()).value!)).toEqual({ id: 5, result: { ocr: "never" } });
     } finally {
       child.stdin.end();
       await new Promise<void>((resolve) => {

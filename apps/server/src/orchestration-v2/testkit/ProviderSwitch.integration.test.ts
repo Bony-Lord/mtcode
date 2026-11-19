@@ -107,6 +107,8 @@ function makeTestAdapter(input: {
   readonly failInjectionOnce?: Ref.Ref<boolean>;
   readonly nativeThreadGeneration?: Ref.Ref<number>;
   readonly failResume?: boolean;
+  readonly beforeResume?: (providerThread: OrchestrationV2ProviderThread) => Effect.Effect<void>;
+  readonly unloadThread?: ProviderAdapter.ProviderAdapterV2SessionRuntime["unloadThread"];
   readonly failResumeOnce?: Ref.Ref<boolean>;
   readonly initialContextUsage?: OrchestrationV2ProviderThread["contextUsage"];
   readonly getModelContextWindow?: (selection: ModelSelection) => number | undefined;
@@ -224,6 +226,7 @@ function makeTestAdapter(input: {
             }),
           resumeThread: ({ providerThread }) =>
             Effect.gen(function* () {
+              if (input.beforeResume !== undefined) yield* input.beforeResume(providerThread);
               if (
                 input.failResume ||
                 (input.failResumeOnce !== undefined &&
@@ -232,6 +235,7 @@ function makeTestAdapter(input: {
                 return yield* unimplemented(input.driver, "simulated native resume failure");
               return providerThread;
             }),
+          ...(input.unloadThread === undefined ? {} : { unloadThread: input.unloadThread }),
           ...(input.injectedHistory === undefined
             ? {}
             : {
@@ -2377,6 +2381,7 @@ describe("orchestration v2 provider switching", () => {
     Effect.gen(function* () {
       const cwd = yield* checkpointWorkspace("queued-account-switch");
       const capturedTurns = yield* Ref.make<ReadonlyArray<CapturedTurn>>([]);
+      const unloadedNativeIds = yield* Ref.make<ReadonlyArray<string | null | undefined>>([]);
       const started = yield* Deferred.make<void>();
       const alternateSelection: ModelSelection = {
         ...CODEX_MODEL_SELECTION,
@@ -2392,9 +2397,24 @@ describe("orchestration v2 provider switching", () => {
           driver: CODEX_DRIVER,
           capabilities: CodexProviderCapabilitiesV2,
           modelSelection: CODEX_MODEL_SELECTION,
-          responseByRunOrdinal: {},
+          responseByRunOrdinal: { 3: "Original account complete" },
           capturedTurns,
           holdFirstTurn: started,
+          unloadThread: ({ providerThread }) =>
+            Ref.update(unloadedNativeIds, (ids) => [
+              ...ids,
+              providerThread.nativeThreadRef?.nativeId,
+            ]),
+          beforeResume: (providerThread) =>
+            Ref.get(unloadedNativeIds).pipe(
+              Effect.map((ids) =>
+                assert.deepEqual(ids, [
+                  providerThread.nativeThreadRef?.nativeId,
+                  providerThread.nativeThreadRef?.nativeId,
+                ]),
+              ),
+              Effect.asVoid,
+            ),
         }),
         makeTestAdapter({
           instanceId: alternateSelection.instanceId,
@@ -2403,6 +2423,18 @@ describe("orchestration v2 provider switching", () => {
           modelSelection: alternateSelection,
           responseByRunOrdinal: { 2: "Alternate account complete" },
           capturedTurns,
+          unloadThread: ({ providerThread }) =>
+            Ref.update(unloadedNativeIds, (ids) => [
+              ...ids,
+              providerThread.nativeThreadRef?.nativeId,
+            ]),
+          beforeResume: (providerThread) =>
+            Ref.get(unloadedNativeIds).pipe(
+              Effect.map((ids) =>
+                assert.deepEqual(ids, [providerThread.nativeThreadRef?.nativeId]),
+              ),
+              Effect.asVoid,
+            ),
         }),
       ];
       const layerRegistry = Layer.succeed(
@@ -2519,7 +2551,31 @@ describe("orchestration v2 provider switching", () => {
           (providerThread) => providerThread.id === delivered.runs[1]?.providerThreadId,
         )?.nativeThreadRef;
         assert.deepEqual(targetNativeRef, sourceNativeRef);
-        return delivered;
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          createdBy: "user",
+          creationSource: "web",
+          commandId: CommandId.make("command:queued-account-switch:back"),
+          threadId: queuedThreadId,
+          messageId: MessageId.make("message:queued-account-switch:back"),
+          text: "Switch immediately back to the original account",
+          attachments: [],
+          modelSelection: CODEX_MODEL_SELECTION,
+          dispatchMode: { type: "start_immediately" },
+        });
+        yield* orchestrator.streamStoredEvents.pipe(
+          Stream.filter(
+            (stored) =>
+              stored.event.type === "run.updated" &&
+              stored.event.threadId === queuedThreadId &&
+              stored.event.payload.ordinal === 3 &&
+              (stored.event.payload.status === "completed" ||
+                stored.event.payload.status === "failed"),
+          ),
+          Stream.runHead,
+        );
+        yield* worker.drain();
+        return yield* orchestrator.getThreadProjection(queuedThreadId);
       }).pipe(
         Effect.provide(
           ProviderReplayHarness.layerWithRegistry(
@@ -2544,12 +2600,17 @@ describe("orchestration v2 provider switching", () => {
         [
           [CODEX_MODEL_SELECTION.instanceId, "completed"],
           [alternateSelection.instanceId, "completed"],
+          [CODEX_MODEL_SELECTION.instanceId, "completed"],
         ],
       );
       assert.lengthOf(projection.contextHandoffs, 0);
       assert.deepEqual(
-        (yield* Ref.get(capturedTurns)).map((turn) => turn.text),
-        ["First account turn", "Alternate account turn"],
+        (yield* Ref.get(capturedTurns)).map((turn) => turn.text.split("\n\n").at(-1)),
+        [
+          "First account turn",
+          "Alternate account turn",
+          "Switch immediately back to the original account",
+        ],
       );
     }),
   );
@@ -2798,7 +2859,7 @@ describe("orchestration v2 provider switching", () => {
       { background: false, queued: false, sharedHistory: false },
     ],
     [
-      "refuses the hand-off while the previous instance still runs background work",
+      "keeps background work alive while handing off to an independent provider session",
       { background: true, queued: false, sharedHistory: false },
     ],
     [
@@ -2974,17 +3035,7 @@ describe("orchestration v2 provider switching", () => {
           // Native subagents live only in the adapter's roster, so the projection's
           // pendingBackgroundTasks stays empty while the probe still reports work.
           assert.deepEqual(afterFirst.providerThreads[0]?.pendingBackgroundTasks ?? [], []);
-          const refused = yield* send(2, secondSelection, ":refused").pipe(Effect.flip);
-          assert.include(String(refused.cause), "still running background agents or commands");
-          const unchanged = yield* orchestrator.getThreadProjection(handoffThreadId);
-          assert.lengthOf(unchanged.runs, 1);
           assert.deepEqual(yield* Ref.get(closedSessions), []);
-          assert.equal(unchanged.thread.providerInstanceId, CLAUDE_MODEL_SELECTION.instanceId);
-          assert.deepEqual(
-            unchanged.providerSessions.map((session) => [session.id, session.status]),
-            [[firstSession!.id, "ready"]],
-          );
-          yield* Ref.set(backgroundWork, false);
         }
 
         yield* send(2, secondSelection);
@@ -3003,10 +3054,12 @@ describe("orchestration v2 provider switching", () => {
         assert.lengthOf(afterSecond.contextHandoffs, 1);
         assert.deepEqual(
           projection.providerSessions.map((session) => session.providerInstanceId),
-          [secondSelection.instanceId],
+          background
+            ? [CLAUDE_MODEL_SELECTION.instanceId, secondSelection.instanceId]
+            : [secondSelection.instanceId],
         );
         // The detached event alone hides the session; the runtime must also close.
-        assert.deepEqual(yield* Ref.get(closedSessions), [firstSession!.id]);
+        assert.deepEqual(yield* Ref.get(closedSessions), background ? [] : [firstSession!.id]);
       }).pipe(
         Effect.provide(
           ProviderReplayHarness.layerWithRegistry(

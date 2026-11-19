@@ -1148,6 +1148,14 @@ describe("MessagesTimeline inline visualizations", () => {
     expect(screen.container.innerHTML).toMatch(/After<br>\s*line/u);
   });
 
+  it("renders the portable visualization syntax with a Windows workspace path", async () => {
+    const marker = `::visualize${JSON.stringify({ path: "C:/workspace/chart.html", title: "Chart" })}`;
+    await using screen = await renderAssistant(`Chart below\n${marker}`);
+
+    expect(screen.container.querySelector("[data-inline-visualization]")).not.toBeNull();
+    expect(screen.text()).not.toContain(marker);
+  });
+
   it("keeps visualize references inside mismatched code fences as Markdown", async () => {
     const marker = visualizeMarker('{"path":"/tmp/chart.html"}');
     await using screen = await renderAssistant(`\`\`\`text\n~~~\n\`\`\`html\n${marker}\n\`\`\``);

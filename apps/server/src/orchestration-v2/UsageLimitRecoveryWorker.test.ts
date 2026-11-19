@@ -105,7 +105,8 @@ it.effect(
         assert.equal(command.type, "message.dispatch");
         if (command.type === "message.dispatch") {
           assert.equal(command.modelSelection?.instanceId, b);
-          assert.equal(command.usageLimitContinuationOfRunId, candidate.latestRunId);
+          assert.equal(command.manualContinuationOfRunId, candidate.latestRunId);
+          assert.isUndefined(command.usageLimitContinuationOfRunId);
           assert.notInclude(command.text, "sign in");
         }
         yield* TestClock.adjust("10 seconds");

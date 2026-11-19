@@ -244,6 +244,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { assistantCitationLabel } from "@t3tools/shared/assistantCitations";
 import { assistantCitationNavigation } from "../../lib/assistantCitationNavigation";
 import { Button } from "../ui/button";
+import { ComputerUsePausedNotice } from "./ComputerUsePausedNotice";
 import { useManagedPolicy } from "../../state/managedPolicy";
 import { hasProviderSetup } from "./ProviderStatusBanner";
 import { type AppModelOption, getAppModelOptionsForInstance } from "../../modelSelection";
@@ -272,6 +273,7 @@ import { ComposerCommandMenuLayer } from "./ComposerCommandMenuLayer";
 import { useRestingComposerControlsLayout } from "./useRestingComposerControlsLayout";
 import { useProviderWorkspaceSnapshotRefresh } from "./useProviderWorkspaceSnapshotRefresh";
 import { useComposerProviderModel } from "./useComposerProviderModel";
+import { AgentWorkProfilePicker } from "./AgentWorkProfilePicker";
 import { useComposerImageGroups } from "./useComposerImageGroups";
 import { useComposerStash } from "./useComposerStash";
 import { useComposerContextImport } from "./useComposerContextImport";
@@ -2216,7 +2218,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           running: phase === "running" || phase === "connecting",
           alternateModifier: intent === "alternate",
           canSteer,
-          activeTurnDefault: followUpBehavior,
         }),
         intent,
       );
@@ -2324,7 +2325,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       routeKind,
       phase,
       canSteer,
-      followUpBehavior,
       isSoftwareKeyboardOpen,
       isLiteralPendingAnswer,
       pendingUserInputs,
@@ -3676,6 +3676,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
               </div>
             </div>
 
+            {!backgroundThread && environmentId === primaryEnvironmentId ? (
+              <ComputerUsePausedNotice />
+            ) : null}
             <ComposerPromptLengthValidation
               message={providerInputSubmissionError ?? composerSubmissionError}
             />
@@ -3722,6 +3725,12 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     )}
                   >
                     {composerControls}
+                    <AgentWorkProfilePicker
+                      key={environmentId}
+                      environmentId={environmentId}
+                      projectId={activeProjectId}
+                      disabled={!canOperateThread}
+                    />
                   </div>
                   <ComposerFooterPrimaryActions
                     // Stop state belongs to one thread; the composer stays mounted across threads.
@@ -3829,6 +3838,12 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     )}
                   >
                     {composerControls}
+                    <AgentWorkProfilePicker
+                      key={environmentId}
+                      environmentId={environmentId}
+                      projectId={activeProjectId}
+                      disabled={!canOperateThread}
+                    />
                   </div>
                 </div>
               </div>

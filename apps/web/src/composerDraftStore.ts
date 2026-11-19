@@ -4739,11 +4739,11 @@ export function useThreadHasUnsentDraft(threadRef: ScopedThreadRef): boolean {
 }
 
 export function useComposerDraftModelState(
-  threadRef: ComposerThreadTarget,
+  threadRef: ComposerThreadTarget | null,
 ): ComposerDraftModelState {
   return useComposerDraftStore(
     useShallow((state) => {
-      const draft = getComposerDraftState(state, threadRef);
+      const draft = threadRef === null ? null : getComposerDraftState(state, threadRef);
       return draft
         ? {
             activeProvider: draft.activeProvider,

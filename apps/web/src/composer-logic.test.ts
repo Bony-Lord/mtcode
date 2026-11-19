@@ -142,7 +142,7 @@ describe("composerSubmissionIntentForKey", () => {
     },
   );
 
-  it("honors the send preference with an existing install's saved alternate binding", () => {
+  it("keeps Enter for steering and Ctrl+Enter for queueing with a saved alternate binding", () => {
     const keybindings = mergeWithDefaultKeybindings(
       compileResolvedKeybindingsConfig([
         {
@@ -153,8 +153,9 @@ describe("composerSubmissionIntentForKey", () => {
       ]),
     );
     const running = { ...input, keybindings, isRunning: true, sendShortcut: "mod-enter" as const };
+    expect(composerSubmissionIntentForKey({ ...running, event: enter })).toBe("foreground");
     expect(composerSubmissionIntentForKey({ ...running, event: { ...enter, ctrlKey: true } })).toBe(
-      "foreground",
+      "alternate",
     );
     expect(
       composerSubmissionIntentForKey({
@@ -202,7 +203,7 @@ describe("composerSubmissionIntentForKey", () => {
           isRunning: true,
           event: { ...enter, ctrlKey: true },
         }),
-      ).toBe("foreground");
+      ).toBe("alternate");
       expect(
         composerSubmissionIntentForKey({
           ...custom,

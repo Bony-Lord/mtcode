@@ -191,7 +191,7 @@ export function ComputerUseSettings() {
         {window.desktopBridge?.computerUsePause ? (
           <SettingsRow
             title="Управление после Esc"
-            description="Esc останавливает управление ПК. После остановки нажмите кнопку и начните новый сеанс агента."
+            description="Esc останавливает управление ПК. Снять паузу можно здесь или в поле ввода текущего чата."
             control={
               <Button
                 size="sm"

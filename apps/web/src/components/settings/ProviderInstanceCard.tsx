@@ -1317,6 +1317,14 @@ export function ProviderInstanceCard({
     <>
       <SettingsSection title={displayName} icon={titleIconNode} headerAction={editorHeaderAction}>
         <SettingsRow title="Status" status={statusContent} />
+        <SettingsRow
+          title="Профиль настроек"
+          description={
+            instance.settingsProfileId
+              ? `Общие настройки из ${instance.settingsProfileId}. Параметры этого аккаунта применяются поверх общих.`
+              : "Основной профиль. Новые аккаунты наследуют общие настройки."
+          }
+        />
         {environmentId !== undefined && liveProvider?.accountLogin ? (
           <SettingsRow
             title="Account"
@@ -1399,6 +1407,68 @@ export function ProviderInstanceCard({
             </Select>
           }
         />
+        <SettingsRow
+          title="Участие в автовыборе"
+          description="Чат-помощники подходят для ответов и черновиков. Задачи с инструментами получает агент."
+          control={
+            <Select
+              value={instance.routingRole ?? "agent"}
+              disabled={readOnly}
+              onValueChange={(value) => {
+                if (value === "agent" || value === "assistant" || value === "excluded")
+                  onUpdate({ ...instance, routingRole: value });
+              }}
+            >
+              <SelectTrigger size="sm" aria-label="Участие в автовыборе">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectPopup align="end">
+                <SelectItem value="agent">Агент</SelectItem>
+                <SelectItem value="assistant">Чат-помощник</SelectItem>
+                <SelectItem value="excluded">Только вручную</SelectItem>
+              </SelectPopup>
+            </Select>
+          }
+        />
+        {(
+          [
+            ["sessionMaxUsedPercent", "Остаток лимита за 5 часов, не менее %"],
+            ["weeklyMaxUsedPercent", "Остаток недельного лимита, не менее %"],
+          ] as const
+        ).map(([field, label]) => (
+          <SettingsRow
+            key={field}
+            title={label}
+            description="Процент квоты для запаса, 0–100. Пусто: без ограничения. При достижении остатка новые запросы не отправляются. Нужны свежие лимиты. Текущий запрос может потратить часть запаса."
+            control={
+              <DraftInput
+                size="sm"
+                type="number"
+                min={0}
+                max={100}
+                step="0.1"
+                aria-label={label}
+                value={
+                  instance.usagePolicy?.[field] === undefined
+                    ? ""
+                    : Number((100 - instance.usagePolicy[field]).toFixed(1)).toString()
+                }
+                placeholder="Без ограничения"
+                disabled={readOnly}
+                onCommit={(text) => {
+                  const policy = { ...instance.usagePolicy };
+                  if (text.trim() === "") delete policy[field];
+                  else {
+                    const value = Number(text.replace(",", "."));
+                    if (!Number.isFinite(value) || value < 0 || value > 100) return;
+                    policy[field] = Number((100 - value).toFixed(1));
+                  }
+                  onUpdate({ ...instance, usagePolicy: policy });
+                }}
+              />
+            }
+          />
+        ))}
       </SettingsSection>
 
       {setup || environmentFields.length > 0 ? (

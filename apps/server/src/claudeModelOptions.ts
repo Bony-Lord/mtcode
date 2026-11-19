@@ -33,8 +33,7 @@ export function compileClaudeModelSelection(
   selection: ModelSelection,
   catalog: ClaudeModelCatalog = BUNDLED_CLAUDE_MODEL_CATALOG,
 ): CompiledClaudeModelSelection {
-  const effectiveModel = selection.model === "auto" ? "claude-opus-5-5" : selection.model;
-  const capabilities = getClaudeCatalogModelCapabilities(catalog, effectiveModel);
+  const capabilities = getClaudeCatalogModelCapabilities(catalog, selection.model);
   const descriptors = getProviderOptionDescriptors({
     caps: capabilities,
     selections: selection.options,
@@ -42,12 +41,12 @@ export function compileClaudeModelSelection(
   const supportsBoolean = (id: string) =>
     descriptors.some((descriptor) => descriptor.type === "boolean" && descriptor.id === id);
   const rawEffort = getModelSelectionStringOptionValue(selection, "effort");
-  const resolvedEffort = resolveClaudeCatalogEffort(catalog, effectiveModel, rawEffort);
-  const effort = normalizeClaudeCatalogEffort(catalog, resolvedEffort, effectiveModel);
+  const resolvedEffort = resolveClaudeCatalogEffort(catalog, selection.model, rawEffort);
+  const effort = normalizeClaudeCatalogEffort(catalog, resolvedEffort, selection.model);
   const fastMode = supportsBoolean("fastMode")
     ? (getModelSelectionBooleanOptionValue(selection, "fastMode") ?? false)
     : undefined;
-  const inCatalog = resolveClaudeCatalogModel(catalog, effectiveModel) !== undefined;
+  const inCatalog = resolveClaudeCatalogModel(catalog, selection.model) !== undefined;
   const thinking =
     !inCatalog || supportsBoolean("thinking")
       ? getModelSelectionBooleanOptionValue(selection, "thinking")
@@ -58,10 +57,7 @@ export function compileClaudeModelSelection(
     ...(typeof fastMode === "boolean" ? { fastMode } : {}),
     ...(typeof ultracode === "boolean" ? { ultracode } : {}),
   };
-  const apiModelId = resolveClaudeCatalogApiModelId(catalog, {
-    ...selection,
-    model: effectiveModel,
-  });
+  const apiModelId = resolveClaudeCatalogApiModelId(catalog, selection);
   const promptEffort = resolvePromptInjectedEffort(capabilities, rawEffort) ?? undefined;
   // An alias the catalog routes a built-in model to is Claude Code's own and is not pinned.
   const pinnedAlias =

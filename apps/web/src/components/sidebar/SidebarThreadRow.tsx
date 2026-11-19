@@ -732,8 +732,13 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
     ? resolveThreadCurrentPullRequestLink(thread.pullRequests)
     : null;
 
-  const isUnread = hasUnseenCompletion({ ...thread, lastVisitedAt });
-  const status = resolveSidebarRowStatus({ ...thread, lastVisitedAt });
+  const isUnread = !props.isActive && hasUnseenCompletion({ ...thread, lastVisitedAt });
+  const rowStatus = resolveSidebarRowStatus({ ...thread, lastVisitedAt });
+  const limitResetPassed = useDeadlinePassed(
+    thread.runtime?.usageLimitResetAt ? Date.parse(thread.runtime.usageLimitResetAt) : null,
+  );
+  const status =
+    (props.isActive || limitResetPassed) && rowStatus === "limited" ? "ready" : rowStatus;
   const lastVisitedDate = lastVisitedAt === undefined ? null : parseTimestampDate(lastVisitedAt);
   const wokeAtDate = props.wokeAt === null ? null : parseTimestampDate(props.wokeAt);
   const isWoke =

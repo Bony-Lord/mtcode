@@ -373,15 +373,25 @@ describe("resolveSidebarRowStatus", () => {
     latestRun: { ...makeLatestRun(), status: "failed" as const },
   };
 
-  it("settles a failure the user opened to ready, without showing Done", () => {
-    expect(resolveSidebarRowStatus({ ...failed, lastVisitedAt: undefined })).toBe("failed");
+  it.each(["failed", "limited"] as const)(
+    "clears the %s badge after the user opens the chat",
+    (status) => {
+      const thread = {
+        ...failed,
+        runtime: {
+          ...failedRuntime,
+          ...(status === "limited" ? { lastErrorClass: "usage_limit" as const } : {}),
+        },
+      };
+      expect(resolveSidebarRowStatus({ ...thread, lastVisitedAt: undefined })).toBe(status);
 
-    const opened = { ...failed, lastVisitedAt: "2026-03-09T10:06:00.000Z" };
-    expect(resolveSidebarRowStatus(opened)).toBe("ready");
-    expect(hasUnseenCompletion(opened)).toBe(false);
-    // A runtime failure without a failed run has no date, so a visit cannot settle it.
-    expect(resolveSidebarRowStatus({ ...opened, latestRun: null })).toBe("failed");
-  });
+      const opened = { ...thread, lastVisitedAt: "2026-03-09T10:06:00.000Z" };
+      expect(resolveSidebarRowStatus(opened)).toBe("ready");
+      expect(hasUnseenCompletion(opened)).toBe(false);
+      // A runtime failure without a failed run has no date, so a visit cannot settle it.
+      expect(resolveSidebarRowStatus({ ...opened, latestRun: null })).toBe(status);
+    },
+  );
 });
 
 describe("searchSidebarThreads", () => {

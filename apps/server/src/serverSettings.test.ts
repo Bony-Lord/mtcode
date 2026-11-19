@@ -410,6 +410,26 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("server settings"
       }),
   );
 
+  it.effect("persists combined agent modes and explicitly clearing a legacy mode", () =>
+    Effect.gen(function* () {
+      const config = yield* ServerConfig.ServerConfig;
+      const fs = yield* FileSystem.FileSystem;
+      const service = yield* ServerSettingsModule.ServerSettingsService;
+      yield* fs.writeFileString(config.settingsPath, '{"agentWorkProfile":"economy"}');
+      assert.equal((yield* service.getSettings).agentWorkProfile, "economy");
+
+      for (const modes of [["fast", "economy", "web"], []] as const) {
+        const patch = yield* decodeServerSettingsPatch({ agentWorkModes: modes });
+        const updated = yield* service.updateSettings(patch);
+        const saved = yield* decodeServerSettingsJson(
+          yield* fs.readFileString(config.settingsPath),
+        );
+        assert.deepEqual(updated.agentWorkModes, modes);
+        assert.deepEqual(saved.agentWorkModes, modes);
+      }
+    }).pipe(Effect.provide(layerServerSettings())),
+  );
+
   it.effect("persists enabling and disabling draft GitHub pull requests", () =>
     Effect.gen(function* () {
       const settings = yield* ServerSettingsModule.ServerSettingsService;

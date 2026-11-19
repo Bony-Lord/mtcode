@@ -88,6 +88,7 @@ export interface AntigravityAdapterV2Options {
     cwd: string,
   ) => Effect.Effect<void>;
   readonly onSessionEvent?: AcpAdapterV2Flavor["onSessionEvent"];
+  readonly onRegionUnavailable?: () => Effect.Effect<void>;
   readonly nativeLogging?: Parameters<typeof makeAcpAdapterV2>[0]["nativeLogging"];
   readonly continuationRequests?: Parameters<typeof makeAcpAdapterV2>[0]["continuationRequests"];
   /** The agent's GEMINI_HOME. Its session logs show turns that ended on an upstream error. */
@@ -245,9 +246,7 @@ export function makeAntigravityAcpAdapterFlavor(
       return yield* applyAntigravityAcpModelSelection({
         runtime,
         model:
-          modelSelection.model === ANTIGRAVITY_DEFAULT_MODEL || modelSelection.model === "auto"
-            ? undefined
-            : modelSelection.model,
+          modelSelection.model === ANTIGRAVITY_DEFAULT_MODEL ? undefined : modelSelection.model,
         defaultModel,
         mapError: (cause) => cause,
       });
@@ -287,7 +286,18 @@ export function makeAntigravityAcpAdapterFlavor(
       ? {}
       : {
           watchPromptOutcome: (sessionId: string) =>
-            watchAntigravityPromptOutcome(profileDirectory, sessionId),
+            watchAntigravityPromptOutcome(profileDirectory, sessionId).pipe(
+              Effect.map(
+                (check) => (result) =>
+                  check(result).pipe(
+                    Effect.tap((failure) =>
+                      failure?.code === "LOCATION_UNSUPPORTED"
+                        ? (options.onRegionUnavailable?.() ?? Effect.void)
+                        : Effect.void,
+                    ),
+                  ),
+              ),
+            ),
         }),
   };
 }

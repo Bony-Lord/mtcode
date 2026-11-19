@@ -240,7 +240,23 @@ const ScheduledTaskRunTool = Tool.make("run_scheduled_task_now", {
   .annotate(Tool.Destructive, true)
   .annotate(Tool.OpenWorld, true);
 
+const AskUserTool = Tool.make("ask_user", {
+  ...commandTool,
+  description:
+    "Ask the user a question with optional choices and a custom answer. Waits for an explicit answer; never assumes a preselected choice is consent. Use for missing task information, not to approve your own tools.",
+  parameters: Schema.Struct({
+    question: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(3000)),
+    options: Schema.optional(
+      Schema.Array(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(200))).check(
+        Schema.isMaxLength(6),
+      ),
+    ),
+  }),
+  success: Schema.Struct({ answer: Schema.String }),
+}).annotate(Tool.Destructive, false);
+
 export const ThreadToolkit = Toolkit.make(
+  AskUserTool,
   ScheduledTaskRunTool,
   ThreadSearchTool,
   ThreadConfigureTool,

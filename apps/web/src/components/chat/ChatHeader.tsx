@@ -52,6 +52,7 @@ import { ComputerViewDialog } from "../computers/ComputerViewDialog";
 import { Button } from "../ui/button";
 import { WorkspaceTabs } from "./WorkspaceTabs";
 import { GuestShareIndicator } from "./GuestShareControls";
+import { AutoRouteIndicator } from "./AutoRouteIndicator";
 
 interface ChatHeaderProps {
   activeThreadEnvironmentId: EnvironmentId;
@@ -469,6 +470,7 @@ export const ChatHeader = memo(function ChatHeader({
           </WorkspaceBreadcrumbItem>
         </WorkspaceBreadcrumb>
       )}
+      {isServerThread ? <AutoRouteIndicator threadRef={activeThreadRef} /> : null}
       {isServerThread ? <GuestShareIndicator threadRef={activeThreadRef} /> : null}
       {supportsComputerView && (
         <Tooltip>

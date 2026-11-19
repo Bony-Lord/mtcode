@@ -47,11 +47,7 @@ import * as ElectronShell from "../electron/ElectronShell.ts";
 import * as ElectronTheme from "../electron/ElectronTheme.ts";
 import * as ElectronWindow from "../electron/ElectronWindow.ts";
 import { queuePendingDesktopProtocolUrl } from "../app/desktopProtocolUrl.ts";
-import {
-  SNAP_SHOT_EVENT_CHANNEL,
-  TRACKPAD_SCROLL_END_CHANNEL,
-  WINDOW_FULLSCREEN_STATE_CHANNEL,
-} from "../ipc/channels.ts";
+import { SNAP_SHOT_EVENT_CHANNEL, WINDOW_FULLSCREEN_STATE_CHANNEL } from "../ipc/channels.ts";
 import * as DesktopServerExposure from "../backend/DesktopServerExposure.ts";
 import * as DesktopWindow from "./DesktopWindow.ts";
 import {
@@ -506,11 +502,8 @@ function layerTest(input: {
   );
 }
 
-// Builds a DesktopWindow over a fake ElectronWindow whose `create` returns the
-// given outcomes in order (null => simulated open failure), and whose
-// currentMainOrFirst mirrors the real fallback to the first live window (the
-// splash, before any main is registered). Reveal targets are recorded so tests
-// can assert what activation actually surfaced.
+// Null simulates a failed create. currentMainOrFirst falls back to the live splash.
+// Record reveal targets to check which window activation surfaced.
 const makeSplashScenario = (
   createOutcomes: readonly (Electron.BrowserWindow | null)[],
   options?: {
@@ -776,6 +769,35 @@ describe("DesktopWindow", () => {
           assert.equal(yield* Ref.get(createCount), 2);
         }).pipe(Effect.provide(layerTest({ window: fake.window, createCount, mainWindow })));
       }),
+  );
+
+  it.effect("reveals the Windows boot shell on DOM readiness while media is still loading", () =>
+    Effect.gen(function* () {
+      const fake = makeFakeBrowserWindow();
+      const createCount = yield* Ref.make(0);
+      const mainWindow = yield* Ref.make<Option.Option<Electron.BrowserWindow>>(Option.none());
+      const painted = Promise.withResolvers<void>();
+      yield* Effect.gen(function* () {
+        const windows = yield* DesktopWindow.DesktopWindow;
+        yield* windows.ensureMain;
+        const listener = fake.webContentsOnce.mock.calls.find(
+          ([event]) => event === "dom-ready",
+        )?.[1];
+        assert.isDefined(listener);
+        listener?.();
+        yield* Effect.promise(() => painted.promise);
+      }).pipe(
+        Effect.provide(
+          layerTest({
+            window: fake.window,
+            createCount,
+            mainWindow,
+            platform: "win32",
+            onReveal: () => painted.resolve(),
+          }),
+        ),
+      );
+    }),
   );
 
   it.effect.each(["renderer", "backend"] as const)(

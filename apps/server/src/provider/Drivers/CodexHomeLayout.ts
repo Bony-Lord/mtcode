@@ -1,3 +1,7 @@
+// @effect-diagnostics nodeBuiltinImport:off -- Windows junctions are unavailable in Effect's portable symlink API.
+import * as NodeFSP from "node:fs/promises";
+import * as NodePath from "node:path";
+import * as NodeCrypto from "node:crypto";
 import { ProviderDriverKind, type CodexSettings } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -32,7 +36,77 @@ const KNOWN_SHARED_DIRECTORIES = [
 // auth.lock guards the shadow home's private auth.json.
 const PRIVATE_ENTRY_NAMES = new Set(["auth.json", "auth.lock", "models_cache.json"]);
 // Finder maintains metadata separately for each directory, including shadow homes.
-const SHADOW_LOCAL_ENTRY_NAMES = new Set(["log", "memories", "tmp", ".DS_Store"]);
+const SHADOW_LOCAL_ENTRY_NAMES = new Set([
+  "log",
+  "memories",
+  "tmp",
+  ".DS_Store",
+  ".mt-shared-links.json",
+]);
+
+async function materializeWindowsEntries(
+  shared: string,
+  shadow: string,
+  entries: Iterable<string>,
+): Promise<void> {
+  const manifestPath = NodePath.join(shadow, ".mt-shared-links.json");
+  let owned: Record<string, string> = {};
+  try {
+    owned = JSON.parse(await NodeFSP.readFile(manifestPath, "utf8"));
+  } catch (cause) {
+    if ((cause as NodeJS.ErrnoException).code !== "ENOENT") throw cause;
+  }
+  for (const name of entries) {
+    // SQLite journals and native runtime locks belong to the account's own home.
+    if (/\.(?:sqlite|db)(?:[-.].*)?$|\.lock$/i.test(name)) continue;
+    const target = NodePath.join(shared, name);
+    const link = NodePath.join(shadow, name);
+    const source = await NodeFSP.stat(target, { bigint: true });
+    const previous = await NodeFSP.lstat(link, { bigint: true }).catch(
+      (cause: NodeJS.ErrnoException) => {
+        if (cause.code === "ENOENT") return null;
+        throw cause;
+      },
+    );
+    if (previous?.isSymbolicLink()) {
+      const destination = (await NodeFSP.realpath(link)).toLowerCase();
+      if (destination === (await NodeFSP.realpath(target)).toLowerCase()) continue;
+      await NodeFSP.unlink(link);
+    } else if (previous) {
+      if (previous.dev === source.dev && previous.ino === source.ino) {
+        owned[name] = String(previous.ino);
+        continue;
+      }
+      if (owned[name] !== String(previous.ino)) {
+        throw new CodexShadowHomeEntryConflictError({
+          sharedHomePath: shared,
+          effectiveHomePath: shadow,
+          entryName: name,
+          linkPath: link,
+          targetPath: target,
+        });
+      }
+      await NodeFSP.unlink(link);
+    }
+    try {
+      if (source.isDirectory()) await NodeFSP.symlink(target, link, "junction");
+      else await NodeFSP.link(target, link);
+    } catch (cause) {
+      if ((cause as NodeJS.ErrnoException).code !== "EEXIST") throw cause;
+      const existing = await NodeFSP.stat(link, { bigint: true });
+      if (existing.dev !== source.dev || existing.ino !== source.ino) throw cause;
+    }
+    if (!source.isDirectory())
+      owned[name] = String((await NodeFSP.stat(link, { bigint: true })).ino);
+  }
+  const temporary = `${manifestPath}.${NodeCrypto.randomUUID()}.tmp`;
+  try {
+    await NodeFSP.writeFile(temporary, JSON.stringify(owned));
+    await NodeFSP.rename(temporary, manifestPath);
+  } finally {
+    await NodeFSP.rm(temporary, { force: true });
+  }
+}
 // Shadow homes may create local runtime locks first; replace them with shared links because they guard shared state.
 const REPLACEABLE_SHARED_RUNTIME_ENTRIES = new Set([
   "mcp-oauth-locks",
@@ -420,6 +494,26 @@ export const materializeCodexShadowHome = Effect.fn("materializeCodexShadowHome"
           }),
     { discard: true },
   );
+
+  if ((yield* HostProcess.Platform) === "win32") {
+    yield* Effect.tryPromise({
+      try: () => materializeWindowsEntries(layout.sharedHomePath, effectiveHomePath, entries),
+      catch: (cause) =>
+        new CodexShadowHomeFileSystemError({
+          sharedHomePath: layout.sharedHomePath,
+          effectiveHomePath,
+          operation: "symlink",
+          path: effectiveHomePath,
+          cause,
+        }),
+    });
+    yield* ensureShadowAuthIsPrivate({
+      fileSystem,
+      sharedHomePath: layout.sharedHomePath,
+      effectiveHomePath,
+    });
+    return;
+  }
 
   yield* Effect.forEach(
     entries,

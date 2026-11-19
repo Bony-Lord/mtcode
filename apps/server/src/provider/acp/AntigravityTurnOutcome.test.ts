@@ -70,6 +70,18 @@ describe("watchAntigravityPromptOutcome", () => {
         });
       const input = Buffer.from("Run the fixture.");
       const reply = Buffer.from("FIXTURE_OK");
+      const locationFailure = yield* turn([
+        [USER_INPUT, input],
+        [
+          ERROR_MESSAGE,
+          errorPayload(
+            "Error 400, Message: User location is not supported for the API use., Status: FAILED_PRECONDITION",
+          ),
+        ],
+      ]);
+      assert.equal(locationFailure?.class, "provider_error");
+      assert.equal(locationFailure?.code, "LOCATION_UNSUPPORTED");
+      assert.equal(locationFailure?.retryable, false);
 
       // The first prompt creates the session log.
       assert.isUndefined(

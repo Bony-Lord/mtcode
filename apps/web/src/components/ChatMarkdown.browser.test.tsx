@@ -171,6 +171,13 @@ function renderText(text: string, props: Partial<Parameters<typeof ChatMarkdown>
   return render(<ChatMarkdown cwd="/tmp/project" text={text} {...props} />);
 }
 
+it("restores an explicitly marked web widget when the website removed its Markdown fences", async () => {
+  await using screen = await renderText('mt-html\n<button onclick="this.textContent=2">1</button>');
+  expect(screen.container.querySelector("iframe")).toBeNull();
+  await screen.getByRole("button", { name: "Открыть", exact: true }).click();
+  expect(screen.container.querySelector("iframe")?.getAttribute("sandbox")).toBe("allow-scripts");
+});
+
 function buttonsLabelled(container: HTMLElement, label: string) {
   return [...container.querySelectorAll<HTMLButtonElement>("button")].filter(
     (button) => button.getAttribute("aria-label") === label,

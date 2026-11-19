@@ -482,7 +482,7 @@ export const make = Effect.gen(function* () {
   const hasUpdateFeedConfig = Ref.get(appUpdateYmlConfigRef).pipe(
     Effect.map(
       (appUpdateYmlConfig) =>
-        Option.isSome(appUpdateYmlConfig) || mockUpdates || policy.feedUrl !== undefined,
+        Option.isSome(appUpdateYmlConfig) || mockUpdates || policy.feedUrl !== undefined || singleReleaseChannel,
     ),
   );
 
@@ -1226,16 +1226,6 @@ export const make = Effect.gen(function* () {
           }
           yield* setState(reduceDesktopUpdateStateOnDownloadComplete(state, info.version));
           yield* logUpdaterInfo("update downloaded", { version: info.version });
-          // Personal fork: install + relaunch as soon as the download finishes.
-          // Pin the install to the version that just finished downloading so a
-          // superseded download is not installed (upstream's expectedVersion guard).
-          const installResult = yield* installDownloadedUpdate(info.version);
-          yield* logUpdaterInfo("auto-install finished", {
-            version: info.version,
-            accepted: installResult.accepted,
-            completed: installResult.completed,
-            failed: installResult.failed,
-          });
         }),
       ),
       Effect.catchCause((cause) => {
@@ -1295,10 +1285,17 @@ export const make = Effect.gen(function* () {
           url: `http://localhost:${config.mockUpdateServerPort}`,
         } as ElectronUpdater.ElectronUpdaterFeedUrl);
       } else if (policy.feedUrl !== undefined) {
-        // The administrator's mirror replaces the GitHub feed baked into app-update.yml.
         yield* electronUpdater.setFeedURL({
           provider: "generic",
           url: policy.feedUrl,
+        } as ElectronUpdater.ElectronUpdaterFeedUrl);
+      } else if (singleReleaseChannel) {
+        // This personal build must never install releases from the upstream distribution.
+        yield* electronUpdater.setFeedURL({
+          provider: "github",
+          owner: "Bony-Lord",
+          repo: "mtcode",
+          releaseType: "release",
         } as ElectronUpdater.ElectronUpdaterFeedUrl);
       }
 

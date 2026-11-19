@@ -1,5 +1,6 @@
 import {
   providerInstanceConfigEnabledFlag,
+  resolveProviderInstanceProfiles,
   ProviderInstanceId,
   type ProviderInstanceConfig,
   type ProviderInstanceConfigMap,
@@ -378,7 +379,8 @@ const makeReconcile = <R>(input: {
       const previousEntries = yield* Ref.get(state.entries);
       const previousUnavailable = yield* Ref.get(state.unavailable);
       const previousSecretsUnreadable = yield* Ref.get(state.secretsUnreadable);
-      const nextRaw = Object.entries(configMap);
+      const effectiveConfig = resolveProviderInstanceProfiles(configMap);
+      const nextRaw = Object.entries(effectiveConfig);
       const nextKeys = new Set<ProviderInstanceId>(
         nextRaw.map(([raw]) => ProviderInstanceId.make(raw)),
       );
@@ -391,7 +393,7 @@ const makeReconcile = <R>(input: {
           removedIds.push(instanceId);
           continue;
         }
-        const nextEntry = configMap[instanceId];
+        const nextEntry = effectiveConfig[instanceId];
         if (
           rebuild.has(instanceId) ||
           (nextEntry !== undefined && !entryEqual(live.entry, nextEntry))

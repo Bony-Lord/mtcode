@@ -35,7 +35,9 @@ type InventoryState =
   | { readonly status: "error"; readonly message: string };
 
 function errorMessage(cause: unknown): string {
-  return cause instanceof Error && cause.message.trim() ? cause.message : "Could not load skills.";
+  return cause instanceof Error && cause.message.trim()
+    ? cause.message
+    : "Не удалось загрузить навыки.";
 }
 
 function connectionDotClassName(phase: string): string {
@@ -81,27 +83,26 @@ export function SkillsSettings() {
     <SettingsPageContainer>
       <SettingsSection
         id={searchableSetting("skills").id}
-        title="Skills"
+        title="Навыки"
         icon={<SparklesIcon className="size-4 text-muted-foreground" />}
         headerAction={
           <Button size="xs" variant="ghost" onClick={() => setRefreshKey((value) => value + 1)}>
             <RefreshCwIcon className="size-3.5" />
-            Refresh all
+            Обновить
           </Button>
         }
       >
         <div className="space-y-2.5 px-3 pb-3 sm:px-4">
           <p className="max-w-xl text-[13px] leading-[1.45] text-muted-foreground/80">
-            Global skills discovered by Codex and Claude on each connected computer. Paths refer to
-            the computer where the skill is installed.
+            Общие и специализированные навыки на подключённых компьютерах.
           </p>
           <Input
             type="search"
             nativeInput
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            placeholder="Search skills, harnesses, or paths"
-            aria-label="Search skills"
+            placeholder="Навык, агент или путь"
+            aria-label="Поиск навыков"
             className="max-w-sm"
           />
         </div>
@@ -209,14 +210,16 @@ function EnvironmentSkillInventory({
         <CollapsibleContent id={panelId}>
           <div className="pb-2">
             {Option.isNone(prepared) ? (
-              <StatusLine>Connect to this computer to inspect its skills.</StatusLine>
+              <StatusLine>Подключись к компьютеру, чтобы посмотреть навыки.</StatusLine>
             ) : state.status === "loading" ? (
-              <StatusLine>Scanning skills…</StatusLine>
+              <StatusLine>Загружаем навыки…</StatusLine>
             ) : state.status === "error" ? (
               <StatusLine tone="error">{state.message}</StatusLine>
             ) : visibleInventory?.installations.length === 0 ? (
               <StatusLine>
-                {query ? "No skills match this search." : "No global Codex or Claude skills found."}
+                {query
+                  ? "Поиск не дал результатов."
+                  : "Глобальные навыки Codex или Claude не найдены."}
               </StatusLine>
             ) : visibleInventory ? (
               <SkillHarnessGroups inventory={visibleInventory} isSearching={isSearching} />
@@ -238,23 +241,59 @@ function SkillHarnessGroups({
   const [collapsedHarnesses, setCollapsedHarnesses] = useState<ReadonlySet<string>>(
     () => new Set(),
   );
-  const groups = useMemo(() => groupSkillsByHarness(inventory.installations), [inventory]);
+  const { common, groups } = useMemo(() => {
+    const byContent = new Map<string, SkillInventoryInstallation[]>();
+    for (const skill of inventory.installations) {
+      const key = `${skill.name}\0${skill.content}`;
+      const copies = byContent.get(key) ?? [];
+      copies.push(skill);
+      byContent.set(key, copies);
+    }
+    const shared: SkillInventoryInstallation[] = [];
+    const specialized: SkillInventoryInstallation[] = [];
+    for (const copies of byContent.values()) {
+      const representative = copies[0];
+      if (!representative) continue;
+      const isCommon =
+        /[/\\](?:\.codex|\.agents)[/\\]skills[/\\][^./\\][^/\\]*[/\\]SKILL\.md$/i.test(
+          representative.skillFilePath,
+        ) || new Set(copies.map((skill) => skill.harness)).size > 1;
+      (isCommon ? shared : specialized).push(representative);
+    }
+    return { common: shared, groups: groupSkillsByHarness(specialized) };
+  }, [inventory]);
 
-  return groups.map((group) => (
-    <SkillHarnessGroup
-      key={group.key}
-      harnessDisplayName={group.harnessDisplayName}
-      harness={group.harness}
-      rootPath={group.rootPath}
-      skills={group.skills}
-      open={isSearching || !collapsedHarnesses.has(group.key)}
-      onOpenChange={(nextOpen) => {
-        if (!isSearching) {
-          setCollapsedHarnesses((keys) => setKeyCollapsed(keys, group.key, !nextOpen));
-        }
-      }}
-    />
-  ));
+  return (
+    <>
+      {common.length > 0 ? (
+        <SkillHarnessGroup
+          harnessDisplayName="Общие"
+          rootPath={null}
+          skills={common}
+          open={isSearching || !collapsedHarnesses.has("common")}
+          onOpenChange={(nextOpen) => {
+            if (!isSearching)
+              setCollapsedHarnesses((keys) => setKeyCollapsed(keys, "common", !nextOpen));
+          }}
+        />
+      ) : null}
+      {groups.map((group) => (
+        <SkillHarnessGroup
+          key={group.key}
+          harnessDisplayName={group.harnessDisplayName}
+          harness={group.harness}
+          rootPath={group.rootPath}
+          skills={group.skills}
+          open={isSearching || !collapsedHarnesses.has(group.key)}
+          onOpenChange={(nextOpen) => {
+            if (!isSearching) {
+              setCollapsedHarnesses((keys) => setKeyCollapsed(keys, group.key, !nextOpen));
+            }
+          }}
+        />
+      ))}
+    </>
+  );
 }
 
 function SkillHarnessGroup({
@@ -266,14 +305,14 @@ function SkillHarnessGroup({
   onOpenChange,
 }: {
   harnessDisplayName: string;
-  harness: SkillInventoryInstallation["harness"];
+  harness?: SkillInventoryInstallation["harness"];
   rootPath: string | null;
   skills: ReadonlyArray<SkillInventoryInstallation>;
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
   const panelId = useId();
-  const HarnessIcon = PROVIDER_ICON_BY_PROVIDER[harness] ?? null;
+  const HarnessIcon = harness ? (PROVIDER_ICON_BY_PROVIDER[harness] ?? null) : null;
 
   return (
     <div>
@@ -357,7 +396,7 @@ function SkillDetail({ skill }: { skill: SkillInventoryInstallation }) {
       <div className="space-y-1">
         <h4 className="text-sm font-semibold text-foreground">{skill.name}</h4>
         <p className="max-w-3xl text-[13px] leading-6 text-muted-foreground/85">
-          {skill.description ?? "No description in this skill's frontmatter."}
+          {skill.description ?? "У навыка нет описания."}
         </p>
       </div>
       <SkillFileDetail skill={skill} />
