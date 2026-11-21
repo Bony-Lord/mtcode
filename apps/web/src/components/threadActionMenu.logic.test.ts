@@ -57,9 +57,15 @@ describe("buildThreadActionMenuItems", () => {
             "archive",
             "delete",
           ];
-      expect(items.filter((item) => item.disabled).map((item) => item.id)).toEqual(expected);
+      const choices = [...items, ...(items.find((item) => item.id === "more")?.children ?? [])];
       expect(
-        items.find((item) => item.id === "snooze")?.children?.every((child) => child.disabled) ??
+        choices
+          .filter((item) => item.disabled)
+          .map((item) => item.id)
+          .sort(),
+      ).toEqual(expected.toSorted());
+      expect(
+        choices.find((item) => item.id === "snooze")?.children?.every((child) => child.disabled) ??
           true,
       ).toBe(true);
     },
@@ -72,6 +78,27 @@ describe("buildThreadActionMenuItems", () => {
       canTurnIntoProject: true,
     });
     expect(items.find((item) => item.id === "archive")?.disabled).toBe(true);
-    expect(items.find((item) => item.id === "turn-into-project")?.disabled).toBe(true);
+    expect(
+      items
+        .find((item) => item.id === "more")
+        ?.children?.find((item) => item.id === "turn-into-project")?.disabled,
+    ).toBe(true);
+  });
+
+  it("keeps common actions visible and omits unavailable paths and project settings", () => {
+    const items = buildThreadActionMenuItems(baseState);
+    expect(items.map((item) => item.id)).toEqual([
+      "rename",
+      "pin",
+      "settle",
+      "mark-unread",
+      "copy-thread",
+      "archive",
+      "more",
+    ]);
+    const more = items.at(-1)?.children?.map((item) => item.id);
+    expect(more).toContain("delete");
+    expect(more).not.toContain("copy-path");
+    expect(more).not.toContain("project-settings");
   });
 });

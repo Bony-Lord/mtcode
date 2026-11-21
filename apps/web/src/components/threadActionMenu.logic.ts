@@ -26,6 +26,7 @@ export type ThreadActionMenuId =
   | "copy-branch"
   | "copy-thread"
   | "copy-thread-id"
+  | "more"
   | "archive"
   | "delete";
 
@@ -42,18 +43,10 @@ export function buildDraftActionMenuItems(options: {
   readonly hasProject: boolean;
 }): ReadonlyArray<ContextMenuItem<DraftActionMenuId>> {
   return [
-    {
-      id: "copy",
-      label: "Copy",
-      icon: "copy",
-      disabled: !options.hasPath && !options.hasBranch,
-      children: [
-        ...(options.hasPath ? [{ id: "copy-path" as const, label: "Path", icon: "folder" }] : []),
-        ...(options.hasBranch
-          ? [{ id: "copy-branch" as const, label: "Branch", icon: "git-branch" }]
-          : []),
-      ],
-    },
+    ...(options.hasPath ? [{ id: "copy-path" as const, label: "Copy path", icon: "folder" }] : []),
+    ...(options.hasBranch
+      ? [{ id: "copy-branch" as const, label: "Copy branch", icon: "git-branch" }]
+      : []),
     ...(options.hasProject
       ? [{ id: "project-settings" as const, label: "Project settings", icon: "settings" }]
       : []),
@@ -70,6 +63,8 @@ export function buildDraftActionMenuItems(options: {
 export interface ThreadActionMenuState {
   readonly canOperate: boolean;
   readonly canFind?: boolean;
+  readonly hasWorkspacePath?: boolean;
+  readonly hasProjectSettings?: boolean;
   readonly branch: string | null;
   readonly projectFilter: {
     readonly label: string;
@@ -110,6 +105,7 @@ export function threadActionRequiresOperate(action: ThreadActionMenuId): boolean
     "copy-branch",
     "copy-thread",
     "copy-thread-id",
+    "more",
   ].includes(action);
 }
 
@@ -139,8 +135,8 @@ export function buildThreadActionMenuItems(
     ...(state.supports.settlement
       ? [
           state.isSettled
-            ? { id: "unsettle" as const, label: "Un-settle thread", icon: "circle-check" }
-            : { id: "settle" as const, label: "Settle thread", icon: "circle-check" },
+            ? { id: "unsettle" as const, label: "Reopen thread", icon: "circle-check" }
+            : { id: "settle" as const, label: "Mark as done", icon: "circle-check" },
         ]
       : []),
     ...(state.supports.snooze
@@ -167,7 +163,7 @@ export function buildThreadActionMenuItems(
               },
         ]
       : []),
-    { id: "rename", label: "Rename thread", icon: "pencil", separatorBefore: true },
+    { id: "rename", label: "Rename thread", icon: "pencil" },
     ...(state.supports.titleRegeneration
       ? [
           {
@@ -224,21 +220,17 @@ export function buildThreadActionMenuItems(
           },
         ]
       : []),
-    {
-      id: "copy",
-      label: "Copy",
-      icon: "copy",
-      separatorBefore: true,
-      children: [
-        { id: "copy-path", label: "Path", icon: "folder" },
-        ...(state.branch
-          ? [{ id: "copy-branch" as const, label: "Branch", icon: "git-branch" }]
-          : []),
-        { id: "copy-thread", label: "Thread", icon: "message-square" },
-        { id: "copy-thread-id", label: "Thread ID", icon: "hash" },
-      ],
-    },
-    { id: "project-settings", label: "Project settings", icon: "settings" },
+    { id: "copy-thread", label: "Copy thread link", icon: "link" },
+    ...(state.hasWorkspacePath
+      ? [{ id: "copy-path" as const, label: "Copy path", icon: "folder" }]
+      : []),
+    ...(state.branch
+      ? [{ id: "copy-branch" as const, label: "Copy branch", icon: "git-branch" }]
+      : []),
+    { id: "copy-thread-id", label: "Copy thread ID", icon: "hash" },
+    ...(state.hasProjectSettings
+      ? [{ id: "project-settings" as const, label: "Project settings", icon: "settings" }]
+      : []),
     {
       id: "archive",
       label: "Archive thread",
@@ -251,9 +243,10 @@ export function buildThreadActionMenuItems(
       label: "Delete",
       destructive: true,
       icon: "trash",
+      separatorBefore: true,
     },
   ];
-  return state.canOperate
+  const availableItems = state.canOperate
     ? items
     : items.map((item) =>
         threadActionRequiresOperate(item.id)
@@ -266,4 +259,23 @@ export function buildThreadActionMenuItems(
             }
           : item,
       );
+  const visibleActions: ReadonlyArray<ThreadActionMenuId> = [
+    "rename",
+    "pin",
+    "unpin",
+    "settle",
+    "unsettle",
+    "mark-unread",
+    "find",
+    "copy-thread",
+    "archive",
+  ];
+  return [
+    ...visibleActions.flatMap((id) => availableItems.filter((item) => item.id === id)),
+    {
+      id: "more",
+      label: "More actions",
+      children: availableItems.filter((item) => !visibleActions.includes(item.id)),
+    },
+  ];
 }

@@ -64,7 +64,10 @@ import { announce } from "~/lib/announce";
 import { cn } from "~/lib/utils";
 import { getVirtualizedScrollFadeClassName } from "../ui/scroll-area";
 import { TooltipProvider } from "../ui/tooltip";
-import { InlineButton } from "../ui/button";
+import { Button, InlineButton } from "../ui/button";
+import { Menu, MenuGroup, MenuGroupLabel, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
+import { ChevronDownIcon } from "lucide-react";
+import { ProviderInstanceIcon } from "./ProviderInstanceIcon";
 import {
   isProviderInstancePickerReady,
   isProviderInstancePickerVisible,
@@ -75,6 +78,7 @@ import { providerModelKey, sortProviderModelItems } from "../../modelOrdering";
 import {
   AUTO_PROFILE_ID,
   providerAccountGroups,
+  providerLoginGroups,
   resolvePickerModel,
 } from "./ProviderModelPicker.logic";
 import { AUTO_APP_MODEL_OPTIONS } from "./ProviderModelPicker.logic";
@@ -712,7 +716,12 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
     accounts.length > 1
       ? {
           ...representative,
-          displayName: `${representative.driverKind === "codex" ? "Codex" : representative.driverKind === "claudeAgent" ? "Claude" : "Antigravity"} · ${accounts.length} аккаунта`,
+          displayName:
+            representative.driverKind === "codex"
+              ? "Codex"
+              : representative.driverKind === "claudeAgent"
+                ? "Claude"
+                : "Antigravity",
         }
       : representative,
   );
@@ -1014,35 +1023,59 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
               и аккаунт появятся в чате.
             </div>
           ) : selectedAccountGroup && selectedAccountGroup.accounts.length > 1 && !isSearching ? (
-            <label className="flex items-center gap-2 border-b border-border/60 px-3 py-2 text-xs">
+            <div className="flex items-center gap-2 border-b border-border/60 px-3 py-1.5 text-xs">
               <span className="text-muted-foreground">Аккаунт</span>
-              <select
-                aria-label="Аккаунт провайдера"
-                className="min-w-0 flex-1 rounded border border-border bg-background px-2 py-1"
-                value={selectedInstanceId}
-                onChange={(event) =>
-                  handleSelectInstance(
-                    selectedAccountGroup.accounts.find(
-                      (entry) => entry.instanceId === event.target.value,
-                    )!.instanceId,
-                  )
-                }
-              >
-                {selectedAccountGroup.accounts.map((entry) => (
-                  <option
-                    key={entry.instanceId}
-                    value={entry.instanceId}
-                    disabled={!isProviderInstancePickerReady(entry)}
-                  >
-                    {entry.snapshot.auth.email ?? entry.displayName}
-                    {entry.snapshot.usageLimits?.plan
-                      ? ` · ${entry.snapshot.usageLimits.plan}`
-                      : ""}
-                    {entry.status !== "ready" ? " · недоступен" : ""}
-                  </option>
-                ))}
-              </select>
-            </label>
+              <Menu>
+                <MenuTrigger
+                  render={
+                    <Button
+                      size="xs"
+                      variant="ghost-muted"
+                      aria-label={`Аккаунт провайдера · ${selectedEntry?.displayName ?? ""}`}
+                    >
+                      <span className="truncate">{selectedEntry?.displayName}</span>
+                      <ChevronDownIcon />
+                    </Button>
+                  }
+                />
+                <MenuPopup align="start">
+                  {providerLoginGroups(selectedAccountGroup.accounts).map((entries) => (
+                    <MenuGroup key={entries[0]!.instanceId}>
+                      {entries.length > 1 ? (
+                        <MenuGroupLabel>{entries[0]!.snapshot.auth.email}</MenuGroupLabel>
+                      ) : null}
+                      {entries.map((entry) => (
+                        <MenuItem
+                          key={entry.instanceId}
+                          disabled={!isProviderInstancePickerReady(entry)}
+                          onClick={() => handleSelectInstance(entry.instanceId)}
+                        >
+                          <ProviderInstanceIcon
+                            driverKind={entry.driverKind}
+                            displayName={entry.displayName}
+                            size="compact"
+                          />
+                          <span className="min-w-0">
+                            <span className="block truncate">{entry.displayName}</span>
+                            {entries.length > 1 ? (
+                              <span className="block truncate text-xs text-muted-foreground">
+                                {entry.snapshot.auth.subscriptionSharing
+                                  ? "Подключённый ChatGPT"
+                                  : "Вход через Codex CLI"}
+                              </span>
+                            ) : entry.snapshot.auth.email ? (
+                              <span className="block truncate text-xs text-muted-foreground">
+                                {entry.snapshot.auth.email}
+                              </span>
+                            ) : null}
+                          </span>
+                        </MenuItem>
+                      ))}
+                    </MenuGroup>
+                  ))}
+                </MenuPopup>
+              </Menu>
+            </div>
           ) : null}
           <Combobox<string, boolean>
             inline

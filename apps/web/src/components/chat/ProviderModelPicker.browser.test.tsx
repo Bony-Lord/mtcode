@@ -15,6 +15,51 @@ import { __setClientSettingsForTests } from "../../hooks/useSettings";
 import { deriveProviderInstanceEntries } from "../../providerInstances";
 import { ProviderModelPicker } from "./ProviderModelPicker";
 
+it("switches Codex accounts with the styled account menu and omits a hidden quota profile", async () => {
+  const entries = deriveProviderInstanceEntries(
+    ["Personal", "Work", "Quota report"].map((displayName, index) => ({
+      instanceId: ProviderInstanceId.make(`codex-qa-${index}`),
+      driver: ProviderDriverKind.make("codex"),
+      displayName,
+      enabled: true,
+      installed: true,
+      version: "0.171.0",
+      status: "ready" as const,
+      auth: {
+        status: "authenticated" as const,
+        email: "example@example.test",
+        ...(index === 1 ? { subscriptionSharing: true } : {}),
+      },
+      checkedAt: "2026-11-21T00:00:00.000Z",
+      models: [
+        { slug: `model-${index}`, name: `${displayName} model`, isCustom: false, capabilities: {} },
+      ],
+      slashCommands: [],
+      skills: [],
+    })),
+  ).map((entry, index) => (index === 2 ? { ...entry, hidden: true } : entry));
+  await using screen = await render(
+    <ProviderModelPicker
+      environmentId={null}
+      activeInstanceId={entries[0]!.instanceId}
+      model="model-0"
+      lockedProvider={null}
+      instanceEntries={entries}
+      modelOptionsByInstance={new Map(entries.map((entry) => [entry.instanceId, entry.models]))}
+      onInstanceModelChange={vi.fn()}
+    />,
+  );
+  await screen.getByRole("button", { name: "Personal model", exact: true }).click();
+  await page.getByRole("button", { name: /Аккаунт провайдера.*Personal/ }).click();
+  await expect.element(page.getByText("example@example.test", { exact: true })).toBeVisible();
+  const work = page.getByRole("menuitem", { name: /Work.*Подключённый ChatGPT/ });
+  await expect.element(work).toBeVisible();
+  expect(work.element().querySelector("svg")).not.toBeNull();
+  expect(page.getByRole("menuitem", { name: "Quota report" }).query()).toBeNull();
+  await work.click();
+  await expect.element(page.getByRole("option", { name: /Work model/ })).toBeVisible();
+});
+
 it("offers Auto as a single choice in a new chat with shift selection available", async () => {
   const instanceId = ProviderInstanceId.make("codex");
   const omniId = ProviderInstanceId.make("omniroute-free");

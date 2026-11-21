@@ -39,6 +39,7 @@ export interface ProviderInstanceEntry {
   readonly status: ServerProviderState;
   readonly isDefault: boolean;
   readonly isAvailable: boolean;
+  readonly hidden?: boolean;
   readonly snapshot: ServerProvider;
   readonly models: ReadonlyArray<ServerProviderModel>;
 }
@@ -50,11 +51,11 @@ export function hasInstanceBadge(entries: ReadonlyArray<ProviderInstanceEntry>):
 
 /** Disabled instances may retain ready status until reconciliation. */
 export function isProviderInstancePickerReady(entry: ProviderInstanceEntry): boolean {
-  return entry.enabled && entry.isAvailable && entry.status === "ready";
+  return isProviderInstancePickerVisible(entry) && entry.isAvailable && entry.status === "ready";
 }
 
 export function isProviderInstancePickerVisible(entry: ProviderInstanceEntry): boolean {
-  return entry.enabled;
+  return entry.enabled && entry.hidden !== true;
 }
 
 export function deriveProviderInstanceEntries(
@@ -137,6 +138,7 @@ function applyProviderInstanceBranding(
   const explicitInstance = Object.hasOwn(settings.providerInstances, entry.instanceId)
     ? settings.providerInstances[entry.instanceId]
     : undefined;
+  if (explicitInstance?.hidden) entry = { ...entry, hidden: true };
   if (entry.driverKind !== "acpRegistry" || explicitInstance === undefined) return entry;
   const config =
     explicitInstance.config !== null && typeof explicitInstance.config === "object"
@@ -214,7 +216,7 @@ export function getDefaultProviderInstanceModel(
 }
 
 const isSelectableProviderInstanceEntry = (entry: ProviderInstanceEntry): boolean =>
-  entry.enabled && entry.isAvailable;
+  isProviderInstancePickerVisible(entry) && entry.isAvailable;
 
 export function resolveSelectableProviderInstanceEntry(
   entries: ReadonlyArray<ProviderInstanceEntry>,

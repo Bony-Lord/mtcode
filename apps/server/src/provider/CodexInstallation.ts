@@ -135,6 +135,21 @@ export interface CodexExecutable {
   readonly version: string;
   readonly managedVersionDirectory: string | null;
 }
+
+export function isManagedCodexBinaryPath(
+  relativePath: string,
+  separator: string,
+  platform: NodeJS.Platform,
+): boolean {
+  const [version, bin, executable, extra] = relativePath.split(separator);
+  const windows = platform === "win32";
+  return (
+    extra === undefined &&
+    /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/.test(version ?? "") &&
+    (windows ? bin?.toLowerCase() === "bin" : bin === "bin") &&
+    (windows ? executable?.toLowerCase() === "codex.exe" : executable === "codex")
+  );
+}
 interface CodexInstallationService {
   readonly managedDirectory: string;
   readonly resolve: () => Effect.Effect<CodexExecutable, CodexInstallationError>;

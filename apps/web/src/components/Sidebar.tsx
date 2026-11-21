@@ -1097,9 +1097,16 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
         );
   const threads = useQuietThreadShells();
   const promotingDraftThreadKeys = usePromotingDraftThreadKeys();
-  const archivedProjectRefs = new Set(projectGroups.filter((project) => project.archived)
-    .flatMap((project) => project.memberProjectRefs.map((member) => `${member.environmentId}:${member.projectId}`)));
-  const visibleThreads = threads.filter((thread) => !archivedProjectRefs.has(`${thread.environmentId}:${thread.projectId}`));
+  const archivedProjectRefs = new Set(
+    projectGroups
+      .filter((project) => project.archived)
+      .flatMap((project) =>
+        project.memberProjectRefs.map((member) => `${member.environmentId}:${member.projectId}`),
+      ),
+  );
+  const visibleThreads = threads.filter(
+    (thread) => !archivedProjectRefs.has(`${thread.environmentId}:${thread.projectId}`),
+  );
   const listedThreads =
     promotingDraftThreadKeys.length === 0
       ? visibleThreads
@@ -2646,6 +2653,8 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                 threadRef.environmentId,
                 AuthOrchestrationOperateScope,
               ),
+              hasWorkspacePath: threadWorkspacePath !== null,
+              hasProjectSettings: threadProjectGroup !== null,
               branch: thread.branch ?? null,
               // An archived project is not a filter choice.
               projectFilter:

@@ -341,6 +341,72 @@ it.layer(layerTest)("CodexDriver", (it) => {
     checkManagedAccount,
   );
 
+  it.effect(
+    "uses the current shared Codex version for native accounts with older managed paths",
+    () =>
+      Effect.gen(function* () {
+        const serverConfig = yield* ServerConfig.ServerConfig;
+        const platform = yield* HostProcess.Platform;
+        const managedDirectory = NodePath.join(serverConfig.baseDir, "tools", "codex");
+        const executableName = platform === "win32" ? "codex.exe" : "codex";
+        const executable = (version: string) => ({
+          executablePath: NodePath.join(managedDirectory, version, "bin", executableName),
+          managedVersionDirectory: NodePath.join(managedDirectory, version),
+          source: "managed" as const,
+          version,
+        });
+        const launches: string[] = [];
+        let selectedVersion = "0.170.0";
+        const instanceId = ProviderInstanceId.make("codex-native-shared");
+        const launch = Effect.gen(function* () {
+          const instance = yield* CodexDriver.create({
+            instanceId,
+            displayName: "Native Codex",
+            enabled: false,
+            environment: [],
+            config: {
+              ...CodexDriver.defaultConfig(),
+              homePath: serverConfig.stateDir,
+              binaryPath: executable("0.169.0").executablePath,
+            },
+          });
+          selectedVersion = "0.171.0";
+          yield* instance.orchestrationAdapter
+            .openSession({
+              threadId: ThreadId.make("native-shared-thread"),
+              providerSessionId: ProviderSessionId.make("native-shared-session"),
+              modelSelection: { instanceId, model: "gpt-5.4" },
+              runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+                runtimeMode: "full-access",
+                interactionMode: "default",
+                cwd: serverConfig.stateDir,
+              }),
+            })
+            .pipe(Effect.scoped, Effect.exit);
+        });
+        yield* launch.pipe(
+          Effect.provideService(
+            CodexInstallation.CodexInstallation,
+            CodexInstallation.CodexInstallation.of({
+              ...(yield* CodexInstallation.CodexInstallation),
+              managedDirectory,
+              acquire: () => Effect.sync(() => executable(selectedVersion)),
+            }),
+          ),
+          Effect.provideService(
+            CodexAdapterV2.CodexAppServerClientFactory,
+            CodexAdapterV2.CodexAppServerClientFactory.of({
+              open: ({ settings }) =>
+                Effect.sync(() => {
+                  launches.push(settings.binaryPath);
+                }).pipe(Effect.andThen(Effect.die("Captured Codex executable"))),
+            }),
+          ),
+        );
+        expect(launches).toEqual([executable("0.171.0").executablePath]);
+      }).pipe(Effect.scoped),
+  );
+
   it.effect.skipIf(windowsHost)(
     "runs the standalone updater against the shared home, not the shadow home",
     () =>

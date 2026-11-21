@@ -85,6 +85,7 @@ import {
   type ProviderSettingsUpdateCandidate,
 } from "../ProviderUpdateLaunchNotification.logic";
 import { ProviderUpdatesAction } from "../ProviderUpdatesAction";
+import { ProviderInstanceIcon } from "../chat/ProviderInstanceIcon";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import {
@@ -880,6 +881,15 @@ export function EnvironmentProviderSettings({
   );
 
   const rows: InstanceRow[] = [];
+  const isVisibleInstance = (
+    id: ProviderInstanceId,
+    instance: ProviderInstanceConfig | undefined,
+  ) =>
+    id === targetInstanceId ||
+    showHiddenProviders ||
+    (!instance?.hidden &&
+      (serverProviders.some((provider) => provider.instanceId === id && provider.enabled) ||
+        (instance !== undefined && resolveProviderInstanceEnabled(instance))));
   const visibleDriverKinds = new Set<ProviderDriverKind>(
     visibleProviderSettings.map((providerSettings) => providerSettings.provider),
   );
@@ -890,17 +900,7 @@ export function EnvironmentProviderSettings({
     const explicitInstance = settings.providerInstances?.[defaultInstanceId];
     const isDirty = explicitInstance !== undefined;
     const hasDefaultSlot = providerSettings.hasDefaultInstance || explicitInstance !== undefined;
-    if (
-      hasDefaultSlot &&
-      (!explicitInstance?.hidden ||
-        showHiddenProviders ||
-        defaultInstanceId === targetInstanceId) &&
-      (driver === "codex" ||
-        driver === "claudeAgent" ||
-        isDirty ||
-        resolveProviderInstanceEnabled(explicitInstance ?? { driver }) ||
-        defaultInstanceId === targetInstanceId)
-    ) {
+    if (hasDefaultSlot && isVisibleInstance(defaultInstanceId, explicitInstance)) {
       rows.push({
         instanceId: defaultInstanceId,
         explicitInstance,
@@ -911,7 +911,7 @@ export function EnvironmentProviderSettings({
     }
     for (const [id, instance] of instancesByDriver.get(providerSettings.provider) ?? []) {
       if (id === defaultInstanceId) continue;
-      if (instance.hidden && !showHiddenProviders && id !== targetInstanceId) continue;
+      if (!isVisibleInstance(id, instance)) continue;
       rows.push({
         instanceId: id,
         explicitInstance: instance,
@@ -923,7 +923,7 @@ export function EnvironmentProviderSettings({
   for (const [driver, list] of instancesByDriver) {
     if (visibleDriverKinds.has(driver)) continue;
     for (const [id, instance] of list) {
-      if (instance.hidden && !showHiddenProviders && id !== targetInstanceId) continue;
+      if (!isVisibleInstance(id, instance)) continue;
       rows.push({
         instanceId: id,
         explicitInstance: instance,
@@ -1377,8 +1377,14 @@ export function EnvironmentProviderSettings({
                       aria-expanded={selectedGroupId === groupId}
                       onClick={() => setSelectedInstanceId(members[0]!.instanceId)}
                     >
-                      <span>{groupLabel(groupId, members[0]!)}</span>
-                      <span className="text-muted-foreground">{members.length}</span>
+                      <span className="flex min-w-0 items-center gap-2">
+                        <ProviderInstanceIcon
+                          driverKind={members[0]!.driver}
+                          displayName={groupLabel(groupId, members[0]!)}
+                          size="compact"
+                        />
+                        <span className="truncate">{groupLabel(groupId, members[0]!)}</span>
+                      </span>
                     </button>
                     {selectedGroupId === groupId ? (
                       <div className="ml-3 border-l border-border/60">
@@ -1397,15 +1403,16 @@ export function EnvironmentProviderSettings({
                     Add provider
                   </button>
                 ) : null}
-                {Object.values(settings.providerInstances).some((instance) => instance.hidden) ? (
+                {serverProviders.some((provider) => !provider.enabled) ||
+                Object.values(settings.providerInstances).some((instance) => instance.hidden) ? (
                   <button
                     type="button"
                     className="w-full cursor-pointer px-3 py-2 text-left text-xs text-muted-foreground hover:text-foreground"
                     onClick={() => setShowHiddenProviders((value) => !value)}
                   >
                     {showHiddenProviders
-                      ? "Скрыть отключённые провайдеры"
-                      : "Показать скрытых провайдеров"}
+                      ? "Скрыть отключённые и скрытые профили"
+                      : "Отключённые и скрытые профили"}
                   </button>
                 ) : null}
               </div>

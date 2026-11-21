@@ -13,16 +13,13 @@ export function selectedUsageModel(
   executedSelection?: ModelSelection | undefined,
   executedIsActive = false,
 ) {
-  // A running turn spends on the account it started with; the composer pick only affects
-  // the next send, so the limits indicator must follow the run instead of a newer pick.
-  if (executedIsActive && executedSelection) return executedSelection;
   const selected =
     (draftModelSelectionApplies(draft, threadStarted) && draft.activeProvider
       ? draft.modelSelectionByProvider[draft.activeProvider]
       : undefined) ?? threadSelection;
-  return selected &&
-    isSmartModel(selected.model) &&
+  return executedIsActive &&
     executedSelection &&
+    (!selected || isSmartModel(selected.model)) &&
     !isSmartModel(executedSelection.model)
     ? executedSelection
     : selected;

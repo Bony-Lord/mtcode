@@ -1930,7 +1930,12 @@ export const createCodexAdapterV2 = Effect.fn("CodexAdapterV2.createCodexAdapter
   { instanceId, environment, enabled, config }: ProviderAdapterDriverCreateInput<CodexSettings>,
   hooks: Pick<
     CodexAdapterV2Options,
-    "onUsageLimits" | "onAuthenticationFailure" | "resolveRuntime" | "compatibility" | "models"
+    | "onUsageLimits"
+    | "onAuthenticationFailure"
+    | "resolveRuntime"
+    | "resolveExecutable"
+    | "compatibility"
+    | "models"
   > = {},
 ) {
   const clientFactory = yield* CodexAppServerClientFactory;
@@ -2006,6 +2011,7 @@ export interface CodexAdapterV2Options {
   /** The provider's published models, read per turn for catalog defaults. */
   readonly models?: Effect.Effect<ReadonlyArray<ServerProviderModel>>;
   readonly resolveRuntime?: Effect.Effect<CodexEffectiveRuntime, ProviderSetupError, Scope.Scope>;
+  readonly resolveExecutable?: Effect.Effect<string, never, Scope.Scope>;
   readonly compatibility?: (
     version: string,
   ) => Effect.Effect<ServerProviderCompatibilityAdvisory | undefined>;
@@ -2071,7 +2077,9 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                     }),
                 ),
               );
-        const sessionSettings = resolvedRuntime?.config ?? adapterOptions.settings;
+        const sessionSettings = adapterOptions.resolveExecutable
+          ? { ...adapterOptions.settings, binaryPath: yield* adapterOptions.resolveExecutable }
+          : (resolvedRuntime?.config ?? adapterOptions.settings);
         const sessionEnvironment = resolvedRuntime?.environment ?? adapterOptions.environment;
         const modelProvider = resolvedRuntime?.modelProvider;
         const modelProviderParams = modelProvider === undefined ? {} : { modelProvider };

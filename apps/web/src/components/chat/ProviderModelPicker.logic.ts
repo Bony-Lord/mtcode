@@ -72,6 +72,35 @@ export function providerAccountGroups(entries: readonly ProviderInstanceEntry[])
   });
 }
 
+export function providerLoginGroups(accounts: readonly ProviderInstanceEntry[]) {
+  const emailFor = (entry: ProviderInstanceEntry) =>
+    entry.driverKind === "codex" && entry.snapshot.auth.status === "authenticated"
+      ? entry.snapshot.auth.email?.trim().toLowerCase()
+      : undefined;
+  const workspaces = new Map<string, Set<string>>();
+  for (const entry of accounts) {
+    const email = emailFor(entry);
+    const workspace = entry.snapshot.auth.workspaceId;
+    if (!email || !workspace) continue;
+    const known = workspaces.get(email) ?? new Set<string>();
+    known.add(workspace);
+    workspaces.set(email, known);
+  }
+  const groups = new Map<string, ProviderInstanceEntry[]>();
+  for (const entry of accounts) {
+    const email = emailFor(entry);
+    const known = email ? workspaces.get(email) : undefined;
+    const workspace =
+      entry.snapshot.auth.workspaceId ?? (known?.size === 1 ? [...known][0] : undefined);
+    const key =
+      email && (workspace || !known) ? JSON.stringify([email, workspace]) : entry.instanceId;
+    const group = groups.get(key);
+    if (group) group.push(entry);
+    else groups.set(key, [entry]);
+  }
+  return [...groups.values()];
+}
+
 /** Keeps a hidden model visible while its provider is locked or turned off. */
 export function retainedModelWhileProviderLocked(
   entry: {

@@ -17,7 +17,7 @@ it("uses the unsent model/account pick and ignores old sticky choices in an exis
   );
 });
 
-it("uses the actual account and model of an Auto run and follows a handoff", () => {
+it("uses the executed account during Auto and clears it after the run", () => {
   const auto = { instanceId: ProviderInstanceId.make("codex"), model: "mt-auto" };
   const draft = {
     activeProvider: auto.instanceId,
@@ -26,12 +26,13 @@ it("uses the actual account and model of an Auto run and follows a handoff", () 
   };
   const first = { instanceId: ProviderInstanceId.make("kilo-free"), model: "kilo-free/ernie" };
   const second = { instanceId: ProviderInstanceId.make("codex-second"), model: "gpt-6.1-sol" };
-  expect(selectedUsageModel(draft, auto, true, first)).toBe(first);
-  expect(selectedUsageModel(draft, auto, true, second)).toBe(second);
+  expect(selectedUsageModel(draft, auto, true, first, true)).toBe(first);
+  expect(selectedUsageModel(draft, auto, true, second, true)).toBe(second);
+  expect(selectedUsageModel(draft, auto, true, second)).toBe(auto);
   expect(selectedUsageModel(draft, auto, false)).toBe(auto);
 });
 
-it("shows the account spending the active run, not a newer pick for the next send", () => {
+it("shows the account selected in the composer while a different account is still running", () => {
   const running = { instanceId: ProviderInstanceId.make("codex-first"), model: "gpt-6.1-sol" };
   const picked = { instanceId: ProviderInstanceId.make("codex-second"), model: "gpt-6.1-sol" };
   const draft = {
@@ -39,8 +40,6 @@ it("shows the account spending the active run, not a newer pick for the next sen
     modelSelectionByProvider: { [picked.instanceId]: picked },
     modelSelectionExplicit: true,
   };
-  // The run in flight still spends on its own account after an automatic account switch.
-  expect(selectedUsageModel(draft, running, true, running, true)).toBe(running);
-  // Once nothing runs, the pick decides the next send and its limits.
+  expect(selectedUsageModel(draft, running, true, running, true)).toBe(picked);
   expect(selectedUsageModel(draft, running, true, running, false)).toBe(picked);
 });

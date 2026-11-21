@@ -2644,3 +2644,21 @@ code {
 .messages-timeline-scroll:focus-visible {
   outline: none;
 }
+
+@media (prefers-contrast: no-preference) {
+  .dark [data-space-ambient]::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    pointer-events: none;
+    background:
+      radial-gradient(ellipse at 32% 60%, rgb(75 69 172 / 13%), transparent 54%),
+      radial-gradient(ellipse at 67% 47%, rgb(33 113 146 / 10%), transparent 48%),
+      radial-gradient(circle at 23% 19%, rgb(210 222 250 / 34%) 0.5px, transparent 1.3px) 0 0 / 83px
+        137px,
+      radial-gradient(circle at 71% 23%, rgb(166 188 244 / 26%) 0.5px, transparent 1px) 19px 37px /
+        131px 173px;
+    mask-image: radial-gradient(ellipse at 50% 46%, black, transparent 76%);
+  }
+}

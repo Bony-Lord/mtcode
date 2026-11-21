@@ -66,7 +66,10 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
   environment?: NodeJS.ProcessEnv,
   getModels: Effect.Effect<ReadonlyArray<ServerProviderModel>> = Effect.succeed([]),
   resolveRuntime?: Effect.Effect<
-    import("../provider/CodexManagedRuntime.ts").CodexEffectiveRuntime,
+    Pick<
+      import("../provider/CodexManagedRuntime.ts").CodexEffectiveRuntime,
+      "config" | "environment"
+    >,
     import("@t3tools/contracts").ProviderSetupError,
     Scope.Scope
   >,

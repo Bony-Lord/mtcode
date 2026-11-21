@@ -74,6 +74,30 @@ describe("isProviderInstancePickerReady", () => {
 });
 
 describe("applyProviderInstanceSettings", () => {
+  it("keeps a hidden account available as data without offering it for new selections", () => {
+    const codex = ProviderDriverKind.make("codex");
+    const reportId = ProviderInstanceId.make("codex-report");
+    const agentId = ProviderInstanceId.make("codex-account");
+    const entries = applyProviderInstanceSettings(
+      deriveProviderInstanceEntries([
+        provider({ provider: codex, instanceId: reportId }),
+        provider({ provider: codex, instanceId: agentId }),
+      ]),
+      {
+        providerInstances: {
+          [reportId]: { driver: codex, hidden: true },
+          [agentId]: { driver: codex },
+        },
+        projectSettingsOverrides: {},
+      },
+      null,
+    );
+    expect(entries[0]?.snapshot.enabled).toBe(true);
+    expect(entries.filter(isProviderInstancePickerReady).map((entry) => entry.instanceId)).toEqual([
+      agentId,
+    ]);
+  });
+
   it("uses settings when a streamed snapshot still reports a disabled default as enabled", () => {
     const entries = deriveProviderInstanceEntries([
       provider({ provider: ProviderDriverKind.make("codex"), instanceId: "codex" }),

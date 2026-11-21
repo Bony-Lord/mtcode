@@ -1,4 +1,5 @@
 import { useAtomValue } from "@effect/atom-react";
+import { Link } from "@tanstack/react-router";
 import {
   providerUsageDisplaySource,
   remainingPercent,
@@ -10,7 +11,10 @@ import { refreshUsageLimits } from "@t3tools/client-runtime/state/usage";
 import { environmentPresentations } from "../../state/presentation";
 import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
+import { Button } from "../ui/button";
+import { ProviderInstanceIcon } from "../chat/ProviderInstanceIcon";
+import { ChatGptUsageButton } from "../settings/ChatGptUsageButton";
 import { SidebarMenuButton, SidebarMenuItem } from "../ui/sidebar";
 import { useThreadRouteTarget } from "../../hooks/useThreadRouteTarget";
 import { useQuietThreadShell, useThreadProjection } from "../../state/entities";
@@ -27,11 +31,6 @@ export function QuickUsageLimits({ onOpenUsage }: { readonly onOpenUsage: () => 
   const thread = useQuietThreadShell(threadRef);
   const detail = useThreadProjection(threadRef);
   const activeRun = detail?.projection.runs.find((run) => run.id === thread?.runtime?.activeRunId);
-  const execution =
-    activeRun ??
-    detail?.projection.runs.findLast(
-      (run) => run.status !== "queued" && run.status !== "cancelled",
-    );
   const runIsActive =
     activeRun !== undefined &&
     ["preparing", "queued", "starting", "running", "waiting"].includes(activeRun.status);
@@ -43,9 +42,9 @@ export function QuickUsageLimits({ onOpenUsage }: { readonly onOpenUsage: () => 
   const presentations = useAtomValue(environmentPresentations.presentationsWithProvidersAtom);
   const selection = selectedUsageModel(
     draft,
-    thread?.modelSelection,
+    detail?.projection.thread.modelSelection ?? thread?.modelSelection,
     threadHasStarted(thread),
-    execution?.modelSelection,
+    activeRun?.modelSelection,
     runIsActive,
   );
   const environmentId = draftEnvironmentId ?? threadRef?.environmentId;
@@ -78,7 +77,7 @@ export function QuickUsageLimits({ onOpenUsage }: { readonly onOpenUsage: () => 
   });
   const refresh = (open: boolean) => {
     if (!open || !environmentId || !source) return;
-    setNow(Date.now());
+    setNow(() => Date.now());
     if (presentations.get(environmentId)?.connection.phase !== "connected") return;
     void refreshUsageLimits(
       environmentId,
@@ -88,11 +87,10 @@ export function QuickUsageLimits({ onOpenUsage }: { readonly onOpenUsage: () => 
   };
   return (
     <SidebarMenuItem className="shrink-0">
-      <Tooltip onOpenChange={refresh}>
-        <TooltipTrigger
-          delay={100}
+      <Popover onOpenChange={refresh}>
+        <PopoverTrigger
           render={
-            <SidebarMenuButton size="icon" aria-label="Лимиты использования" onClick={onOpenUsage}>
+            <SidebarMenuButton size="icon" aria-label={`Лимиты · ${name}`}>
               <svg className="size-8" viewBox="0 0 36 36" fill="none" aria-hidden>
                 {arcs.map((path, index) => {
                   const window = index === 0 ? session : weekly;
@@ -125,9 +123,18 @@ export function QuickUsageLimits({ onOpenUsage }: { readonly onOpenUsage: () => 
             </SidebarMenuButton>
           }
         />
-        <TooltipPopup side="top" align="center" className="max-w-80">
+        <PopoverPopup side="top" align="start" width="md" aria-label="Лимиты аккаунта">
           <div className="space-y-1 text-xs">
-            <div className="font-medium">{name}</div>
+            <div className="flex items-center gap-2 text-sm font-medium">
+              {provider ? (
+                <ProviderInstanceIcon
+                  driverKind={provider.driver}
+                  displayName={name}
+                  size="compact"
+                />
+              ) : null}
+              {name}
+            </div>
             {selection ? (
               <div className="break-all text-muted-foreground">{selection.model}</div>
             ) : null}
@@ -135,14 +142,26 @@ export function QuickUsageLimits({ onOpenUsage }: { readonly onOpenUsage: () => 
               <div className="text-muted-foreground">{provider.auth.email}</div>
             ) : null}
             {source !== provider ? (
-              <div className="text-muted-foreground">Лимиты подписки Codex для этого аккаунта</div>
+              <div className="text-muted-foreground">
+                Источник лимитов: {source?.displayName ?? "Codex"}
+              </div>
+            ) : null}
+            {runIsActive &&
+            activeRun &&
+            activeRun.modelSelection.instanceId !== selection?.instanceId ? (
+              <div className="text-muted-foreground">
+                Текущий запуск:{" "}
+                {providers?.find(
+                  (entry) => entry.instanceId === activeRun.modelSelection.instanceId,
+                )?.displayName ?? activeRun.modelSelection.instanceId}
+              </div>
             ) : null}
             {windows.length === 0 ? (
               <div>
                 {automatic
                   ? "Авто выберет модель при отправке запроса."
                   : provider?.auth.subscriptionSharing
-                    ? "Лимиты доступны в ChatGPT → Настройки → Использование."
+                    ? "MT Code пока не получил числовые лимиты для этого аккаунта."
                     : "Провайдер не передаёт числовые лимиты."}
               </div>
             ) : (
@@ -174,10 +193,31 @@ export function QuickUsageLimits({ onOpenUsage }: { readonly onOpenUsage: () => 
                 </div>
               ))
             )}
-            <div className="pt-1 text-muted-foreground">Нажми, чтобы открыть использование</div>
+            <div className="flex flex-wrap justify-end gap-1 border-t border-border pt-2">
+              {provider && environmentId ? (
+                <Button
+                  size="xs"
+                  variant="ghost-muted"
+                  render={
+                    <Link
+                      to="/settings/providers"
+                      search={{ environmentId, instanceId: provider.instanceId }}
+                    />
+                  }
+                >
+                  Настройки аккаунта
+                </Button>
+              ) : null}
+              {provider?.auth.subscriptionSharing && windows.length === 0 ? (
+                <ChatGptUsageButton size="xs" />
+              ) : null}
+              <Button size="xs" variant="ghost-muted" onClick={onOpenUsage}>
+                Все лимиты
+              </Button>
+            </div>
           </div>
-        </TooltipPopup>
-      </Tooltip>
+        </PopoverPopup>
+      </Popover>
     </SidebarMenuItem>
   );
 }

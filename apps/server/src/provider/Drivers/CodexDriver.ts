@@ -1,26 +1,4 @@
-/**
- * CodexDriver — first concrete `ProviderDriver` in the new per-instance model.
- *
- * A driver is a plain value (not a Context.Service) whose `create()` returns
- * one `ProviderInstance` bundling:
- *   - `snapshot`   — the live `ManagedServerProvider` for this instance;
- *   - `adapter`    — the Codex session/turn/approval runtime;
- *   - `textGeneration` — commit/PR/branch/title generation via `codex exec`.
- *
- * Each call to `create()` captures the `codexConfig` argument in closures
- * owned by the returned instance. Two instances created with different
- * `homePath`s (e.g. `codex_personal` + `codex_work`) therefore run with
- * fully independent Codex app-server processes and `CODEX_HOME`
- * environments — no shared mutable state.
- *
- * Resource lifecycle: `create()` runs in a scope handed in by the registry.
- * Closing that scope releases the adapter's child processes, the managed
- * snapshot's refresh fibre, and the text-generation binaries' transient
- * scratch files. The registry uses this to tear down an instance when its
- * `providerInstances` entry disappears or its config changes.
- *
- * @module provider/Drivers/CodexDriver
- */
+// Each Codex account keeps its own home and app-server. The registry owns the driver's scope.
 import {
   resolveProviderProbeTimeoutMs,
   type ServerProviderDraft,
@@ -252,20 +230,40 @@ export const CodexDriver: ProviderDriver<
           }),
       ),
     );
+    const configuredBinaryPath = expandHomePath(
+      config.binaryPath,
+      yield* HostProcess.HomeDirectory,
+    );
+    const followsSharedInstallation = CodexInstallation.isManagedCodexBinaryPath(
+      pathService.relative(installation.managedDirectory, configuredBinaryPath),
+      pathService.sep,
+      yield* HostProcess.Platform,
+    );
+    // Older setups stored the versioned path of MT's own install in each account.
+    const sharedExecutable = followsSharedInstallation
+      ? installation.acquire().pipe(
+          Effect.map((executable) => executable.executablePath),
+          Effect.orElseSucceed(() => configuredBinaryPath),
+        )
+      : undefined;
     const effectiveConfig = {
       ...config,
       enabled,
-      binaryPath: expandHomePath(config.binaryPath, yield* HostProcess.HomeDirectory),
+      binaryPath: sharedExecutable ? yield* Effect.scoped(sharedExecutable) : configuredBinaryPath,
       homePath: homeLayout.effectiveHomePath ?? "",
     } satisfies CodexSettings;
+    const latestNativeConfig = sharedExecutable
+      ? sharedExecutable.pipe(Effect.map((binaryPath) => ({ ...effectiveConfig, binaryPath })))
+      : Effect.succeed(effectiveConfig);
     const resolveInstallation = yield* makeCachedProviderMaintenanceResolution(
-      resolveProviderMaintenanceCapabilitiesEffect(
-        makeCodexMaintenanceResolver(homeLayout.sharedHomePath),
-        {
-          binaryPath: effectiveConfig.binaryPath,
-          env: processEnv,
-        },
-      ).pipe(
+      latestNativeConfig.pipe(
+        Effect.flatMap(({ binaryPath }) =>
+          resolveProviderMaintenanceCapabilitiesEffect(
+            makeCodexMaintenanceResolver(homeLayout.sharedHomePath),
+            { binaryPath, env: processEnv },
+          ),
+        ),
+        Effect.scoped,
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
         Effect.provideService(FileSystem.FileSystem, fileSystem),
         Effect.provideService(Path.Path, pathService),
@@ -287,6 +285,7 @@ export const CodexDriver: ProviderDriver<
       },
       {
         onUsageLimits: (update) => snapshot.applyUsageLimits(update),
+        ...(sharedExecutable ? { resolveExecutable: sharedExecutable } : {}),
         models: Effect.suspend(() => snapshot.getSnapshot).pipe(
           Effect.map((value) => value.models),
         ),
@@ -309,7 +308,10 @@ export const CodexDriver: ProviderDriver<
     const checkProvider = modelCatalog.refreshInBackground.pipe(
       Effect.andThen(
         Effect.zipWith(
-          checkCodexProviderStatus(effectiveConfig, undefined, processEnv),
+          latestNativeConfig.pipe(
+            Effect.flatMap((settings) => checkCodexProviderStatus(settings, undefined, processEnv)),
+            Effect.scoped,
+          ),
           currentCatalog,
           (draft, catalog) => stampIdentity(applyCodexModelCatalog(draft, catalog)),
           { concurrent: true },
@@ -358,19 +360,23 @@ export const CodexDriver: ProviderDriver<
       effectiveConfig,
       processEnv,
       snapshot.getSnapshot.pipe(Effect.map((value) => value.models)),
+      latestNativeConfig.pipe(Effect.map((config) => ({ config, environment: processEnv }))),
     );
     const snapshotForCwd = (cwd: string) =>
       !effectiveConfig.enabled
         ? snapshot.getSnapshot
         : Effect.all([
             snapshot.getSnapshot,
-            probeCodexSkillsForCwd({
-              binaryPath: effectiveConfig.binaryPath,
-              homePath: effectiveConfig.homePath,
-              launchArgs: resolveCodexLaunchArgs(effectiveConfig.launchArgs, processEnv),
-              cwd,
-              environment: processEnv,
-            }).pipe(
+            latestNativeConfig.pipe(
+              Effect.flatMap((settings) =>
+                probeCodexSkillsForCwd({
+                  binaryPath: settings.binaryPath,
+                  homePath: settings.homePath,
+                  launchArgs: resolveCodexLaunchArgs(settings.launchArgs, processEnv),
+                  cwd,
+                  environment: processEnv,
+                }),
+              ),
               Effect.scoped,
               Effect.timeout(resolveProviderProbeTimeoutMs("codex", 20_000, processEnv)),
               Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
@@ -396,10 +402,11 @@ export const CodexDriver: ProviderDriver<
       resetCreditCoordinator
         .redeem(accountKey, (idempotencyKey) =>
           Effect.gen(function* () {
+            const settings = yield* latestNativeConfig;
             const { client } = yield* withCodexAppServerClient({
-              binaryPath: effectiveConfig.binaryPath,
-              homePath: effectiveConfig.homePath,
-              launchArgs: resolveCodexLaunchArgs(effectiveConfig.launchArgs, processEnv),
+              binaryPath: settings.binaryPath,
+              homePath: settings.homePath,
+              launchArgs: resolveCodexLaunchArgs(settings.launchArgs, processEnv),
               cwd: process.cwd(),
               environment: processEnv,
             });
