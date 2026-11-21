@@ -342,6 +342,7 @@ export function acpPerTurnPromptUsage(
 }
 
 export interface AcpAdapterV2Flavor {
+  readonly sendAttachmentPathsInText?: false;
   readonly buildAttachmentPrompt?: (input: {
     readonly text: string;
     readonly attachments: ReadonlyArray<ChatAttachment>;
@@ -8400,12 +8401,15 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                       childProcessSpawner,
                     ),
                   );
-          const messageText = yield* providerMessageTextWithAttachmentPaths({
-            text: userText,
-            attachments: turnInput.message.attachments,
-            resolveAttachmentPath: host.resolveAttachmentPath,
-            resolveExtractedTextPath: host.resolveExtractedTextPath,
-          });
+          const messageText =
+            flavor.sendAttachmentPathsInText === false
+              ? userText
+              : yield* providerMessageTextWithAttachmentPaths({
+                  text: userText,
+                  attachments: turnInput.message.attachments,
+                  resolveAttachmentPath: host.resolveAttachmentPath,
+                  resolveExtractedTextPath: host.resolveExtractedTextPath,
+                });
           const isNativeSlashCommand = userText.trimStart().startsWith("/");
           const imageAttachments = turnInput.message.attachments.filter(
             isProviderNativeImageAttachment,

@@ -3,6 +3,7 @@ import * as NodeReadline from "node:readline";
 import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
+import * as NodeURL from "node:url";
 import { runConfiguredWebAssistant, sites } from "./web-assistant-runner.mjs";
 import { repairWebAssistant } from "./web-assistant-repair.mjs";
 import { delegate } from "./economical-router.mjs";
@@ -34,6 +35,35 @@ function userMessage(block) {
       text,
     )?.[1] ?? text;
   return request.replace(/^\s*<mt_work_profile\b[^>]*>[\s\S]*?<\/mt_work_profile>\s*/i, "");
+}
+
+async function withPromptAttachments(blocks, signal, run) {
+  if (blocks.length === 0) return run([]);
+  const folder = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "mt-web-attachments-"));
+  const paths = [];
+  try {
+    for (const block of blocks) {
+      signal.throwIfAborted();
+      const url = URL.parse(block.uri);
+      if (!url || url.protocol !== "file:" || url.host || url.search || url.hash)
+        throw Error("Для веб-чата доступны только файлы, прикреплённые в MT Code.");
+      const source = NodeURL.fileURLToPath(url);
+      const stat = await NodeFSP.lstat(source);
+      if (!stat.isFile() || stat.size !== block.size)
+        throw Error("Файл вложения изменился или недоступен. Прикрепите его снова.");
+      const name = block.name.replace(/[<>:"/\\|?*\u0000-\u001f]/gu, "_").replace(/[. ]+$/u, "");
+      const filename = NodePath.join(
+        folder,
+        paths.length + 1 + "-" + (name.slice(-120) || "attachment"),
+      );
+      paths.push(filename);
+      await NodeFSP.copyFile(source, filename);
+    }
+    return await run(paths);
+  } finally {
+    await Promise.all(paths.map((file) => NodeFSP.unlink(file).catch(() => {})));
+    await NodeFSP.rmdir(folder);
+  }
 }
 
 const sessionsRoot = NodePath.join(
@@ -71,7 +101,10 @@ async function dispatch({ method, params = {} }) {
     return {
       protocolVersion: 1,
       agentInfo: { name: "mt-web-ai", version: "1" },
-      agentCapabilities: { loadSession: true },
+      agentCapabilities: {
+        loadSession: true,
+        ...(!plainGateway ? { promptCapabilities: { embeddedContext: true, image: true } } : {}),
+      },
       authMethods: [],
     };
   }
@@ -114,7 +147,15 @@ async function dispatch({ method, params = {} }) {
   if (method !== "session/prompt") throw Error(`Метод ACP недоступен: ${method}`);
   if (session.active) throw Error("Предыдущий веб-запрос ещё выполняется.");
   const text = userMessage(params.prompt?.[0]);
-  if (!text.trim()) throw Error("Веб-чат принимает текстовый запрос.");
+  const files = (params.prompt ?? []).filter((block) => block.type === "resource_link");
+  if (
+    (params.prompt ?? []).some((block) => block.type !== "text" && block.type !== "resource_link")
+  )
+    throw Error("Обновите MT Code и прикрепите файл заново для отправки в веб-чат.");
+  if (plainGateway && files.length > 0) throw Error("Этот шлюз принимает только текст.");
+  if (files.length === 0 && /\[Attached [^\r\n]+ is saved at: [^\r\n]+\]/u.test(text))
+    throw Error("Для отправки вложений в веб-чат обновите MT Code и прикрепите файлы заново.");
+  if (!text.trim() && files.length === 0) throw Error("Введите запрос или прикрепите файл.");
   const controller = new AbortController();
   session.active = controller;
   try {
@@ -154,10 +195,13 @@ async function dispatch({ method, params = {} }) {
           (reply) => ({ status: "completed", answer: reply.text }),
           (error) => ({ status: "needs_help", stage: "provider", reason: error.message }),
         )
-      : await runConfiguredWebAssistant(session.site, input, {
-          signal: controller.signal,
-          conversationUrl: session.conversationUrl,
-        }).catch((error) => ({ status: "needs_help", stage: "setup", reason: error.message }));
+      : await withPromptAttachments(files, controller.signal, (attachments) =>
+          runConfiguredWebAssistant(session.site, input, {
+            signal: controller.signal,
+            conversationUrl: session.conversationUrl,
+            attachments,
+          }),
+        ).catch((error) => ({ status: "needs_help", stage: "setup", reason: error.message }));
     const diagnosticRoot = NodePath.join(
       NodeOS.homedir(),
       ".mt",
@@ -178,11 +222,10 @@ async function dispatch({ method, params = {} }) {
           status: result.status,
           stage: result.stage,
           reason: result.reason,
-          evidence: result.evidence,
           submitMayHaveHappened: result.submitMayHaveHappened,
+          attachmentTransferMayHaveStarted: result.attachmentTransferMayHaveStarted,
+          files: files.length,
           inputChars: input.length,
-          userRequest: text.slice(-6000),
-          answer: result.answer?.slice(0, 6000),
         },
         null,
         2,
@@ -192,7 +235,7 @@ async function dispatch({ method, params = {} }) {
     const answer =
       result.status === "completed"
         ? result.answer
-        : `Чат ${definitions[session.site].name} остановился на этапе ${result.stage}. ${result.reason}${result.submitMayHaveHappened ? " Запрос мог быть отправлен. Проверь чат на сайте перед повтором." : ""}`;
+        : `Чат ${definitions[session.site].name} остановился на этапе ${result.stage}. ${result.reason}${result.submitMayHaveHappened ? " Запрос мог быть отправлен. Проверь чат на сайте перед повтором." : result.attachmentTransferMayHaveStarted ? " Сайт мог начать загрузку вложений." : ""}`;
     notify(sessionId, answer);
     if (result.status === "completed") {
       if (!plainGateway) await resolveWebIssue(issuesRoot, session.site);
@@ -201,6 +244,12 @@ async function dispatch({ method, params = {} }) {
       await saveSession(sessionId, session);
     } else if (!plainGateway && !controller.signal.aborted) {
       await recordWebIssue(issuesRoot, session.site, result);
+      if (
+        result.submitMayHaveHappened ||
+        result.attachmentTransferMayHaveStarted ||
+        files.length > 0
+      )
+        return { stopReason: "end_turn" };
       if (result.stage === "challenge") {
         notify(
           sessionId,

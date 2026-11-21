@@ -274,6 +274,7 @@ import { useRestingComposerControlsLayout } from "./useRestingComposerControlsLa
 import { useProviderWorkspaceSnapshotRefresh } from "./useProviderWorkspaceSnapshotRefresh";
 import { useComposerProviderModel } from "./useComposerProviderModel";
 import { AgentWorkProfilePicker } from "./AgentWorkProfilePicker";
+import { WebComposerSkillPicker } from "./WebComposerSkillPicker";
 import { useComposerImageGroups } from "./useComposerImageGroups";
 import { useComposerStash } from "./useComposerStash";
 import { useComposerContextImport } from "./useComposerContextImport";
@@ -2705,6 +2706,14 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   };
 
   const addComposerFolders = (folders: File[]) => {
+    if (selectedInstanceId === "web-ai") {
+      toastManager.add({
+        type: "info",
+        title: "Прикрепите файлы из папки",
+        description: "Веб-чат получает только прикреплённые файлы.",
+      });
+      return;
+    }
     const target = folderDropTarget({
       localEnvironmentDisabled: isLocalEnvironmentDisabled(),
       environmentId,
@@ -3316,12 +3325,60 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         onRemoveFile={removeComposerFileFromDraft}
       />
     ) : null;
-  const composerAttachButton = showComposerAttachAction ? (
-    <ComposerAttachButton
-      addComposerAttachments={addComposerAttachments}
-      focusComposer={focusComposer}
-    />
-  ) : null;
+  const canAddPromptContext = canOperateThread && !activePendingProgress;
+  const [webSkillPickerTarget, setWebSkillPickerTarget] = useState<string | null>(null);
+  const canAttachWebSkill =
+    canAddPromptContext && showComposerAttachAction && selectedInstanceId === "web-ai";
+  const composerAttachButton =
+    showComposerAttachAction || canAddPromptContext ? (
+      <>
+        <ComposerAttachButton
+          addComposerAttachments={showComposerAttachAction ? addComposerAttachments : undefined}
+          focusComposer={focusComposer}
+          onBrowseSkills={
+            canAttachWebSkill
+              ? () => setWebSkillPickerTarget(attachmentTargetKey)
+              : canAddPromptContext && selectedProviderSkills.some((skill) => skill.enabled)
+                ? () => {
+                    insertComposerTextAtEndStable("$", { ensureLeadingBoundary: true });
+                  }
+                : undefined
+          }
+          onAttachOutputSkill={
+            canAddPromptContext
+              ? () => {
+                  const installed = selectedProviderSkills.some(
+                    (skill) => skill.enabled && skill.name === "mt-code-output",
+                  );
+                  insertComposerTextAtEndStable(
+                    installed || selectedInstanceId === "web-ai"
+                      ? "$mt-code-output "
+                      : "Оформи результат для чата MT Code. Для интерактивного ответа добавь один блок mt-html с полным HTML, встроенными CSS и JS, доступными с клавиатуры элементами и без внешних запросов. Краткое пояснение оставь снаружи блока. ",
+                    { ensureLeadingBoundary: true },
+                  );
+                }
+              : undefined
+          }
+        />
+        {canAttachWebSkill && webSkillPickerTarget === attachmentTargetKey ? (
+          <WebComposerSkillPicker
+            environmentId={environmentId}
+            onClose={() => setWebSkillPickerTarget(null)}
+            onAttach={(skill) => {
+              setWebSkillPickerTarget(null);
+              const filename = `${skill.name.replace(/[^\p{L}\p{N}._-]/gu, "-").slice(0, 90)}.skill.md`;
+              const file = new File([skill.content], filename, { type: "text/markdown" });
+              void addComposerAttachments([file]).then((inserted) => {
+                if (!inserted || attachmentTargetKeyRef.current !== attachmentTargetKey) return;
+                insertComposerTextAtEndStable(
+                  ` Применяй навык из вложения «${filename}» в пределах моего запроса. `,
+                );
+              });
+            }}
+          />
+        ) : null}
+      </>
+    ) : null;
   return (
     <form
       ref={composerFormRef}

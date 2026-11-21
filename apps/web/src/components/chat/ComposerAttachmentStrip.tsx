@@ -6,7 +6,16 @@ import type {
   SnapShotSource,
 } from "@t3tools/contracts";
 import { formatAttachmentSize } from "@t3tools/client-runtime/state/attachments";
-import { CircleAlertIcon, ImageIcon, PaperclipIcon, PlayIcon, XIcon } from "lucide-react";
+import {
+  BookOpenIcon,
+  ChartNoAxesCombinedIcon,
+  CircleAlertIcon,
+  ImageIcon,
+  PaperclipIcon,
+  PlayIcon,
+  PlusIcon,
+  XIcon,
+} from "lucide-react";
 import { type ComponentProps, useLayoutEffect, useRef } from "react";
 
 import {
@@ -33,6 +42,7 @@ import { AttachmentImage } from "../media/AttachmentImage";
 import { Button } from "../ui/button";
 import { Dialog, DialogPopup, DialogTitle } from "../ui/dialog";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
 import { ComposerImageThumbnail } from "./ComposerImageThumbnail";
 import { composerFloatingLayerProps } from "./composerEventScope";
 import type { PreparingComposerImage } from "./preparingComposerImages";
@@ -702,47 +712,99 @@ export function ComposerQueuedAttachmentRow({
 export function ComposerAttachButton({
   addComposerAttachments,
   focusComposer,
+  onBrowseSkills,
+  onAttachOutputSkill,
 }: {
-  readonly addComposerAttachments: (files: File[]) => Promise<boolean>;
+  readonly addComposerAttachments?: ((files: File[]) => Promise<boolean>) | undefined;
   readonly focusComposer: () => void;
+  readonly onBrowseSkills?: (() => void) | undefined;
+  readonly onAttachOutputSkill?: (() => void) | undefined;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
+  const openFiles = () => inputRef.current?.click();
   return (
     <>
-      <input
-        ref={inputRef}
-        type="file"
-        multiple
-        className="hidden"
-        onChange={(event) => {
-          const files = Array.from(event.currentTarget.files ?? []);
-          event.currentTarget.value = "";
-          // Inserting a chip refocuses the editor after the draft renders;
-          // focusing synchronously here would report the editor's stale text
-          // over the prompt that was just written.
-          void addComposerAttachments(files).then((inserted) => {
-            if (!inserted) focusComposer();
-          });
-        }}
-      />
-      <Tooltip>
-        <TooltipTrigger
-          render={
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon-sm"
-              onPointerDown={(event) => event.preventDefault()}
-              onClick={() => inputRef.current?.click()}
-              aria-label="Attach files"
+      {addComposerAttachments ? (
+        <input
+          ref={inputRef}
+          type="file"
+          multiple
+          aria-label="Файлы для вложения"
+          className="hidden"
+          onChange={(event) => {
+            const files = Array.from(event.currentTarget.files ?? []);
+            event.currentTarget.value = "";
+            // Inserting a chip refocuses the editor after the draft renders;
+            // focusing synchronously here would report the editor's stale text
+            // over the prompt that was just written.
+            void addComposerAttachments(files).then((inserted) => {
+              if (!inserted) focusComposer();
+            });
+          }}
+        />
+      ) : null}
+      {onBrowseSkills || onAttachOutputSkill ? (
+        <Menu>
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <MenuTrigger
+                  render={
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon-sm"
+                      aria-label="Добавить к сообщению"
+                    >
+                      <PlusIcon />
+                    </Button>
+                  }
+                />
+              }
             />
-          }
-        >
-          {/* The clip's weight sits in its upper loop; 1px down reads as centered on the row. */}
-          <PaperclipIcon className="translate-y-px" />
-        </TooltipTrigger>
-        <TooltipPopup>Attach files</TooltipPopup>
-      </Tooltip>
+            <TooltipPopup>Добавить к сообщению</TooltipPopup>
+          </Tooltip>
+          <MenuPopup align="start" side="top">
+            {addComposerAttachments ? (
+              <MenuItem onClick={openFiles}>
+                <PaperclipIcon />
+                Прикрепить файлы
+              </MenuItem>
+            ) : null}
+            {onBrowseSkills ? (
+              <MenuItem onClick={onBrowseSkills}>
+                <BookOpenIcon />
+                Выбрать навык
+              </MenuItem>
+            ) : null}
+            {onAttachOutputSkill ? (
+              <MenuItem onClick={onAttachOutputSkill}>
+                <ChartNoAxesCombinedIcon />
+                Интерактивный вывод
+              </MenuItem>
+            ) : null}
+          </MenuPopup>
+        </Menu>
+      ) : (
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-sm"
+                onPointerDown={(event) => event.preventDefault()}
+                onClick={openFiles}
+                aria-label="Attach files"
+              />
+            }
+          >
+            {/* The clip's weight sits in its upper loop; 1px down reads as centered on the row. */}
+            <PaperclipIcon className="translate-y-px" />
+          </TooltipTrigger>
+          <TooltipPopup>Attach files</TooltipPopup>
+        </Tooltip>
+      )}
     </>
   );
 }

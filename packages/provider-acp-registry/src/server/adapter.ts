@@ -20,6 +20,7 @@ import {
 } from "./copilotAcp.ts";
 import { prefersHttpMcpTransport } from "./mcpTransport.ts";
 import { defaultInstanceIdForDriver, ProviderDriverKind } from "@t3tools/contracts";
+import * as NodeURL from "node:url";
 import { readCustomModelEntries } from "@t3tools/shared/model";
 import { AcpRegistrySettings } from "../settings.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
@@ -195,6 +196,10 @@ export const makeAcpRegistryAdapterV2 = Effect.fn("makeAcpRegistryAdapterV2")(fu
     yield* Effect.serviceOption(AcpRegistryRuntimeCoordinator.AcpRegistryRuntimeCoordinator),
   );
   const registryAgentId = options.settings.source === "local" ? "" : options.settings.agentId;
+  const isMtWebAssistant =
+    options.instanceId === "web-ai" &&
+    options.settings.source === "local" &&
+    /(?:^|[/\\])web-assistant-acp\.mjs$/u.test(options.settings.commandArgs[0] ?? "");
   const startupKey =
     options.settings.source === "local" ? `local:${options.instanceId}` : registryAgentId;
   const isDevin = registryAgentId === "devin";
@@ -246,6 +251,31 @@ export const makeAcpRegistryAdapterV2 = Effect.fn("makeAcpRegistryAdapterV2")(fu
       : AcpProviderCapabilitiesV2,
     customModels: readCustomModelEntries(options.settings.customModels).map((entry) => entry.slug),
     compactViaAdvertisedCommand: true,
+    ...(isMtWebAssistant
+      ? ({
+          sendAttachmentPathsInText: false as const,
+          buildAttachmentPrompt: ({ attachments, resolveAttachmentPath }) =>
+            Effect.forEach(attachments, (attachment) => {
+              const path = resolveAttachmentPath(attachment);
+              if (path === null || (attachment.type !== "file" && attachment.type !== "image")) {
+                return Effect.fail(
+                  new EffectAcpErrors.AcpRequestError({
+                    method: "session/prompt",
+                    code: -32602,
+                    errorMessage: `Вложение «${attachment.name}» недоступно. Прикрепите его снова.`,
+                  }),
+                );
+              }
+              return Effect.succeed({
+                type: "resource_link" as const,
+                uri: NodeURL.pathToFileURL(path).href,
+                name: attachment.name,
+                mimeType: attachment.mimeType,
+                size: attachment.sizeBytes,
+              });
+            }),
+        } satisfies Pick<AcpAdapterV2Flavor, "sendAttachmentPathsInText" | "buildAttachmentPrompt">)
+      : {}),
     promptFailure: (cause) => acpRegistryPromptFailure(registryAgentId, cause),
     ...(registryAgentId === "factory-droid"
       ? { extractElicitationForm: extractDroidElicitationForm }

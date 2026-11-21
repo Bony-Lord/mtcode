@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { EnvironmentId, ProjectId, ThreadId } from "@t3tools/contracts";
 import { scopeProjectRef, scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { expect, it, vi } from "vite-plus/test";
+import { page, userEvent } from "vite-plus/test/browser";
 import { AsyncResult } from "effect/reactivity";
 
 import { act, render } from "../../../test/render";
@@ -15,6 +16,7 @@ import { showThreadUndoNotice } from "../../hooks/showThreadUndoNotice";
 import { discardComposerDraft } from "../../lib/discardComposerDraft";
 import { getPreparingComposerImages } from "./preparingComposerImages";
 import { useComposerAttachmentIntake } from "./useComposerAttachmentIntake";
+import { ComposerAttachButton } from "./ComposerAttachmentStrip";
 
 const compression = vi.hoisted(() => ({ prepare: vi.fn() }));
 vi.mock("../../lib/imageCompression", async (importOriginal) => ({
@@ -55,6 +57,37 @@ const compress = async (source: File) => {
 };
 const visiblePreparing = (targetKey: string) =>
   getPreparingComposerImages(targetKey).filter((image) => !image.hidden);
+
+it("offers files and skills in the same attachment menu", async () => {
+  const attach = vi.fn(async (_files: File[]) => true);
+  const chooseSkill = vi.fn();
+  const visual = vi.fn();
+  await using screen = await render(
+    <ComposerAttachButton
+      addComposerAttachments={attach}
+      focusComposer={vi.fn()}
+      onBrowseSkills={chooseSkill}
+      onAttachOutputSkill={visual}
+    />,
+  );
+  const opener = screen.getByRole("button", { name: "Добавить к сообщению" });
+  await opener.click();
+  await expect.element(page.getByRole("menuitem", { name: "Прикрепить файлы" })).toBeVisible();
+  await page.getByRole("menuitem", { name: "Выбрать навык" }).click();
+  expect(chooseSkill).toHaveBeenCalledOnce();
+  await opener.click();
+  await page.getByRole("menuitem", { name: "Интерактивный вывод" }).click();
+  expect(visual).toHaveBeenCalledOnce();
+  const files = [
+    new File(["hello"], "notes.txt", { type: "text/plain" }),
+    new File(["a,b"], "table.csv", { type: "text/csv" }),
+  ];
+  await userEvent.upload(screen.getByLabelText("Файлы для вложения"), files);
+  expect(attach.mock.calls[0]?.[0]?.map((file: File) => file.name)).toEqual([
+    "notes.txt",
+    "table.csv",
+  ]);
+});
 
 it("prepares a repeated paste without a tile, and still keeps a different image", async () => {
   const target = DraftId.make("intake-repeat-paste");
