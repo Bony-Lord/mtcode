@@ -48,6 +48,7 @@ import {
   resolveSshHost,
   resolveSshPasswordPrompt,
 } from "./methods/sshEnvironment.ts";
+import { windowsLoginStartup } from "./methods/windowsLoginStartup.ts";
 import {
   checkForUpdate,
   downloadUpdate,
@@ -211,6 +212,7 @@ export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers"
   yield* ipc.handle(downloadUpdate);
   yield* ipc.handle(installUpdate);
   yield* ipc.handle(checkForUpdate);
+  yield* ipc.handle(windowsLoginStartup);
   yield* ipc.handle(getCliCommandState);
   yield* ipc.handle(installCliCommand);
   yield* ipc.handle(uninstallCliCommand);

@@ -679,7 +679,11 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
           annotationImage={annotationImage}
           attachment={attachment}
           onExpandImage={(image) => {
-            const preview = buildExpandedImagePreview(userImages, image.id);
+            const preview = buildExpandedImagePreview(
+              userImages,
+              image.id,
+              ctx.activeThreadEnvironmentId,
+            );
             if (preview) onImageExpand(preview);
           }}
           onOpenFile={onFileOpen}
@@ -755,7 +759,11 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
                 className="block h-full w-full cursor-zoom-in"
                 aria-label={`Preview ${image.name}`}
                 onClick={() => {
-                  const preview = buildExpandedImagePreview(regularImages, image.id);
+                  const preview = buildExpandedImagePreview(
+                    regularImages,
+                    image.id,
+                    ctx.activeThreadEnvironmentId,
+                  );
                   if (!preview) return;
                   ctx.onImageExpand(preview);
                 }}

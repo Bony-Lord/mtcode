@@ -154,8 +154,9 @@ const checkForUpdatesFromMacMenu = (state: Partial<DesktopUpdateState>) =>
     const applicationMenuTemplate =
       yield* Deferred.make<readonly Electron.MenuItemConstructorOptions[]>();
     const shownMessageBox = yield* Deferred.make<Electron.MessageBoxOptions>();
+    const selectedAction = yield* Deferred.make<string>();
     yield* configureMenu(
-      yield* Deferred.make<string>(),
+      selectedAction,
       applicationMenuTemplate,
       { platform: "darwin" },
       {
@@ -190,11 +191,8 @@ const checkForUpdatesFromMacMenu = (state: Partial<DesktopUpdateState>) =>
       {} as Electron.BrowserWindow,
       {} as KeyboardEvent,
     );
-    const dialog = yield* Deferred.poll(shownMessageBox);
-    if (Option.isNone(dialog)) {
-      throw new Error("Check for Updates... finished without showing any dialog.");
-    }
-    return yield* dialog.value;
+    assert.isTrue(Option.isNone(yield* Deferred.poll(shownMessageBox)));
+    return yield* Deferred.await(selectedAction);
   });
 
 describe("DesktopApplicationMenu", () => {
@@ -438,25 +436,25 @@ describe("DesktopApplicationMenu", () => {
       assert.equal(yield* Deferred.await(selectedAction), "main-reload");
     }),
   );
-  it.effect("tells the user which update the menu check found", () =>
+  it.effect("opens the review for an available update", () =>
     Effect.gen(function* () {
-      const dialog = yield* checkForUpdatesFromMacMenu({
+      const action = yield* checkForUpdatesFromMacMenu({
         status: "available",
         availableVersion: "0.1.7",
       });
-      assert.include(`${dialog.title ?? ""} ${dialog.message} ${dialog.detail ?? ""}`, "0.1.7");
+      assert.equal(action, "review-desktop-update");
     }),
   );
 
-  it.effect("tells the user a downloaded update is ready when the menu check runs", () =>
+  it.effect("opens the review for a downloaded update", () =>
     Effect.gen(function* () {
-      const dialog = yield* checkForUpdatesFromMacMenu({
+      const action = yield* checkForUpdatesFromMacMenu({
         status: "downloaded",
         availableVersion: "0.1.7",
         downloadedVersion: "0.1.7",
         downloadPercent: 100,
       });
-      assert.include(`${dialog.title ?? ""} ${dialog.message} ${dialog.detail ?? ""}`, "0.1.7");
+      assert.equal(action, "review-desktop-update");
     }),
   );
 });

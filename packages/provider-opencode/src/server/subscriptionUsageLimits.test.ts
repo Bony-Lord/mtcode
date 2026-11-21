@@ -86,6 +86,24 @@ describe("chatGptUsageToWindows", () => {
     ]);
   });
 
+  it("keeps monthly plans and model-scoped pools out of other quotas", () => {
+    const windows = chatGptUsageToWindows({
+      plan_type: "free",
+      rate_limit: { primary_window: { used_percent: 50 } },
+      additional_rate_limits: [
+        {
+          limit_name: "Spark",
+          metered_feature: "codex_bengalfox",
+          rate_limit: { primary_window: { used_percent: 100, limit_window_seconds: 18_000 } },
+        },
+      ],
+    });
+    expect(windows).toMatchObject([
+      { kind: "monthly", usedPercent: 50 },
+      { kind: "session", modelIds: ["gpt-5.3-codex-spark"], usedPercent: 100 },
+    ]);
+  });
+
   it("ignores payloads without a rate_limit block", () => {
     expect(chatGptUsageToWindows({ plan_type: "free" })).toEqual([]);
     expect(chatGptUsageToWindows(null)).toEqual([]);

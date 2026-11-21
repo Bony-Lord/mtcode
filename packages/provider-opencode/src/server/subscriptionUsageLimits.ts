@@ -1,25 +1,4 @@
-/**
- * OpenCode subscription usage. OpenCode itself has no quota surface; what it
- * does hold is the upstream sign-ins in `<data dir>/opencode/auth.json`. Two
- * of those are subscriptions with rate-limit windows:
- *
- * - `openai` (ChatGPT / Codex OAuth): the same `wham/usage` read Codex's
- *   `account/rateLimits/read` performs, keyed by the account id OpenCode
- *   stores beside the token.
- * - `anthropic` (Claude Pro / Max OAuth): the `api/oauth/usage` read Claude
- *   Code's `get_usage` performs.
- *
- * API-key providers have no windows and are reported as `unsupported`.
- * Tokens are used as stored and never refreshed here: OpenCode rotates its
- * refresh tokens on use, so refreshing from outside would invalidate its
- * copy. An expired token is reported as a failed probe with a next step.
- *
- * Window ids are prefixed per upstream account (`chatgpt_primary`,
- * `claude_five_hour`) so both accounts can sit on one instance's snapshot
- * without colliding, and so repeated probes land on the same rows.
- *
- * @module provider/Layers/opencodeUsageLimits
- */
+// OpenCode rotates its own refresh tokens. Usage probes use the saved access tokens without refreshing them.
 import * as NodeOS from "node:os";
 import type { ServerProviderUsageLimits, ServerProviderUsageWindow } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
@@ -30,19 +9,23 @@ import * as Path from "effect/Path";
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
 
 import {
+  chatGptUsageToWindows,
+  chatGptUsageRequest,
   clampPercent,
   makeUnavailableUsageLimits,
   makeUsageLimits,
 } from "@t3tools/provider-core/server/usageLimits";
 
-export const CHATGPT_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
+export {
+  CHATGPT_USAGE_URL,
+  chatGptUsageToWindows,
+} from "@t3tools/provider-core/server/usageLimits";
 export const CLAUDE_OAUTH_USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
 const CLAUDE_OAUTH_BETA = "oauth-2025-04-20";
 
 const USAGE_FETCH_TIMEOUT_MS = 10_000;
 const SESSION_MINS = 5 * 60;
 const WEEK_MINS = 7 * 24 * 60;
-const MONTH_MINS = 30 * 24 * 60;
 
 export const OPENCODE_NO_AUTH_FILE_MESSAGE =
   "OpenCode has no saved provider sign-ins, so there are no usage windows to read.";
@@ -68,32 +51,10 @@ function readString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
 }
 
-function isoFromEpochSeconds(value: number | undefined): string | undefined {
-  if (value === undefined || value <= 0) return undefined;
-  const dt = DateTime.make(value * 1000);
-  return Option.isSome(dt) ? DateTime.formatIso(dt.value) : undefined;
-}
-
 function isoFromString(value: string | undefined): string | undefined {
   if (!value) return undefined;
   const dt = DateTime.make(value);
   return Option.isSome(dt) ? DateTime.formatIso(dt.value) : undefined;
-}
-
-function kindForDuration(mins: number): ServerProviderUsageWindow["kind"] {
-  if (mins >= MONTH_MINS) return "monthly";
-  if (mins >= WEEK_MINS) return "weekly";
-  return "session";
-}
-
-function kindLabel(kind: ServerProviderUsageWindow["kind"]): string {
-  return kind === "session"
-    ? "Session"
-    : kind === "weekly"
-      ? "Weekly"
-      : kind === "monthly"
-        ? "Monthly"
-        : "Other";
 }
 
 // auth.json
@@ -164,40 +125,6 @@ export function resolveOpenCodeAuthPath(input: {
 
 // ChatGPT (`wham/usage`)
 
-/**
- * The `wham/usage` response Codex reads for `account/rateLimits/read`:
- * `rate_limit.primary_window` / `secondary_window` each carry `used_percent`,
- * `limit_window_seconds` and `reset_at` (epoch seconds).
- */
-export function chatGptUsageToWindows(payload: unknown): ReadonlyArray<ServerProviderUsageWindow> {
-  if (!isRecord(payload) || !isRecord(payload.rate_limit)) return [];
-  const rateLimit = payload.rate_limit;
-  const windows: ServerProviderUsageWindow[] = [];
-  const positions = [
-    ["primary", rateLimit.primary_window, SESSION_MINS],
-    ["secondary", rateLimit.secondary_window, WEEK_MINS],
-  ] as const;
-  for (const [slot, window, fallbackMins] of positions) {
-    if (!isRecord(window)) continue;
-    const usedPercent = readNumber(window.used_percent);
-    if (usedPercent === undefined) continue;
-    const seconds = readNumber(window.limit_window_seconds);
-    const windowDurationMins =
-      seconds !== undefined && seconds > 0 ? Math.round(seconds / 60) : fallbackMins;
-    const kind = kindForDuration(windowDurationMins);
-    const resetsAt = isoFromEpochSeconds(readNumber(window.reset_at));
-    windows.push({
-      id: `chatgpt_${slot}`,
-      kind,
-      label: `ChatGPT · ${kindLabel(kind)}`,
-      usedPercent: clampPercent(usedPercent),
-      windowDurationMins,
-      ...(resetsAt ? { resetsAt } : {}),
-    });
-  }
-  return windows;
-}
-
 // Claude (`api/oauth/usage`)
 
 /**
@@ -223,7 +150,7 @@ export function claudeOAuthUsageToWindows(
     windows.push({
       id: `claude_${key}`,
       kind,
-      label: `Claude · ${kindLabel(kind)}`,
+      label: kind === "session" ? "Claude · Session" : "Claude · Weekly",
       usedPercent: clampPercent(utilization),
       windowDurationMins,
       ...(resetsAt ? { resetsAt } : {}),
@@ -246,14 +173,8 @@ function subscriptionSources(auth: OpenCodeAuthFile): ReadonlyArray<Subscription
   const sources: SubscriptionSource[] = [];
   const openai = auth.openai;
   if (openai && openai.type === "oauth" && "access" in openai) {
-    const base = HttpClientRequest.get(CHATGPT_USAGE_URL).pipe(
-      HttpClientRequest.setHeader("Authorization", `Bearer ${openai.access}`),
-      HttpClientRequest.setHeader("Accept", "application/json"),
-    );
     sources.push({
-      request: openai.accountId
-        ? base.pipe(HttpClientRequest.setHeader("ChatGPT-Account-Id", openai.accountId))
-        : base,
+      request: chatGptUsageRequest(openai.access, openai.accountId),
       toWindows: chatGptUsageToWindows,
       expiredMessage: OPENCODE_CHATGPT_EXPIRED_MESSAGE,
       failedMessage: OPENCODE_CHATGPT_FETCH_FAILED_MESSAGE,

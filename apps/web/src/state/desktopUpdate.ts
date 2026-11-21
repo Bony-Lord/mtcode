@@ -81,6 +81,10 @@ export function createDesktopUpdateStateAtom(getBridge: () => DesktopUpdateBridg
 
 export const desktopUpdateStateAtom = createDesktopUpdateStateAtom(getDesktopUpdateBridge);
 
+export const desktopUpdateReviewOpenAtom = Atom.make(false).pipe(
+  Atom.withLabel("desktop:update-review-open"),
+);
+
 export function useDesktopUpdateState(): DesktopUpdateState | null {
   return AsyncResult.getOrElse(useAtomValue(desktopUpdateStateAtom), () => null);
 }

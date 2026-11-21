@@ -1,4 +1,5 @@
-import { useAtomValue } from "@effect/atom-react";
+import { WindowsLoginStartupSettings } from "./WindowsLoginStartupSettings";
+import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { NotificationSettings } from "./NotificationSettings";
 import { PRIVACY_POLICY_URL } from "../../legalLinks";
 import { CheckIcon } from "lucide-react";
@@ -45,7 +46,6 @@ import {
   getDesktopUpdateButtonTooltip,
   getDesktopUpdateOfferedVersion,
   getDesktopUpdateDisabledReason,
-  getDesktopUpdateInstallConfirmationMessage,
   isDesktopUpdateButtonDisabled,
   resolveDesktopUpdateButtonAction,
 } from "../../components/desktopUpdate.logic";
@@ -70,7 +70,7 @@ import { scopedIdleCompaction } from "./scopedSettings";
 import { ProjectDefaultsSettings } from "./ProjectDefaultsSettings";
 import { ThreadTitleInstructionsSettings } from "./ThreadTitleInstructionsSettings";
 import { SnoozePresetsRow } from "./SnoozePresetsSettings";
-import { useDesktopUpdateState } from "../../state/desktopUpdate";
+import { desktopUpdateReviewOpenAtom, useDesktopUpdateState } from "../../state/desktopUpdate";
 import { managedTelemetryOffMessage, usePrimaryManagedPolicy } from "../../state/managedPolicy";
 import {
   getTextGenerationModelOptionsByInstance,
@@ -129,7 +129,6 @@ import { environmentIdsKey } from "~/state/environmentAtomList";
 import { environmentSessionStatesAtom } from "~/state/session";
 import { useCheckProviderUpdates } from "../ProviderUpdatesAction";
 import { canUpdateServer } from "../ServerUpdateAction";
-import { downloadLocalUpdate } from "../sidebar/SidebarUpdatePill";
 import { SidebarUpdateReleaseNotes } from "../sidebar/SidebarUpdateReleaseNotes";
 import { useUpdateEverythingRun } from "../sidebar/updateEverythingRun";
 import { awaitsTrackSwitch, channelSwitchLabel } from "../sidebar/updateEverything.logic";
@@ -173,7 +172,7 @@ const DEFAULT_DRIVER_KIND = ProviderDriverKind.make("codex");
 function AboutVersionSection() {
   const updateState = useDesktopUpdateState();
   const [switchChannel, setSwitchChannel] = useState<DesktopUpdateChannel | null>(null);
-  const [isUpdateActionPending, setIsUpdateActionPending] = useState(false);
+  const setReviewOpen = useAtomSet(desktopUpdateReviewOpenAtom);
   const { environments } = useEnvironments();
   const sessionStates = useAtomValue(
     environmentSessionStatesAtom(
@@ -221,49 +220,8 @@ function AboutVersionSection() {
 
     const action = updateState ? resolveDesktopUpdateButtonAction(updateState) : "none";
 
-    if (action === "download") {
-      void downloadLocalUpdate(bridge, { notifyDownloaded: false });
-      return;
-    }
-
-    if (action === "install") {
-      if (isUpdateActionPending) return;
-      setIsUpdateActionPending(true);
-      let confirmed = false;
-      try {
-        confirmed = await ensureLocalApi().dialogs.confirm(
-          getDesktopUpdateInstallConfirmationMessage(
-            updateState ?? { availableVersion: null, downloadedVersion: null },
-          ),
-          { initialFocus: "confirm" },
-        );
-      } catch (error) {
-        setIsUpdateActionPending(false);
-        toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: "Could not confirm update",
-            description: error instanceof Error ? error.message : "Update confirmation failed.",
-          }),
-        );
-        return;
-      }
-      if (!confirmed) {
-        setIsUpdateActionPending(false);
-        return;
-      }
-      void bridge
-        .installUpdate()
-        .catch((error: unknown) => {
-          toastManager.add(
-            stackedThreadToast({
-              type: "error",
-              title: "Could not install update",
-              description: error instanceof Error ? error.message : "Install failed.",
-            }),
-          );
-        })
-        .finally(() => setIsUpdateActionPending(false));
+    if (action === "download" || action === "install") {
+      setReviewOpen(true);
       return;
     }
 
@@ -272,7 +230,9 @@ function AboutVersionSection() {
     void bridge
       .checkForUpdate()
       .then((result) => {
-        if (!result.checked) {
+        if (resolveDesktopUpdateButtonAction(result.state) === "download") {
+          setReviewOpen(true);
+        } else if (!result.checked) {
           toastManager.add(
             stackedThreadToast({
               type: "error",
@@ -303,7 +263,7 @@ function AboutVersionSection() {
       ? !canCheckForUpdate(updateState)
       : isDesktopUpdateButtonDisabled(updateState);
 
-  const actionLabel: Record<string, string> = { download: "Download", install: "Install" };
+  const actionLabel: Record<string, string> = { download: "Что нового", install: "Установить" };
   const statusLabel: Record<string, string> = {
     checking: "Checking…",
     downloading: "Downloading…",
@@ -332,7 +292,7 @@ function AboutVersionSection() {
                 <Button
                   size="sm"
                   variant="outline"
-                  disabled={buttonDisabled || isUpdateActionPending}
+                  disabled={buttonDisabled}
                   onClick={handleButtonClick}
                 >
                   {buttonLabel}
@@ -916,6 +876,7 @@ export function GeneralSettingsPanel() {
       </SettingsSection>
 
       <DesktopNotificationsSettings />
+      {isElectron ? <WindowsLoginStartupSettings /> : null}
 
       <SettingsSection id="sidebar" title={gt("Sidebar")}>
         <SettingsRow

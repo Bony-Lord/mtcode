@@ -1,3 +1,4 @@
+import { HttpClientRequest } from "effect/http";
 import type {
   ProviderUsageLimitsUpdate,
   ServerProviderUsageLimits,
@@ -183,4 +184,98 @@ export function resolveUsageLimitsAfterProbe(input: {
     return { ...probed, checkedAt: published.checkedAt, windows: published.windows };
   }
   return probed;
+}
+
+export const CHATGPT_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
+
+export function chatGptUsageRequest(accessToken: string, accountId?: string) {
+  const request = HttpClientRequest.get(CHATGPT_USAGE_URL).pipe(
+    HttpClientRequest.bearerToken(accessToken),
+    HttpClientRequest.setHeader("Accept", "application/json"),
+  );
+  return accountId
+    ? request.pipe(HttpClientRequest.setHeader("ChatGPT-Account-Id", accountId))
+    : request;
+}
+
+function chatGptUsageRecord(value: unknown) {
+  return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : null;
+}
+
+function chatGptUsageNumber(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function chatGptUsageWindow(value: unknown, fallbackMins: number) {
+  const window = chatGptUsageRecord(value);
+  const usedPercent = chatGptUsageNumber(window?.used_percent);
+  if (usedPercent === undefined) return null;
+  const seconds = chatGptUsageNumber(window?.limit_window_seconds);
+  const windowDurationMins = seconds && seconds > 0 ? Math.round(seconds / 60) : fallbackMins;
+  const kind =
+    windowDurationMins >= 28 * 1440
+      ? "monthly"
+      : windowDurationMins === 7 * 1440
+        ? "weekly"
+        : windowDurationMins <= 300
+          ? "session"
+          : "other";
+  const label = { monthly: "Monthly", weekly: "Weekly", session: "Session", other: "Other" }[kind];
+  const reset = chatGptUsageNumber(window?.reset_at);
+  const resetDate = reset && reset > 0 ? new Date(reset * 1000) : null;
+  return {
+    kind,
+    label,
+    usedPercent: clampPercent(usedPercent),
+    windowDurationMins,
+    ...(resetDate && Number.isFinite(resetDate.getTime())
+      ? { resetsAt: resetDate.toISOString() }
+      : {}),
+  } as const;
+}
+
+/** The subscription endpoint provides primary/secondary windows and optional model-specific pools. */
+export function chatGptUsageToWindows(payload: unknown): ReadonlyArray<ServerProviderUsageWindow> {
+  const usage = chatGptUsageRecord(payload);
+  const defaultMins = usage?.plan_type === "free" || usage?.plan_type === "go" ? 30 * 1440 : 300;
+  const readWindows = (value: unknown, prefix: string, group?: string, model?: string) => {
+    const rateLimit = chatGptUsageRecord(value);
+    const positions = [
+      ["primary", rateLimit?.primary_window, defaultMins],
+      ["secondary", rateLimit?.secondary_window, 7 * 1440],
+    ] as const;
+    return positions.flatMap(([slot, entry, duration]) => {
+      const window = chatGptUsageWindow(entry, duration);
+      return window
+        ? [
+            {
+              ...window,
+              id: prefix + slot,
+              label: (group ?? "ChatGPT") + " · " + window.label,
+              ...(model !== undefined
+                ? { modelIds: /^gpt-[\w.-]+$/u.test(model) ? [model] : [] }
+                : {}),
+            },
+          ]
+        : [];
+    });
+  };
+  const additional = Array.isArray(usage?.additional_rate_limits)
+    ? usage.additional_rate_limits
+    : [];
+  return [
+    ...readWindows(usage?.rate_limit, "chatgpt_"),
+    ...additional.flatMap((entry) => {
+      const pool = chatGptUsageRecord(entry);
+      const id = pool?.metered_feature ?? pool?.limit_name;
+      if (typeof id !== "string" || !id.trim()) return [];
+      const name = typeof pool?.limit_name === "string" ? pool.limit_name : id;
+      return readWindows(
+        pool?.rate_limit,
+        "chatgpt:" + id + ":",
+        name,
+        id === "codex_bengalfox" ? "gpt-5.3-codex-spark" : id,
+      );
+    }),
+  ];
 }

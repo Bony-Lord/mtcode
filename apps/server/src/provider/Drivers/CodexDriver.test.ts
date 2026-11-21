@@ -108,6 +108,44 @@ const noSpawn = ChildProcessSpawner.make(() =>
 const encodeCredentials = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 
 it.layer(layerTest)("CodexDriver", (it) => {
+  it.effect("keeps the quick usage sign-in isolated from chat routing", () =>
+    Effect.gen(function* () {
+      const config = yield* ServerConfig.ServerConfig;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const installation = yield* CodexInstallation.CodexInstallation;
+      const instanceId = ProviderInstanceId.make("quota-test-account");
+      const instance = yield* CodexDriver.create({
+        instanceId,
+        displayName: "Codex usage",
+        enabled: false,
+        environment: [],
+        config: { ...CodexDriver.defaultConfig(), setupMode: "existing", usageProfile: true },
+      }).pipe(
+        Effect.provideService(CodexInstallation.CodexInstallation, {
+          ...installation,
+          acquire: () =>
+            Effect.succeed({
+              source: "managed",
+              version: "test",
+              executablePath: "codex",
+              managedVersionDirectory: "unused",
+            }),
+        }),
+      );
+      const snapshot = yield* instance.snapshot.getSnapshot;
+      expect(
+        yield* fileSystem.exists(
+          NodePath.join(config.stateDir, "codex-usage-profiles", "profile-quota-test-account"),
+        ),
+      ).toBe(true);
+      expect(instance.accountLogin?.modes).toEqual(["oauth", "deviceCode"]);
+      expect(snapshot.supportsTextGeneration).toBe(false);
+      expect(snapshot.models).toEqual([]);
+      expect(
+        Exit.isFailure(yield* Effect.exit(instance.orchestrationAdapter.getCapabilities())),
+      ).toBe(true);
+    }).pipe(Effect.scoped),
+  );
   const checkManagedAccount = (replacementTiming: "unchanged" | "during-probe") =>
     Effect.gen(function* () {
       const instanceId = ProviderInstanceId.make("restored-managed-account");
@@ -254,6 +292,7 @@ it.layer(layerTest)("CodexDriver", (it) => {
           return;
         }
         expect(catalogTokens).toEqual(["Bearer dummy-owned-access"]);
+        expect(restored.usageLimits?.windows.map((window) => window.usedPercent)).toEqual([24, 63]);
         expect(restored.auth.email).toBe("account@example.test");
         expect(restored.runtimePaths?.homePath).toBe(sharedHome);
         expect(restored.runtimePaths?.shadowHomePath).toContain(
@@ -313,6 +352,18 @@ it.layer(layerTest)("CodexDriver", (it) => {
                 "https://auth.openai.com/revoke",
                 "https://api.openai.com/v1/models",
               ]).toContain(request.url);
+              if (request.url.endsWith("/wham/usage")) {
+                expect(request.headers.authorization).toBe("Bearer dummy-owned-access");
+                return HttpClientResponse.fromWeb(
+                  request,
+                  Response.json({
+                    rate_limit: {
+                      primary_window: { used_percent: 24, limit_window_seconds: 18_000 },
+                      secondary_window: { used_percent: 63, limit_window_seconds: 604_800 },
+                    },
+                  }),
+                );
+              }
               if (request.url.endsWith("/models")) {
                 catalogTokens.push(request.headers.authorization);
                 return HttpClientResponse.fromWeb(request, Response.json({ models: [] }));

@@ -35,19 +35,18 @@ export function useAttachmentPreviewHandoff(input: AttachmentPreviewHandoffInput
     setOptimisticUserMessages,
   } = input;
   const handoffByMessageId = input.handoff;
+  const handoffRows = Object.keys(handoffByMessageId).length === 0 ? [] : serverVisibleTurnItems;
 
   // Blob URLs are a browser resource owned per thread; leaving the thread or the view ends them.
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- revokes the thread's blob preview URLs when the thread changes or the view unmounts
   useEffect(() => () => blobPreviews.revokeThread(threadId), [blobPreviews, threadId]);
 
   const serverAttachmentResources = selectHandoffImageResources(
-    Object.keys(handoffByMessageId).length === 0
-      ? undefined
-      : serverVisibleTurnItems.flatMap(({ item }) =>
-          item.type === "user_message"
-            ? [{ id: item.messageId, role: "user" as const, attachments: item.attachments }]
-            : [],
-        ),
+    handoffRows.flatMap(({ item }) =>
+      item.type === "user_message"
+        ? [{ id: item.messageId, role: "user" as const, attachments: item.attachments }]
+        : [],
+    ),
     handoffByMessageId,
   );
   const serverAttachmentUrls = useAssetUrls(environmentId, serverAttachmentResources);
@@ -61,7 +60,7 @@ export function useAttachmentPreviewHandoff(input: AttachmentPreviewHandoffInput
   // Each handoff whose server previews are all minted, as [messageId, serverUrls, blobUrls].
   const pendingPreloads: Array<readonly [MessageId, ReadonlyArray<string>, ReadonlyArray<string>]> =
     [];
-  for (const row of serverVisibleTurnItems) {
+  for (const row of handoffRows) {
     if (row.item.type !== "user_message") continue;
     const handoffUrls = handoffByMessageId[row.item.messageId];
     if (handoffUrls === undefined || row.item.attachments.length === 0) continue;
@@ -95,7 +94,7 @@ export function useAttachmentPreviewHandoff(input: AttachmentPreviewHandoffInput
 
   const timelineAttachmentUrlById = (() => {
     const urls = new Map(serverAttachmentUrlById);
-    for (const row of serverVisibleTurnItems) {
+    for (const row of handoffRows) {
       if (row.item.type !== "user_message") continue;
       const handoffUrls = handoffByMessageId[row.item.messageId];
       if (handoffUrls === undefined) continue;

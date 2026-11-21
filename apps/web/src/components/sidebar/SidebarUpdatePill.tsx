@@ -1,3 +1,4 @@
+import { useAtomSet } from "@effect/atom-react";
 import {
   type DesktopBridge,
   type DesktopUpdateState,
@@ -10,8 +11,7 @@ import { settlePromise, squashAtomCommandFailure } from "@t3tools/client-runtime
 import { isElectron } from "../../env";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { cn } from "../../lib/utils";
-import { ensureLocalApi } from "../../localApi";
-import { useDesktopUpdateState } from "../../state/desktopUpdate";
+import { desktopUpdateReviewOpenAtom, useDesktopUpdateState } from "../../state/desktopUpdate";
 import { usePrimaryManagedPolicy } from "../../state/managedPolicy";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import {
@@ -21,7 +21,6 @@ import {
   getDesktopUpdateButtonTooltip,
   getDesktopUpdateDownloadedVersion,
   getDesktopUpdateIdleTooltip,
-  getDesktopUpdateInstallConfirmationMessage,
   isDesktopUpdateButtonDisabled,
   resolveDesktopUpdateButtonAction,
   shouldShowArm64IntelBuildWarning,
@@ -147,11 +146,16 @@ export async function downloadLocalUpdate(
   bridge: DesktopBridge,
   {
     notifyDownloaded,
+    expectedVersion,
     reportError = toastUpdateError,
-  }: { readonly notifyDownloaded: boolean; readonly reportError?: ReportLocalUpdateError },
+  }: {
+    readonly notifyDownloaded: boolean;
+    readonly reportError?: ReportLocalUpdateError;
+    readonly expectedVersion?: string;
+  },
 ): Promise<boolean> {
   try {
-    const result = await bridge.downloadUpdate();
+    const result = await bridge.downloadUpdate(expectedVersion);
     if (result.completed && notifyDownloaded) {
       showDesktopUpdateDownloadedToast(bridge, result.state);
     }
@@ -201,6 +205,7 @@ export function SidebarUpdatePill() {
 
 function SidebarUpdateControl() {
   const state = useDesktopUpdateState();
+  const setReviewOpen = useAtomSet(desktopUpdateReviewOpenAtom);
   const updateCheckBaseline = useRef<DesktopUpdateState | null>(null);
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- The updater publishes the result independently of the check RPC.
   useEffect(() => {
@@ -208,8 +213,9 @@ function SidebarUpdateControl() {
     const bridge = window.desktopBridge;
     if (!bridge || !baseline || !state || state === baseline || state.status === "checking") return;
     updateCheckBaseline.current = null;
-    showDesktopUpdateAvailableToast(bridge, state);
-  }, [state]);
+    if (resolveDesktopUpdateButtonAction(state) === "download") setReviewOpen(true);
+    else showDesktopUpdateAvailableToast(bridge, state);
+  }, [state, setReviewOpen]);
   // The desktop updates this machine, whose policy the primary environment reports.
   const updatesDenial = managedUpdatesDenial(usePrimaryManagedPolicy());
   const [isActionPending, setIsActionPending] = useState(false);
@@ -246,7 +252,7 @@ function SidebarUpdateControl() {
     state && action !== "none" ? getDesktopUpdateDownloadedVersion(state) : null;
   const everything = useUpdateEverything(localUpdateVersion);
   const checkProviderUpdates = useCheckProviderUpdates();
-  const runsEverything = everything.hasUpdates && !isDownloading;
+  const runsEverything = everything.hasUpdates && !isDownloading && action === "none";
   const run = useUpdateEverythingRun();
   const isRunningEverything = run !== null;
   const showCheckIcon = shouldShowDesktopUpdateCheckIcon({
@@ -306,40 +312,12 @@ function SidebarUpdateControl() {
     }
 
     if (!bridge || !state) return;
+    if (action === "download" || action === "install") {
+      setReleaseNotesOpen(false);
+      setReviewOpen(true);
+      return;
+    }
     setIsActionPending(true);
-
-    if (action === "download") {
-      void downloadLocalUpdate(bridge, { notifyDownloaded: true }).finally(() =>
-        setIsActionPending(false),
-      );
-      return;
-    }
-
-    if (action === "install") {
-      let confirmed = false;
-      try {
-        confirmed = await ensureLocalApi().dialogs.confirm(
-          getDesktopUpdateInstallConfirmationMessage(state),
-          { initialFocus: "confirm" },
-        );
-      } catch (error) {
-        setIsActionPending(false);
-        toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: "Could not confirm update",
-            description: error instanceof Error ? error.message : "Update confirmation failed.",
-          }),
-        );
-        return;
-      }
-      if (!confirmed) {
-        setIsActionPending(false);
-        return;
-      }
-      void installLocalUpdate(bridge).finally(() => setIsActionPending(false));
-      return;
-    }
 
     if (!prefersReducedMotion) {
       setIsCheckAnimationLatched(true);

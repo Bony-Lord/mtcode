@@ -859,6 +859,9 @@ export const CodexSettings = makeProviderSettingsSchema(
     setupMode: Schema.optionalKey(Schema.Literals(["managed", "existing"])).pipe(
       Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
     ),
+    usageProfile: Schema.optionalKey(Schema.Boolean).pipe(
+      Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
+    ),
     enabled: Schema.Boolean.pipe(
       Schema.withDecodingDefault(Effect.succeed(true)),
       Schema.annotateKey({ providerSettingsForm: { hidden: true } }),

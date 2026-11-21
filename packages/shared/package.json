@@ -438,6 +438,10 @@
       "types": "./src/usageFormat.ts",
       "import": "./src/usageFormat.ts"
     },
+    "./delegatedQuota": {
+      "types": "./src/delegatedQuota.ts",
+      "import": "./src/delegatedQuota.ts"
+    },
     "./usageLimits": {
       "types": "./src/usageLimits.ts",
       "import": "./src/usageLimits.ts"

@@ -399,6 +399,7 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
                     <ProviderInstanceIcon
                       key={`${selection.instanceId}:${selection.model}`}
                       driverKind={selection.entry.driverKind}
+                      instanceId={selection.entry.instanceId}
                       displayName={selection.entry.displayName}
                       accentColor={selection.entry.accentColor}
                       acpRegistryAgentId={selection.entry.acpRegistryAgentId}
@@ -419,6 +420,7 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
             <span data-chat-provider-model-picker-icon className="contents">
               <ProviderInstanceIcon
                 driverKind={activeEntry.driverKind}
+                instanceId={activeEntry.instanceId}
                 displayName={activeEntry.displayName}
                 accentColor={activeEntry.accentColor}
                 acpRegistryAgentId={activeEntry.acpRegistryAgentId}
@@ -467,7 +469,8 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
         {...(docked
           ? { side: "top" as const, collisionAvoidance: { side: "shift", align: "shift" } as const }
           : {})}
-        className="before:hidden"
+        data-space-ambient
+        className="isolate"
         padding="none"
         touchBackdrop
       >

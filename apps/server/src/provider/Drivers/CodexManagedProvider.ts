@@ -30,20 +30,25 @@ import {
 } from "@t3tools/provider-core/server/driver";
 import { codexContinuationIdentity } from "./CodexHomeLayout.ts";
 import { withInstanceIdentity } from "@t3tools/provider-core/server/instanceIdentity";
-import { HttpClient } from "effect/http";
+import { HttpClient, HttpClientResponse } from "effect/http";
+import * as DateTime from "effect/DateTime";
+import {
+  chatGptUsageRequest,
+  chatGptUsageToWindows,
+  makeUsageLimits,
+} from "@t3tools/provider-core/server/usageLimits";
 const DRIVER = ProviderDriverKind.make("codex");
 
-function accountPlan(idToken: string | undefined): string | undefined {
-  if (!idToken) return;
+function accountClaim(token: string | undefined, key: string): string | undefined {
+  if (!token) return;
   try {
     const payload = JSON.parse(
-      Buffer.from(idToken.split(".")[1] ?? "", "base64url").toString("utf8"),
+      Buffer.from(token.split(".")[1] ?? "", "base64url").toString("utf8"),
     );
-    const plan =
-      payload["https://api.openai.com/auth"]?.chatgpt_plan_type ?? payload.chatgpt_plan_type;
-    if (typeof plan === "string" && plan.trim()) return plan.trim();
+    const value = payload["https://api.openai.com/auth"]?.[key] ?? payload[key];
+    if (typeof value === "string" && value.trim()) return value.trim();
   } catch {
-    /* Plan metadata is optional and does not authorize requests. */
+    /* Claims supply metadata for the existing sign-in. */
   }
 }
 
@@ -124,7 +129,10 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
         message: "Sign in with ChatGPT to use Codex.",
         auth: { status: "unauthenticated" as const },
       };
-    const plan = accountPlan(saved.value.idToken) ?? accountPlan(saved.value.accessToken);
+    const claim = (key: string) =>
+      accountClaim(saved.value.idToken, key) ?? accountClaim(saved.value.accessToken, key);
+    const plan = claim("chatgpt_plan_type");
+    const workspaceId = claim("chatgpt_account_id");
     const usageLimits = {
       checkedAt: base.checkedAt,
       ...(plan ? { plan } : {}),
@@ -142,6 +150,7 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
       status: "authenticated" as const,
       type: "chatgpt",
       label: "ChatGPT",
+      ...(workspaceId ? { workspaceId } : {}),
       ...(saved.value.email?.trim() ? { email: saved.value.email.trim() } : {}),
     };
     return yield* runtime.auth.controller.withAccess!(runtime.resolve).pipe(
@@ -165,10 +174,39 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
               operation: "models",
               detail: "The ChatGPT connection changed while checking Codex. Retry.",
             });
-          const models = yield* chatGptModels(credentials.accessToken, draft.models).pipe(
-            Effect.provideService(HttpClient.HttpClient, http),
+          const accountUsage = http
+            .execute(chatGptUsageRequest(credentials.accessToken, workspaceId))
+            .pipe(
+              Effect.flatMap(HttpClientResponse.filterStatusOk),
+              Effect.flatMap((response) => response.json),
+              Effect.map(chatGptUsageToWindows),
+              Effect.timeout("5 seconds"),
+              Effect.orElseSucceed(() => []),
+            );
+          const [models, windows] = yield* Effect.all(
+            [
+              chatGptModels(credentials.accessToken, draft.models).pipe(
+                Effect.provideService(HttpClient.HttpClient, http),
+              ),
+              accountUsage,
+            ],
+            { concurrency: "unbounded" },
           );
-          return { ...draft, models };
+          return {
+            ...draft,
+            models,
+            usageLimits:
+              windows.length > 0
+                ? {
+                    ...makeUsageLimits({
+                      checkedAt: DateTime.formatIso(yield* DateTime.now),
+                      windows,
+                    }),
+                    ...(plan ? { plan } : {}),
+                    externalUsage: usageLimits.externalUsage,
+                  }
+                : usageLimits,
+          };
         }),
       ),
       Effect.map((draft) =>
@@ -176,7 +214,6 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
           ...draft,
           auth: managedAuth,
           version: draft.version ?? executable.value.version,
-          usageLimits,
           models: draft.models.map((model) => ({
             ...model,
             ...(model.capabilities

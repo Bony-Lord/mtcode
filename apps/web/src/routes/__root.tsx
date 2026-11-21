@@ -1,3 +1,4 @@
+import { DesktopUpdateReview } from "../components/sidebar/DesktopUpdateReview";
 import { type ServerLifecycleWelcomePayload } from "@t3tools/contracts";
 import { scopedProjectKey, scopeProjectRef } from "@t3tools/client-runtime/environment";
 import {
@@ -188,7 +189,12 @@ function RootRouteBranch() {
       {primaryEnvironmentAuthenticated || localEnvironmentDisabled ? (
         <DesktopWebLinkCoordinator />
       ) : null}
-      {isElectron ? <RunningThreadKeepAlive /> : null}
+      {isElectron ? (
+        <>
+          <RunningThreadKeepAlive />
+          <DesktopUpdateReview />
+        </>
+      ) : null}
       <RelayClientInstallDialog />
       <ConnectOnboardingDialog />
       <SshPasswordPromptDialog />
@@ -256,6 +262,7 @@ function DesktopDeepLinkNavigation() {
   const pathname = useLocation({ select: (location) => location.pathname });
   const readPathname = useEffectEvent(() => pathname);
 
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- listen for thread links opened by the desktop shell
   useEffect(() => {
     const onDeepLink = window.desktopBridge?.onDeepLink;
     if (typeof onDeepLink !== "function") {

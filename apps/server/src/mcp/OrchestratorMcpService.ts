@@ -1,7 +1,8 @@
 import { isSmartModel, selectSmartModel } from "@t3tools/shared/smartModelRouting";
 import { accountUsageBudgetBlock, exhaustedAccountUsageWindow } from "@t3tools/shared/usageLimits";
 import { AUTO_ESCALATION_PREFIX, resolveAgentWorkModes } from "@t3tools/shared/agentWorkProfiles";
-import { delegatedQuotaCooldown, DELEGATED_QUOTA_COOLDOWN_MS } from "./delegatedQuotaCooldown.ts";
+import { DELEGATED_QUOTA_HISTORY_MS, estimateDelegatedQuota } from "@t3tools/shared/delegatedQuota";
+import { delegatedQuotaAllows, delegatedQuotaCooldown } from "./delegatedQuotaCooldown.ts";
 import {
   CommandId,
   type RunId,
@@ -92,6 +93,7 @@ import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
+import * as Semaphore from "effect/Semaphore";
 
 import * as ProviderAdapterRegistry from "../orchestration-v2/ProviderAdapterRegistry.ts";
 import {
@@ -1263,6 +1265,7 @@ const make = Effect.gen(function* () {
   const gitDriver = yield* GitVcsDriver.GitVcsDriver;
   const serverSettings = yield* ServerSettings.ServerSettingsService;
   const remoteDelegation = yield* RemoteDelegation.RemoteDelegation;
+  const delegationAdmission = yield* Semaphore.make(1);
 
   const requireProject = (projectId: ProjectId) =>
     projects.getById(projectId).pipe(
@@ -2713,140 +2716,158 @@ const make = Effect.gen(function* () {
           "Delegated tasks require an active run owned by this MCP provider session.",
         );
       }
-      const providers = yield* loadProviders;
       const key = yield* requestKey(input.clientRequestId);
       const commandId = stableCommandId({
         scope,
         requestKey: key,
         operation: "delegate-task",
       });
-      const isRetryOfAcceptedDelegation = yield* threadManagement.hasReceipt(commandId);
-      const settings = yield* serverSettings.getSettings.pipe(
-        Effect.mapError(
-          (cause) =>
-            new OrchestratorMcpFailure({ code: "invalid_request", message: String(cause) }),
-        ),
-      );
-      const modes = resolveAgentWorkModes(settings, parent.thread.projectId);
-      const now = DateTime.toEpochMillis(yield* DateTime.now);
-      const blocked = isRetryOfAcceptedDelegation
-        ? new Set<ProviderInstanceId>()
-        : delegatedQuotaCooldown(
-            (yield* loadThreadRecords(parent.thread.id, ["subagents"], {
-              failedSubagentsSince: DateTime.formatIso(
-                DateTime.makeUnsafe(now - DELEGATED_QUOTA_COOLDOWN_MS),
-              ),
-            })).subagents,
-            providers,
-            now,
-          );
-      let delegatedTarget = input.target;
-      if (
-        !isRetryOfAcceptedDelegation &&
-        delegatedTarget === undefined &&
-        modes.some((mode) => mode === "fast" || mode === "economy" || mode === "conductor")
-      ) {
-        const instanceIds = yield* loadOrchestrationCapableInstanceIds();
-        const routed = selectSmartModel({
-          requested: { ...parent.thread.modelSelection, model: "mt-auto/economy" },
-          providers: providers.filter(
-            (provider) => instanceIds.has(provider.instanceId) && !blocked.has(provider.instanceId),
-          ),
-          settings,
-          projectId: parent.thread.projectId,
-          text: input.task,
-          now,
-        });
-        if (!routed)
-          return yield* failure(
-            "provider_unavailable",
-            "Нет доступного маршрута для помощника: проверьте лимиты и подключённые модели.",
-          );
-        delegatedTarget = {
-          providerInstanceId: routed.selection.instanceId,
-          model: routed.selection.model,
-          ...(routed.selection.options ? { options: routed.selection.options } : {}),
-        };
-      }
-      const target = yield* resolveTargetRechecking({
-        parent,
-        target: delegatedTarget,
-        providers,
-        skipProjectEnablementFilter: isRetryOfAcceptedDelegation,
-        quotaBlockedInstances: blocked,
-      });
-      const runtimeMode = yield* resolveRuntimeMode(
-        parent.thread.runtimeMode,
-        input.runtimeMode,
-        target,
-      );
-      const interactionMode = yield* resolveInteractionMode(
-        parent.thread.interactionMode,
-        input.interactionMode,
-      );
-      let workspaceStrategy: OrchestrationV2ThreadLaunchWorkspaceStrategy | undefined;
-      if (input.isolation === "worktree" && !isRetryOfAcceptedDelegation) {
-        const project = yield* requireProject(parent.thread.projectId);
-        const base = yield* gitDriver
-          .resolveCommit({
-            cwd: parent.thread.worktreePath ?? project.workspaceRoot,
-            revision: "HEAD",
-          })
-          .pipe(
-            Effect.mapError(() =>
-              failure("invalid_request", "Unable to resolve the parent checkout commit."),
-            ),
-          );
-        // Launch preparation creates the worktree from the project root, so a
-        // parent checkout in another repository (such as a Git folder inside
-        // Scratch) would hand it a commit it cannot find.
-        if (parent.thread.worktreePath !== null) {
-          yield* gitDriver
-            .resolveCommit({ cwd: project.workspaceRoot, revision: base.commitSha })
-            .pipe(
-              Effect.mapError(() =>
-                failure(
-                  "invalid_request",
-                  `Isolation "worktree" creates the child checkout in project "${project.title}" (${project.workspaceRoot}), which does not contain the parent checkout's commit. Use isolation "shared" to work in the parent's checkout.`,
-                ),
-              ),
-            );
-        }
-        workspaceStrategy = { type: "worktree", baseRef: base.commitSha, startFromOrigin: false };
-      }
-      // ThreadManagementService.dispatch is the chokepoint for this command
-      // type's own enablement check, using the same command id and its
-      // receipt-replay exemption, so no separate assert runs here.
-      const result = yield* threadManagement
-        .dispatch({
-          type: "delegated_task.request",
-          createdBy: "agent",
-          creationSource: "mcp",
-          commandId,
-          parentThreadId: scope.thread.threadId,
-          parentRunId: parentRun.id,
-          parentNodeId: parentRun.rootNodeId,
-          task: taskPrompt(input),
-          ...(input.title === undefined ? {} : { title: input.title }),
-          modelSelection: target.modelSelection,
-          runtimeMode,
-          interactionMode,
-          ...(workspaceStrategy === undefined ? {} : { workspaceStrategy }),
-          // Async delegations wake the parent on every child terminal; wait
-          // delegations deliver through the blocking tool call until `awaitTask`
-          // gives up the wait (timeout, cancelled call) and upgrades the wake.
-          completionWake: input.mode === "wait" ? "settled_only" : "always",
-        })
-        .pipe(
-          Effect.mapError((error) =>
-            error._tag === "ThreadManagementProviderInstanceDisabledError"
-              ? threadManagementFailure(error)
-              : failure(
-                  "orchestration_error",
-                  `Unable to create delegated task: ${userFacingDispatchErrorMessage(error) ?? errorMessage(error)}`,
-                ),
+      const parentNodeId = parentRun.rootNodeId;
+      const prepare = Effect.gen(function* () {
+        const providers = yield* loadProviders;
+        const isRetryOfAcceptedDelegation = yield* threadManagement.hasReceipt(commandId);
+        const settings = yield* serverSettings.getSettings.pipe(
+          Effect.mapError(
+            (cause) =>
+              new OrchestratorMcpFailure({ code: "invalid_request", message: String(cause) }),
           ),
         );
+        const modes = resolveAgentWorkModes(settings, parent.thread.projectId);
+        const now = DateTime.toEpochMillis(yield* DateTime.now);
+        const quotaHistory = isRetryOfAcceptedDelegation
+          ? []
+          : (yield* loadThreadRecords(parent.thread.id, ["subagents"], {
+              quotaSubagentsSince: DateTime.formatIso(
+                DateTime.makeUnsafe(now - DELEGATED_QUOTA_HISTORY_MS),
+              ),
+            })).subagents;
+        const blocked = delegatedQuotaCooldown(quotaHistory, providers, now);
+        let delegatedTarget = input.target;
+        if (
+          !isRetryOfAcceptedDelegation &&
+          delegatedTarget === undefined &&
+          modes.some((mode) => mode === "fast" || mode === "economy" || mode === "conductor")
+        ) {
+          const instanceIds = yield* loadOrchestrationCapableInstanceIds();
+          const routed = selectSmartModel({
+            requested: { ...parent.thread.modelSelection, model: "mt-auto/economy" },
+            providers: providers
+              .filter(
+                (provider) =>
+                  instanceIds.has(provider.instanceId) && !blocked.has(provider.instanceId),
+              )
+              .map((provider) => ({
+                ...provider,
+                models: provider.models.filter(({ slug }) =>
+                  delegatedQuotaAllows({
+                    provider,
+                    providers,
+                    model: slug,
+                    now,
+                    estimate: estimateDelegatedQuota(quotaHistory, provider, slug, now, false),
+                    sharedEstimate: estimateDelegatedQuota(quotaHistory, provider, slug, now, true),
+                  }),
+                ),
+              })),
+            settings,
+            projectId: parent.thread.projectId,
+            text: input.task,
+            now,
+          });
+          if (!routed)
+            return yield* failure(
+              "provider_unavailable",
+              "Нет свободного маршрута для помощника. Дождитесь ответа текущей пробы или восстановления квоты.",
+            );
+          delegatedTarget = {
+            providerInstanceId: routed.selection.instanceId,
+            model: routed.selection.model,
+            ...(routed.selection.options ? { options: routed.selection.options } : {}),
+          };
+        }
+        const target = yield* resolveTargetRechecking({
+          parent,
+          target: delegatedTarget,
+          providers,
+          skipProjectEnablementFilter: isRetryOfAcceptedDelegation,
+          quotaBlockedInstances: blocked,
+        });
+        const runtimeMode = yield* resolveRuntimeMode(
+          parent.thread.runtimeMode,
+          input.runtimeMode,
+          target,
+        );
+        const interactionMode = yield* resolveInteractionMode(
+          parent.thread.interactionMode,
+          input.interactionMode,
+        );
+        let workspaceStrategy: OrchestrationV2ThreadLaunchWorkspaceStrategy | undefined;
+        if (input.isolation === "worktree" && !isRetryOfAcceptedDelegation) {
+          const project = yield* requireProject(parent.thread.projectId);
+          const base = yield* gitDriver
+            .resolveCommit({
+              cwd: parent.thread.worktreePath ?? project.workspaceRoot,
+              revision: "HEAD",
+            })
+            .pipe(
+              Effect.mapError(() =>
+                failure("invalid_request", "Unable to resolve the parent checkout commit."),
+              ),
+            );
+          // Launch preparation creates the worktree from the project root, so a
+          // parent checkout in another repository (such as a Git folder inside
+          // Scratch) would hand it a commit it cannot find.
+          if (parent.thread.worktreePath !== null) {
+            yield* gitDriver
+              .resolveCommit({ cwd: project.workspaceRoot, revision: base.commitSha })
+              .pipe(
+                Effect.mapError(() =>
+                  failure(
+                    "invalid_request",
+                    `Isolation "worktree" creates the child checkout in project "${project.title}" (${project.workspaceRoot}), which does not contain the parent checkout's commit. Use isolation "shared" to work in the parent's checkout.`,
+                  ),
+                ),
+              );
+          }
+          workspaceStrategy = { type: "worktree", baseRef: base.commitSha, startFromOrigin: false };
+        }
+        // ThreadManagementService.dispatch is the chokepoint for this command
+        // type's own enablement check, using the same command id and its
+        // receipt-replay exemption, so no separate assert runs here.
+        return yield* threadManagement
+          .dispatch({
+            type: "delegated_task.request",
+            createdBy: "agent",
+            creationSource: "mcp",
+            commandId,
+            parentThreadId: scope.thread.threadId,
+            parentRunId: parentRun.id,
+            parentNodeId,
+            task: taskPrompt(input),
+            ...(input.title === undefined ? {} : { title: input.title }),
+            modelSelection: target.modelSelection,
+            runtimeMode,
+            interactionMode,
+            ...(workspaceStrategy === undefined ? {} : { workspaceStrategy }),
+            // Async delegations wake the parent on every child terminal; wait
+            // delegations deliver through the blocking tool call until `awaitTask`
+            // gives up the wait (timeout, cancelled call) and upgrades the wake.
+            completionWake: input.mode === "wait" ? "settled_only" : "always",
+          })
+          .pipe(
+            Effect.mapError((error) =>
+              error._tag === "ThreadManagementProviderInstanceDisabledError"
+                ? threadManagementFailure(error)
+                : failure(
+                    "orchestration_error",
+                    `Unable to create delegated task: ${userFacingDispatchErrorMessage(error) ?? errorMessage(error)}`,
+                  ),
+            ),
+          );
+      });
+
+      // Reserve the route until the pending task is committed and visible to the next caller.
+      const result = yield* delegationAdmission.withPermits(1)(prepare);
       const taskEvent = result.storedEvents.find(
         (stored) =>
           stored.event.type === "subagent.updated" && stored.event.payload.origin === "app_owned",

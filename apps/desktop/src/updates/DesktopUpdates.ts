@@ -62,7 +62,7 @@ import {
 
 const CHANNEL_CHANGE_RETRY_DELAY = Duration.seconds(1);
 const CHANNEL_CHANGE_RETRIES = 30;
-const AUTO_UPDATE_STARTUP_DELAY = "15 seconds";
+const AUTO_UPDATE_STARTUP_DELAY = "5 seconds";
 const AUTO_UPDATE_POLL_INTERVAL = "4 hours";
 const UPDATE_CHECK_WAIT = Duration.seconds(90);
 
@@ -231,6 +231,9 @@ export class DesktopUpdates extends Context.Service<
       options?: { readonly allowDowngrade?: boolean },
     ) => Effect.Effect<DesktopUpdateCheckResult>;
     readonly download: Effect.Effect<DesktopUpdateActionResult>;
+    readonly downloadPrepared?: (
+      expectedVersion: string,
+    ) => Effect.Effect<DesktopUpdateActionResult>;
     readonly install: Effect.Effect<DesktopUpdateActionResult>;
     readonly installPrepared: (
       expectedVersion: string,
@@ -482,7 +485,10 @@ export const make = Effect.gen(function* () {
   const hasUpdateFeedConfig = Ref.get(appUpdateYmlConfigRef).pipe(
     Effect.map(
       (appUpdateYmlConfig) =>
-        Option.isSome(appUpdateYmlConfig) || mockUpdates || policy.feedUrl !== undefined || singleReleaseChannel,
+        Option.isSome(appUpdateYmlConfig) ||
+        mockUpdates ||
+        policy.feedUrl !== undefined ||
+        singleReleaseChannel,
     ),
   );
 
@@ -648,12 +654,18 @@ export const make = Effect.gen(function* () {
         );
   });
 
-  const downloadAvailableUpdate = Effect.gen(function* () {
+  const downloadAvailableUpdate = Effect.fn("desktop.updates.downloadAvailableUpdate")(function* (
+    expectedVersion?: string,
+  ) {
     const admission = yield* Effect.scoped(
       admitAfterCheck(
         Effect.gen(function* () {
           const state = yield* Ref.get(updateStateRef);
-          if (!(yield* Ref.get(updaterConfiguredRef)) || state.status !== "available") {
+          if (
+            !(yield* Ref.get(updaterConfiguredRef)) ||
+            state.status !== "available" ||
+            (expectedVersion !== undefined && state.availableVersion !== expectedVersion)
+          ) {
             return "refused" as const;
           }
           const activeAction = yield* Ref.get(activeUpdateActionRef);
@@ -722,7 +734,7 @@ export const make = Effect.gen(function* () {
       }),
       Effect.ensuring(finishUpdateAction("download")),
     );
-  }).pipe(Effect.withSpan("desktop.updates.downloadAvailableUpdate"));
+  });
 
   const updateRestartMarkerDir = environment.path.join(environment.baseDir, "runtime");
   const updateRestartMarkerPath = environment.path.join(
@@ -1024,41 +1036,6 @@ export const make = Effect.gen(function* () {
     );
   }).pipe(Effect.withSpan("desktop.updates.startPollers"));
 
-  // electron-updater emits update-available from inside checkForUpdates, while
-  // that check still holds the action reservation; a download started right
-  // away would be refused. Wait for the check to release it first.
-  const awaitCheckRelease = Effect.scoped(
-    Effect.gen(function* () {
-      const actionCompletions = yield* PubSub.subscribe(finishedUpdateActions);
-      while (true) {
-        const activeAction = yield* Ref.get(activeUpdateActionRef);
-        if (Option.isNone(activeAction) || activeAction.value !== "check") return;
-        const finished = yield* PubSub.take(actionCompletions).pipe(
-          Effect.timeoutOption(UPDATE_CHECK_WAIT),
-        );
-        if (Option.isNone(finished)) return;
-      }
-    }),
-  );
-
-  // Personal fork: download as soon as an update is available (no rocket click).
-  // downloadUpdate reuses an artifact an earlier launch already cached, which
-  // also restores install readiness after relaunching with a downloaded update.
-  const autoDownloadUpdate = Effect.fn("desktop.updates.autoDownloadUpdate")(function* (
-    version: string,
-  ) {
-    yield* awaitCheckRelease;
-    if (yield* Ref.get(desktopState.quitting)) return;
-    const state = yield* Ref.get(updateStateRef);
-    if (state.status !== "available" || state.availableVersion !== version) return;
-    const downloadResult = yield* downloadAvailableUpdate;
-    yield* logUpdaterInfo("auto-download finished", {
-      version,
-      accepted: downloadResult.accepted,
-      completed: downloadResult.completed,
-    });
-  });
-
   const handleUpdateAvailable = Effect.fn("desktop.updates.handleUpdateAvailable")(function* (
     raw: unknown,
   ) {
@@ -1077,8 +1054,6 @@ export const make = Effect.gen(function* () {
             return;
           }
           if (isOffered(state) && state.availableVersion === info.version) {
-            // Personal fork: a re-found offer whose auto-download failed tries it again.
-            if (state.status === "available") yield* autoDownloadUpdate(info.version);
             return;
           }
 
@@ -1104,7 +1079,6 @@ export const make = Effect.gen(function* () {
             releaseNoteGroups: releaseNotes.length,
             omittedReleaseCount,
           });
-          yield* autoDownloadUpdate(info.version);
         }),
       ),
       Effect.catchCause((cause) => {
@@ -1240,6 +1214,15 @@ export const make = Effect.gen(function* () {
         });
       }),
     );
+  });
+
+  const download = Effect.fn("desktop.updates.download")(function* (expectedVersion?: string) {
+    const result = yield* downloadAvailableUpdate(expectedVersion);
+    return {
+      accepted: result.accepted,
+      completed: result.completed,
+      state: yield* Ref.get(updateStateRef),
+    };
   });
 
   return DesktopUpdates.of({
@@ -1449,14 +1432,8 @@ export const make = Effect.gen(function* () {
         state: yield* Ref.get(updateStateRef),
       };
     }),
-    download: Effect.gen(function* () {
-      const result = yield* downloadAvailableUpdate;
-      return {
-        accepted: result.accepted,
-        completed: result.completed,
-        state: yield* Ref.get(updateStateRef),
-      };
-    }).pipe(Effect.withSpan("desktop.updates.download")),
+    download: download(),
+    downloadPrepared: download,
     install: installWithExpectedVersion().pipe(
       Effect.map(({ accepted, completed, state }) => ({ accepted, completed, state })),
     ),

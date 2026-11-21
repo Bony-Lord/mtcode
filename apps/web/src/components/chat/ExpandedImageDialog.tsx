@@ -89,6 +89,7 @@ export const ExpandedImageDialog = memo(function ExpandedImageDialog({
 }: ExpandedImageDialogProps) {
   const [imageOffset, setImageOffset] = useState(0);
   const [failedImageSrc, setFailedImageSrc] = useState<string | null>(null);
+  const retriedImages = useRef(new Set<number>());
   const [accessibilityDetailsSrc, setAccessibilityDetailsSrc] = useState<string | null>(null);
   const zoomableImageRef = useRef<ZoomableImageHandle>(null);
   const [returnFocus] = useState(() => {
@@ -108,11 +109,23 @@ export const ExpandedImageDialog = memo(function ExpandedImageDialog({
   const index =
     imageCount > 0 ? (((preview.index + imageOffset) % imageCount) + imageCount) % imageCount : 0;
   const item = preview.images[index];
-  const source: MediaActionSource = item?.actionsSource ?? {
-    kind: item?.type === "video" ? "video" : "image",
-    name: item?.name ?? "Media",
-    src: item?.src ?? null,
-  };
+  const asset = item?.type === "video" ? undefined : item?.actionsSource?.asset;
+  const imageAssetUrl = useAssetUrlState(asset?.environmentId ?? null, asset?.resource ?? null);
+  const refreshImageAssetUrl = useAssetUrlRefresh(
+    asset?.environmentId ?? null,
+    asset?.resource ?? null,
+  );
+  const imageSrc =
+    imageAssetUrl._tag === "Success"
+      ? imageAssetUrl.url + (item?.srcFragment ?? "")
+      : (item?.src ?? null);
+  const source: MediaActionSource = item?.actionsSource
+    ? { ...item.actionsSource, src: imageSrc }
+    : {
+        kind: item?.type === "video" ? "video" : "image",
+        name: item?.name ?? "Media",
+        src: item?.src ?? null,
+      };
   const openFile = source.onOpenFile;
   const actionsSource: MediaActionSource = openFile
     ? {
@@ -227,7 +240,7 @@ export const ExpandedImageDialog = memo(function ExpandedImageDialog({
                   className="h-[min(var(--media-height),40rem)] w-[min(var(--media-width),42rem)] transition-opacity duration-140 ease-out starting:opacity-0 rounded-lg border border-border/70 bg-background p-4 text-xs leading-5 shadow-2xl motion-reduce:transition-none"
                 />
               ) : null
-            ) : item.src === null || failedImageSrc === item.src ? (
+            ) : imageSrc === null || failedImageSrc === imageSrc ? (
               <ExpandedMediaFailure>
                 <p>
                   {openOriginalLink
@@ -239,11 +252,24 @@ export const ExpandedImageDialog = memo(function ExpandedImageDialog({
             ) : (
               <ZoomableImage
                 ref={zoomableImageRef}
-                key={`${index}:${item.src}`}
-                src={item.src}
+                key={`${index}:${imageSrc}`}
+                src={imageSrc}
                 name={item.name}
                 mimeType={itemMimeType(item)}
-                onError={() => setFailedImageSrc(item.src)}
+                onError={() => {
+                  if (!asset || retriedImages.current.has(index)) {
+                    setFailedImageSrc(imageSrc);
+                    return;
+                  }
+                  retriedImages.current.add(index);
+                  void refreshImageAssetUrl()
+                    .then((renewed) => {
+                      if (!renewed || renewed + (item.srcFragment ?? "") === imageSrc) {
+                        setFailedImageSrc(imageSrc);
+                      }
+                    })
+                    .catch(() => setFailedImageSrc(imageSrc));
+                }}
               />
             )}
             <div className="mt-2 flex max-w-[var(--media-width)] items-center justify-center gap-1.5 text-xs text-white/80 max-sm:px-10">

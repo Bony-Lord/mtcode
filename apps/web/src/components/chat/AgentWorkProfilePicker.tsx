@@ -11,7 +11,7 @@ import {
 import { useState } from "react";
 import { useEnvironmentSettings, useUpdateEnvironmentSettings } from "../../hooks/useSettings";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
-import { ComposerControl, ComposerControlIcon } from "./ComposerControl";
+import { Button } from "../ui/button";
 
 const icons = {
   conductor: NetworkIcon,
@@ -38,40 +38,45 @@ export function AgentWorkProfilePicker({
   const selected = pending ?? modes;
   return (
     <div role="group" aria-label="Режимы работы агента" className="flex shrink-0 items-center">
-      {AGENT_WORK_PROFILES.map(({ id, label, description }) => (
-        <Tooltip key={id}>
-          <TooltipTrigger
-            render={
-              <ComposerControl
-                size="xs"
-                aria-label={label}
-                aria-pressed={selected.includes(id)}
-                disabled={disabled || pending !== null}
-                onClick={() => {
-                  const next = selected.includes(id)
-                    ? selected.filter((mode) => mode !== id)
-                    : [...selected, id];
-                  setPending(next);
-                  updateSettings(
-                    projectId
-                      ? { projectSettingsOverrides: { [projectId]: { agentWorkModes: next } } }
-                      : { agentWorkModes: next },
-                    {
-                      onSaved: () => setPending(null),
-                      onFailed: () => setPending(null),
-                    },
-                  );
-                }}
-              >
-                <ComposerControlIcon icon={icons[id]} size="xs" />
-              </ComposerControl>
-            }
-          />
-          <TooltipPopup side="top">
-            {label}. {description}
-          </TooltipPopup>
-        </Tooltip>
-      ))}
+      {AGENT_WORK_PROFILES.map(({ id, label, description }) => {
+        const Icon = icons[id];
+        return (
+          <Tooltip key={id}>
+            <TooltipTrigger
+              render={
+                <Button
+                  type="button"
+                  size="icon-xs"
+                  variant={selected.includes(id) ? "secondary" : "ghost"}
+                  aria-label={label}
+                  aria-pressed={selected.includes(id)}
+                  disabled={disabled || pending !== null}
+                  onClick={() => {
+                    const next = selected.includes(id)
+                      ? selected.filter((mode) => mode !== id)
+                      : [...selected, id];
+                    setPending(next);
+                    updateSettings(
+                      projectId
+                        ? { projectSettingsOverrides: { [projectId]: { agentWorkModes: next } } }
+                        : { agentWorkModes: next },
+                      {
+                        onSaved: () => setPending(null),
+                        onFailed: () => setPending(null),
+                      },
+                    );
+                  }}
+                >
+                  <Icon />
+                </Button>
+              }
+            />
+            <TooltipPopup side="top">
+              {label}. {description}
+            </TooltipPopup>
+          </Tooltip>
+        );
+      })}
     </div>
   );
 }

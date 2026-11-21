@@ -1,7 +1,7 @@
 import { Toolbar } from "@base-ui/react/toolbar";
 import { type ProviderInstanceId } from "@t3tools/contracts";
 import { memo, useLayoutEffect, useRef, useState } from "react";
-import { StarIcon, GlobeIcon, LayersIcon, RouteIcon } from "lucide-react";
+import { StarIcon, LayersIcon, RouteIcon } from "lucide-react";
 import { MANUFACTURER_PROFILE_ID } from "./modelCatalogBrand";
 import { AUTO_PROFILE_ID } from "./ProviderModelPicker.logic";
 import { ProviderInstanceIcon } from "./ProviderInstanceIcon";
@@ -219,30 +219,25 @@ export const ModelPickerSidebar = memo(function ModelPickerSidebar(props: {
                 type="button"
                 aria-label={isUnavailable || isContextDisabled ? tooltip : entry.displayName}
               >
-                {entry.instanceId === "web-ai" ? (
-                  <GlobeIcon className="size-5" aria-hidden="true" />
-                ) : (
-                  <ProviderInstanceIcon
-                    driverKind={entry.driverKind}
-                    displayName={entry.displayName}
-                    accentColor={entry.accentColor}
-                    acpRegistryAgentId={entry.acpRegistryAgentId}
-                    acpRegistryIconUrl={entry.acpRegistryIconUrl}
-                    showBadge={showInstanceBadge}
-                    className="size-6 z-30"
-                    iconClassName="size-5"
-                    indicatorBackground={
-                      isHovered && !isDisabled
-                        ? "var(--muted)"
-                        : isSelected
-                          ? "var(--background)"
-                          : "color-mix(in oklab, var(--muted) 30%, transparent)"
-                    }
-                    {...(entry.accentColor
-                      ? { badgeClassName: "h-3 min-w-3 px-0.5 text-5xs" }
-                      : {})}
-                  />
-                )}
+                <ProviderInstanceIcon
+                  driverKind={entry.driverKind}
+                  instanceId={entry.instanceId}
+                  displayName={entry.displayName}
+                  accentColor={entry.accentColor}
+                  acpRegistryAgentId={entry.acpRegistryAgentId}
+                  acpRegistryIconUrl={entry.acpRegistryIconUrl}
+                  showBadge={showInstanceBadge}
+                  className="size-6 z-30"
+                  iconClassName="size-5"
+                  indicatorBackground={
+                    isHovered && !isDisabled
+                      ? "var(--muted)"
+                      : isSelected
+                        ? "var(--background)"
+                        : "color-mix(in oklab, var(--muted) 30%, transparent)"
+                  }
+                  {...(entry.accentColor ? { badgeClassName: "h-3 min-w-3 px-0.5 text-5xs" } : {})}
+                />
                 {tabLabel ? <span className="text-3xs leading-none">{tabLabel}</span> : null}
               </Toolbar.Button>
             );

@@ -1,5 +1,11 @@
 import { RefreshIcon } from "~/components/ui/refresh-icon";
-import { CheckIcon, CircleArrowUpIcon, DownloadIcon, RotateCwIcon } from "lucide-react";
+import {
+  TriangleAlertIcon,
+  CheckIcon,
+  CircleArrowUpIcon,
+  DownloadIcon,
+  RotateCwIcon,
+} from "lucide-react";
 import type { AnimationEventHandler } from "react";
 
 const DOWNLOAD_PROGRESS_RADIUS = 14;
@@ -46,8 +52,10 @@ function DesktopUpdateAvailableIcon() {
       <DownloadIcon className="size-4" />
       <span
         aria-hidden="true"
-        className="absolute -top-0.5 -right-0.5 size-1.5 rounded-full bg-current ring-2 ring-sidebar-control-surface"
-      />
+        className="absolute -top-0.5 -right-0.5 grid size-3 place-items-center rounded-full bg-sidebar-control-surface text-warning"
+      >
+        <TriangleAlertIcon className="size-3" strokeWidth={2.5} />
+      </span>
     </span>
   );
 }

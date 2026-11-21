@@ -375,6 +375,7 @@ export interface ProjectionRecordFilter {
   readonly subagentRunIds?: ReadonlyArray<RunId>;
   /** Only failed delegated tasks updated on or after this ISO timestamp. */
   readonly failedSubagentsSince?: string;
+  readonly quotaSubagentsSince?: string;
   readonly subagentChildThreadIds?: ReadonlyArray<ThreadId>;
   readonly nodeIds?: ReadonlyArray<NodeId>;
   readonly turnItemRequestIds?: ReadonlyArray<RuntimeRequestId>;
@@ -4005,7 +4006,15 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             ? Effect.succeed([])
             : window === undefined
               ? sql<PayloadRow>`
-            SELECT payload_json
+            SELECT ${
+              filter?.quotaSubagentsSince === undefined
+                ? sql`payload_json`
+                : sql`json_set(
+                payload_json,
+                '$.prompt', '',
+                '$.result', CASE WHEN status = 'failed' THEN substr(json_extract(payload_json, '$.result'), 1, 1024) ELSE NULL END
+              )`
+            } AS payload_json
             FROM orchestration_v2_projection_subagents AS subagent
             WHERE ${threadColumn(filter?.subagentIds ?? filter?.subagentChildThreadIds)} = ${threadId}
               ${filter?.subagentIds === undefined ? sql`` : sql`AND subagent_id IN (SELECT value FROM json_each(${encodeIdList(filter.subagentIds)}))`}
@@ -4022,7 +4031,18 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                     )`
                     : sql``
               }
-            ORDER BY COALESCE(started_at, ''), subagent_id ASC
+            ${
+              filter?.quotaSubagentsSince === undefined
+                ? sql``
+                : sql`AND
+              json_extract(payload_json, '$.origin') = 'app_owned' AND
+              (status IN ('pending', 'running', 'waiting') OR updated_at >= ${filter.quotaSubagentsSince})`
+            }
+            ${
+              filter?.quotaSubagentsSince === undefined
+                ? sql`ORDER BY COALESCE(started_at, ''), subagent_id ASC`
+                : sql`ORDER BY (status IN ('pending', 'running', 'waiting')) DESC, updated_at DESC LIMIT 256`
+            }
           `
               : sql<PayloadRow>`
             SELECT payload_json FROM orchestration_v2_projection_subagents

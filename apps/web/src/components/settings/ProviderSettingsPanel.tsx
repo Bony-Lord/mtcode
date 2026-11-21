@@ -1,5 +1,6 @@
 import { SettingsGroup } from "./SettingsGroup";
 import { RefreshIcon } from "~/components/ui/refresh-icon";
+import { CodexUsageSignInDialog } from "./CodexUsageSignInDialog";
 import { freeAccountUpdates } from "@t3tools/shared/providerAccountControl";
 import {
   AuthSettingsWriteScope,
@@ -733,6 +734,9 @@ export function EnvironmentProviderSettings({
   const [accountDriver, setAccountDriver] = useState<ProviderDriverKind>();
   const [isAddCodexAccountOpen, setIsAddCodexAccountOpen] = useState(false);
   const [showHiddenProviders, setShowHiddenProviders] = useState(false);
+  const [showProviderSettings, setShowProviderSettings] = useState(targetInstanceId === undefined);
+  const [changingVisibility, setChangingVisibility] = useState(false);
+  const [quickQuotaLogin, setQuickQuotaLogin] = useState<ServerProvider | null>(null);
   const [selectedInstanceId, setSelectedInstanceId] = useState<ProviderInstanceId | null>(
     targetInstanceId ?? null,
   );
@@ -885,7 +889,7 @@ export function EnvironmentProviderSettings({
     id: ProviderInstanceId,
     instance: ProviderInstanceConfig | undefined,
   ) =>
-    id === targetInstanceId ||
+    (id === targetInstanceId && id === selectedInstanceId) ||
     showHiddenProviders ||
     (!instance?.hidden &&
       (serverProviders.some((provider) => provider.instanceId === id && provider.enabled) ||
@@ -952,6 +956,14 @@ export function EnvironmentProviderSettings({
   const selectedGroupId = selectedRow === null ? null : rowGroup(selectedRow);
   const selectedAccounts =
     selectedGroupId === null ? [] : (providerGroups.get(selectedGroupId) ?? []);
+  const selectedProvider = serverProviders.find(
+    (provider) => provider.instanceId === selectedRow?.instanceId,
+  );
+  const selectedProviderUpdate = serverProviders.find(
+    (provider) =>
+      selectedAccounts.some((account) => account.instanceId === provider.instanceId) &&
+      isProviderSettingsUpdateCandidate(provider),
+  );
   const groupLabel = (groupId: string, row: InstanceRow) => {
     if (row.explicitInstance?.providerGroup) return row.explicitInstance.providerGroup;
     if (groupId !== row.driver) {
@@ -1157,6 +1169,24 @@ export function EnvironmentProviderSettings({
     }
   };
 
+  const changeAccountVisibility = async (row: InstanceRow) => {
+    if (readOnly || changingVisibility) return;
+    const instance = row.explicitInstance ?? { driver: row.driver };
+    setChangingVisibility(true);
+    try {
+      const hidden = !instance.hidden;
+      if ((await persistInstance(row.instanceId, { ...instance, hidden })) && hidden) {
+        setShowProviderSettings(true);
+        setSelectedInstanceId(
+          selectedAccounts.find((account) => account.instanceId !== row.instanceId)?.instanceId ??
+            null,
+        );
+      }
+    } finally {
+      setChangingVisibility(false);
+    }
+  };
+
   const stableUpdateModelPreferences = useStableCallback(updateModelPreferences);
   const stableToggleModelFavorite = useStableCallback(toggleModelFavorite);
   const actions: ProviderInstanceRowActions = {
@@ -1169,7 +1199,10 @@ export function EnvironmentProviderSettings({
     writeProjectOverride,
     updateModelPreferences: stableUpdateModelPreferences,
     toggleModelFavorite: stableToggleModelFavorite,
-    selectInstance: setSelectedInstanceId,
+    selectInstance: (id) => {
+      setSelectedInstanceId(id);
+      setShowProviderSettings(false);
+    },
     setProviderRuntimeModeDefault,
   };
   // resolveModelPreferences falls back to a fresh `[]`; keep it stable for the rows.
@@ -1190,7 +1223,9 @@ export function EnvironmentProviderSettings({
         isDefault={row.isDefault}
         isDirty={row.isDirty === true}
         mode={mode}
-        selected={mode === "list" && selectedRow?.instanceId === row.instanceId}
+        selected={
+          mode === "list" && !showProviderSettings && selectedRow?.instanceId === row.instanceId
+        }
         readOnly={readOnly}
         canWriteSettings={canWriteSettings}
         liveProvider={serverProviders.find((candidate) => candidate.instanceId === row.instanceId)}
@@ -1375,11 +1410,18 @@ export function EnvironmentProviderSettings({
                       type="button"
                       className="flex w-full cursor-pointer justify-between gap-2 bg-muted/20 px-3 py-2 text-left text-xs font-medium hover:bg-muted/40"
                       aria-expanded={selectedGroupId === groupId}
-                      onClick={() => setSelectedInstanceId(members[0]!.instanceId)}
+                      aria-current={
+                        selectedGroupId === groupId && showProviderSettings ? "true" : undefined
+                      }
+                      onClick={() => {
+                        setSelectedInstanceId(members[0]!.instanceId);
+                        setShowProviderSettings(true);
+                      }}
                     >
                       <span className="flex min-w-0 items-center gap-2">
                         <ProviderInstanceIcon
                           driverKind={members[0]!.driver}
+                          instanceId={members[0]!.instanceId}
                           displayName={groupLabel(groupId, members[0]!)}
                           size="compact"
                         />
@@ -1419,58 +1461,125 @@ export function EnvironmentProviderSettings({
             </ScrollArea>
           </div>
 
-          <div data-provider-detail className="min-w-0 @min-[48rem]/providers:min-h-0">
+          <div
+            data-provider-detail
+            data-space-ambient
+            className="relative isolate min-w-0 @min-[48rem]/providers:min-h-0"
+          >
             {selectedRow ? (
               <ScrollArea scrollFade chainVerticalScroll className="@min-[48rem]/providers:h-full">
                 {/* Flat sections run dividers edge to edge and inset text like the list beside them. */}
                 <div className="space-y-6 py-4">
-                  <SettingsSection title={groupLabel(selectedGroupId!, selectedRow)}>
-                    {selectedRow.driver !== "acpRegistry" ? (
-                      <ProviderSharedBinaryPath
-                        key={selectedGroupId}
-                        value={
-                          settings.providerRuntimePreferences[selectedGroupId!]?.binaryPath ?? ""
-                        }
-                        disabled={readOnly}
-                        onSave={(binaryPath) =>
-                          updateSettings({
-                            providerRuntimePreferences: {
-                              [selectedGroupId!]: binaryPath ? { binaryPath } : null,
-                            },
-                          })
+                  {showProviderSettings ? (
+                    <SettingsSection title={groupLabel(selectedGroupId!, selectedRow)}>
+                      {selectedProviderUpdate ? (
+                        <SettingsRow
+                          title="Обновление программы"
+                          control={
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              disabled={
+                                readOnly ||
+                                updatingProviderInstanceIds.has(
+                                  selectedProviderUpdate.instanceId,
+                                ) ||
+                                isProviderUpdateActive(selectedProviderUpdate)
+                              }
+                              onClick={() => void runProviderUpdate(selectedProviderUpdate)}
+                            >
+                              Обновить
+                            </Button>
+                          }
+                        />
+                      ) : null}
+                      {selectedRow.driver !== "acpRegistry" ? (
+                        <ProviderSharedBinaryPath
+                          key={selectedGroupId}
+                          value={
+                            settings.providerRuntimePreferences[selectedGroupId!]?.binaryPath ?? ""
+                          }
+                          disabled={readOnly}
+                          onSave={(binaryPath) =>
+                            updateSettings({
+                              providerRuntimePreferences: {
+                                [selectedGroupId!]: binaryPath ? { binaryPath } : null,
+                              },
+                            })
+                          }
+                        />
+                      ) : null}
+                      <SettingsRow
+                        title="Управление аккаунтами"
+                        description="Выберите аккаунт слева, чтобы изменить его настройки или вход."
+                        control={
+                          canAddProvider ? (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => openAddAccount(selectedRow.driver)}
+                            >
+                              Добавить аккаунт
+                            </Button>
+                          ) : undefined
                         }
                       />
-                    ) : null}
-                    <SettingsRow
-                      title="Управление аккаунтами"
-                      description="Выберите аккаунт слева, чтобы изменить его настройки или вход."
-                      control={
-                        canAddProvider ? (
+                      <SettingsRow
+                        title="Удаление провайдера"
+                        control={
                           <Button
                             size="sm"
-                            variant="outline"
-                            onClick={() => openAddAccount(selectedRow.driver)}
+                            variant="ghost-destructive"
+                            disabled={readOnly || removingProvider}
+                            onClick={() => void removeProvider()}
                           >
-                            Добавить аккаунт
+                            Удалить провайдера
                           </Button>
-                        ) : undefined
-                      }
-                    />
-                    <SettingsRow
-                      title="Удаление провайдера"
-                      control={
-                        <Button
-                          size="sm"
-                          variant="ghost-destructive"
-                          disabled={readOnly || removingProvider}
-                          onClick={() => void removeProvider()}
-                        >
-                          Удалить провайдера
-                        </Button>
-                      }
-                    />
-                  </SettingsSection>
-                  {renderProviderInstance(selectedRow, "editor")}
+                        }
+                      />
+                    </SettingsSection>
+                  ) : (
+                    <>
+                      <SettingsSection title="Аккаунт">
+                        <SettingsRow
+                          title={
+                            selectedRow.explicitInstance?.hidden
+                              ? "Аккаунт скрыт"
+                              : "Видимость аккаунта"
+                          }
+                          description="Скрытый аккаунт убирается из списка моделей. Вход и история чатов сохраняются."
+                          control={
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              disabled={readOnly || changingVisibility}
+                              onClick={() => void changeAccountVisibility(selectedRow)}
+                            >
+                              {selectedRow.explicitInstance?.hidden
+                                ? "Показать аккаунт"
+                                : "Скрыть аккаунт"}
+                            </Button>
+                          }
+                        />
+                        {selectedProvider?.auth.subscriptionSharing ? (
+                          <SettingsRow
+                            title="Лимиты Codex"
+                            control={
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                disabled={readOnly}
+                                onClick={() => setQuickQuotaLogin(selectedProvider)}
+                              >
+                                Подключить вход для лимитов
+                              </Button>
+                            }
+                          />
+                        ) : null}
+                      </SettingsSection>
+                      {renderProviderInstance(selectedRow, "editor")}
+                    </>
+                  )}
                 </div>
               </ScrollArea>
             ) : (
@@ -1716,11 +1825,21 @@ export function EnvironmentProviderSettings({
           onCreated={setSelectedInstanceId}
         />
       ) : null}
+      {quickQuotaLogin ? (
+        <CodexUsageSignInDialog
+          environmentId={environmentId}
+          managed={quickQuotaLogin}
+          onClose={() => setQuickQuotaLogin(null)}
+        />
+      ) : null}
       {isAddCodexAccountOpen && !readOnly ? (
         <AddManagedCodexAccountDialog
           environmentId={environmentId}
           onClose={() => setIsAddCodexAccountOpen(false)}
-          onAccountCreated={(instanceId) => setSelectedInstanceId(instanceId)}
+          onAccountCreated={(instanceId) => {
+            setSelectedInstanceId(instanceId);
+            setShowProviderSettings(false);
+          }}
         />
       ) : null}
     </>

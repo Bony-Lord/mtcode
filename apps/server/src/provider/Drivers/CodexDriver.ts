@@ -3,7 +3,12 @@ import {
   resolveProviderProbeTimeoutMs,
   type ServerProviderDraft,
 } from "@t3tools/provider-core/server/snapshotProbe";
-import { CodexSettings, ProviderDriverKind, type ServerProvider } from "@t3tools/contracts";
+import {
+  CodexSettings,
+  ProviderDriverKind,
+  TextGenerationError,
+  type ServerProvider,
+} from "@t3tools/contracts";
 import * as Digest from "effect/crypto/Digest";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import type * as Signature from "effect/crypto/Signature";
@@ -40,6 +45,11 @@ import { resolveCodexLaunchArgs } from "../codexLaunchArgs.ts";
 import { makeManagedServerProvider } from "@t3tools/provider-core/server/managedProvider";
 import * as ModelCatalog from "@t3tools/provider-core/server/ModelCatalog";
 import { applyCodexModelCatalog } from "../codexModelCatalog.ts";
+import {
+  ProviderAdapterCapabilitiesError,
+  ProviderAdapterOpenSessionError,
+} from "@t3tools/provider-core/server/ProviderAdapter";
+import { fromRunner } from "@t3tools/provider-core/server/textGenerationOperations";
 import type { ProviderDriver, ProviderInstance } from "@t3tools/provider-core/server/driver";
 import { withInstanceIdentity } from "@t3tools/provider-core/server/instanceIdentity";
 import { mergeProviderInstanceEnvironment } from "@t3tools/provider-core/server/instanceEnvironment";
@@ -200,8 +210,29 @@ export const CodexDriver: ProviderDriver<
       yield* HostProcess.Environment,
     );
     const environmentHome = processEnv.CODEX_HOME;
-    const homeConfig =
-      !config.homePath.trim() && environmentHome?.trim()
+    const quotaHome = config.usageProfile
+      ? pathService.join(
+          (yield* ServerConfig.ServerConfig).stateDir,
+          "codex-usage-profiles",
+          "profile-" + encodeURIComponent(instanceId),
+        )
+      : null;
+    if (quotaHome !== null) {
+      yield* fileSystem.makeDirectory(quotaHome, { recursive: true }).pipe(
+        Effect.mapError(
+          (cause) =>
+            new ProviderDriverError({
+              driver: DRIVER_KIND,
+              instanceId,
+              detail: "Could not create an isolated Codex sign-in directory.",
+              cause,
+            }),
+        ),
+      );
+    }
+    const homeConfig = quotaHome
+      ? { ...config, homePath: quotaHome, shadowHomePath: "" }
+      : !config.homePath.trim() && environmentHome?.trim()
         ? { ...config, homePath: environmentHome }
         : config;
     const homeLayout = yield* resolveCodexHomeLayout(homeConfig);
@@ -234,11 +265,13 @@ export const CodexDriver: ProviderDriver<
       config.binaryPath,
       yield* HostProcess.HomeDirectory,
     );
-    const followsSharedInstallation = CodexInstallation.isManagedCodexBinaryPath(
-      pathService.relative(installation.managedDirectory, configuredBinaryPath),
-      pathService.sep,
-      yield* HostProcess.Platform,
-    );
+    const followsSharedInstallation =
+      config.usageProfile ||
+      CodexInstallation.isManagedCodexBinaryPath(
+        pathService.relative(installation.managedDirectory, configuredBinaryPath),
+        pathService.sep,
+        yield* HostProcess.Platform,
+      );
     // Older setups stored the versioned path of MT's own install in each account.
     const sharedExecutable = followsSharedInstallation
       ? installation.acquire().pipe(
@@ -252,6 +285,102 @@ export const CodexDriver: ProviderDriver<
       binaryPath: sharedExecutable ? yield* Effect.scoped(sharedExecutable) : configuredBinaryPath,
       homePath: homeLayout.effectiveHomePath ?? "",
     } satisfies CodexSettings;
+    if (config.usageProfile) {
+      const host = yield* ProviderHost.ProviderHost;
+      const quotaEnv = {
+        ...processEnv,
+        OPENAI_API_KEY: undefined,
+        OPENAI_BASE_URL: undefined,
+        ACCESS_TOKEN: undefined,
+        T3CODE_CODEX_LAUNCH_ARGS: undefined,
+      };
+      const quotaConfig = { ...effectiveConfig, launchArgs: "" };
+      const accountLogin = {
+        ...makeCodexAccountLogin({
+          instanceId,
+          config: quotaConfig,
+          environment: quotaEnv,
+          spawner,
+        }),
+        modes: ["oauth", "deviceCode"] as const,
+      };
+      const quotaSnapshot = (value: ServerProviderDraft) =>
+        stampInstanceIdentity({
+          ...value,
+          models: [],
+          supportsTextGeneration: false,
+          ...(value.status === "ready"
+            ? { status: "warning", message: "This Codex profile is used for usage limits." }
+            : {}),
+          accountLogin: { modes: accountLogin.modes, supportsLogout: true },
+        });
+      const pending = makePendingCodexProvider(quotaConfig).pipe(Effect.map(quotaSnapshot));
+      const check = Effect.gen(function* () {
+        const settings = sharedExecutable
+          ? { ...quotaConfig, binaryPath: yield* Effect.scoped(sharedExecutable) }
+          : quotaConfig;
+        return quotaSnapshot(yield* checkCodexProviderStatus(settings, undefined, quotaEnv));
+      }).pipe(
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+        Effect.provideService(FileSystem.FileSystem, fileSystem),
+        Effect.provideService(Path.Path, pathService),
+      );
+      const snapshot = yield* makeManagedServerProvider({
+        resolveMaintenance: () =>
+          Effect.succeed({ provider: DRIVER_KIND, packageName: null, update: null }),
+        getSettings: host.settings.get,
+        streamSettings: host.settings.changes,
+        haveSettingsChanged: () => false,
+        initialSnapshot: () => pending,
+        checkProvider: check,
+      }).pipe(
+        Effect.mapError(
+          (cause) =>
+            new ProviderDriverError({
+              driver: DRIVER_KIND,
+              instanceId,
+              detail: "Could not prepare the Codex usage profile.",
+              cause,
+            }),
+        ),
+      );
+      const unavailable = "This Codex profile is used for usage limits.";
+      const rejectCapabilities = () =>
+        Effect.fail(
+          new ProviderAdapterCapabilitiesError({
+            driver: DRIVER_KIND,
+            cause: unavailable,
+          }),
+        );
+      return {
+        instanceId,
+        driverKind: DRIVER_KIND,
+        continuationIdentity,
+        enabled,
+        displayName,
+        accentColor,
+        snapshot,
+        accountLogin,
+        orchestrationAdapter: {
+          instanceId,
+          driver: DRIVER_KIND,
+          getCapabilities: rejectCapabilities,
+          planSelectionTransition: rejectCapabilities,
+          openSession: (input) =>
+            Effect.fail(
+              new ProviderAdapterOpenSessionError({
+                driver: DRIVER_KIND,
+                providerSessionId: input.providerSessionId,
+                cause: unavailable,
+              }),
+            ),
+        },
+        textGeneration: fromRunner("CodexQuotaProfile", ({ operation }) =>
+          Effect.fail(new TextGenerationError({ operation, detail: unavailable })),
+        ),
+      } satisfies ProviderInstance;
+    }
+
     const latestNativeConfig = sharedExecutable
       ? sharedExecutable.pipe(Effect.map((binaryPath) => ({ ...effectiveConfig, binaryPath })))
       : Effect.succeed(effectiveConfig);

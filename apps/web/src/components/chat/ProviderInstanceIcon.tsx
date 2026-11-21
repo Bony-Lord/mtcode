@@ -1,3 +1,5 @@
+import { GlobeIcon, NetworkIcon } from "lucide-react";
+import qwenLogo from "../../assets/model-logos/qwen-color.svg";
 import { type CSSProperties, memo } from "react";
 
 import {
@@ -88,6 +90,7 @@ export function resolveProviderInstanceAcpRegistryIconUrl(input: {
 
 export const ProviderInstanceIcon = memo(function ProviderInstanceIcon(props: {
   driverKind: ProviderDriverKind;
+  instanceId?: string | undefined;
   displayName: string;
   accentColor?: string | undefined;
   acpRegistryAgentId?: string | undefined;
@@ -113,6 +116,10 @@ export const ProviderInstanceIcon = memo(function ProviderInstanceIcon(props: {
   const badgeContent = props.badgeContent ?? "initials";
   const iconClassName = cn(props.size === "compact" && "size-3.5", props.iconClassName);
   const isAcpRegistry = props.driverKind === "acpRegistry";
+  const isQwen =
+    props.instanceId === "qwen-free" ||
+    props.instanceId === "qwen-oauth" ||
+    props.acpRegistryAgentId === "qwen-code";
   // A custom OpenAI-compatible endpoint has no brand: show its name, marked with the protocol.
   const isCustomEndpoint = props.driverKind === "openaiCompatible";
   const acpRegistryIconUrl = resolveProviderInstanceAcpRegistryIconUrl({
@@ -130,7 +137,13 @@ export const ProviderInstanceIcon = memo(function ProviderInstanceIcon(props: {
       style={accentStyle}
       data-provider-accent-color={accentColor}
     >
-      {isAcpRegistry ? (
+      {props.instanceId === "omniroute-free" ? (
+        <NetworkIcon className={cn("size-5 shrink-0", iconClassName)} aria-hidden />
+      ) : isQwen ? (
+        <img src={qwenLogo} alt="" className={cn("size-5 shrink-0", iconClassName)} />
+      ) : props.instanceId === "web-ai" ? (
+        <GlobeIcon className={cn("size-5 shrink-0", iconClassName)} aria-hidden />
+      ) : isAcpRegistry ? (
         <AcpRegistryAgentIcon
           className={cn("size-5 rounded-none bg-transparent", iconClassName)}
           fallbackClassName="size-full"

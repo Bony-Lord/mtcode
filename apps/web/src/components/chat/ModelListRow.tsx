@@ -70,6 +70,7 @@ export const ModelListRow = memo(function ModelListRow(props: {
       ) : (
         <ProviderInstanceIcon
           driverKind={props.driverKind}
+          instanceId={props.instanceId}
           displayName={props.providerDisplayName}
           accentColor={props.providerAccentColor}
           acpRegistryAgentId={props.acpRegistryAgentId}
@@ -154,16 +155,20 @@ export const ModelListRow = memo(function ModelListRow(props: {
         </div>
 
         {props.insights ? (
-          <div
-            className="flex min-w-0 gap-1 truncate pt-0.5 text-4xs text-muted-foreground"
-            title={props.insights.detail}
-          >
-            {props.insights.tags.map((tag) => (
-              <span key={tag} className="shrink-0 rounded bg-muted px-1">
-                {tag}
-              </span>
-            ))}
-          </div>
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <div className="flex min-w-0 gap-1 truncate pt-0.5 text-4xs text-muted-foreground" />
+              }
+            >
+              {props.insights.tags.map((tag) => (
+                <span key={tag} className="shrink-0 rounded bg-muted px-1">
+                  {tag}
+                </span>
+              ))}
+            </TooltipTrigger>
+            <TooltipPopup>{props.insights.detail}</TooltipPopup>
+          </Tooltip>
         ) : null}
       </div>
       <div className="flex shrink-0 items-center gap-1.5">

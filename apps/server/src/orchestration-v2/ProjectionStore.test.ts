@@ -2614,6 +2614,13 @@ const subagentRecordsSelectById = Effect.gen(function* () {
     failedSubagentsSince: DateTime.formatIso(DateTime.add(now, { minutes: 1 })),
   });
   assert.deepEqual(expiredFailures.subagents, []);
+  const quotaHistory = yield* store.getThreadRecords(threadId, ["subagents"], {
+    quotaSubagentsSince: DateTime.formatIso(DateTime.add(now, { minutes: 1 })),
+  });
+  assert.deepEqual(
+    quotaHistory.subagents.map(({ id, prompt }) => ({ id, prompt })),
+    [{ id: ids[1], prompt: "" }],
+  );
 });
 
 const recordsAt = (second: number) => DateTime.makeUnsafe(Date.UTC(2026, 0, 1, 0, 0, second));

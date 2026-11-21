@@ -30,6 +30,7 @@ import { maskMarkdownFrontmatter } from "@t3tools/shared/markdownFrontmatter";
 import { ScrollArea } from "~/components/ui/scroll-area";
 import { toastManager } from "~/components/ui/toast";
 import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
+import { useStableCallback } from "~/hooks/useStableCallback";
 import { useClientSettings } from "~/hooks/useSettings";
 import { cn } from "~/lib/utils";
 
@@ -124,7 +125,6 @@ export function AttachmentFilePreview(props: {
   const attachmentId =
     props.asset && "attachmentId" in props.asset ? props.asset.attachmentId : undefined;
   const { copyToClipboard, isCopied } = useCopyToClipboard({ target: props.name });
-  // useAssetUrlRefresh keys its callback on these objects, so they must stay cached.
   const resource =
     props.asset && "resource" in props.asset
       ? props.asset.resource
@@ -142,10 +142,13 @@ export function AttachmentFilePreview(props: {
       ? resource
       : { ...resource, disposition: "attachment" as const }
     : null;
-  const refresh = useAssetUrlRefresh(
-    props.file ? null : (props.asset?.environmentId ?? null),
-    props.file ? null : resource,
+  const refresh = useStableCallback(
+    useAssetUrlRefresh(
+      props.file ? null : (props.asset?.environmentId ?? null),
+      props.file ? null : resource,
+    ),
   );
+  const assetKey = JSON.stringify([props.asset?.environmentId, resource]);
   const prepareDownload = useAssetUrlRefresh(props.asset?.environmentId ?? null, downloadResource);
   const [saving, setSaving] = useState(false);
   const [localUrl, setLocalUrl] = useState<string | null>(null);
@@ -186,8 +189,8 @@ export function AttachmentFilePreview(props: {
     return () => {
       cancelled = true;
     };
-    // oxlint-disable-next-line react/exhaustive-effect-dependencies -- Retry must reauthorize the remote file.
-  }, [props.file, refresh, revision]);
+    // oxlint-disable-next-line react/exhaustive-effect-dependencies -- The asset key and retry revision identify the external authorization request.
+  }, [props.file, assetKey, refresh, revision]);
   const url = props.file ? localUrl : remoteUrl;
   const streamsText =
     kind === "text" &&

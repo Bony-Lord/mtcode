@@ -5,6 +5,7 @@ import { page, userEvent } from "vite-plus/test/browser";
 import "~/index.css";
 import { act, render, stubGlobal } from "../../../test/render";
 import { ToastProvider } from "../ui/toast";
+import { DesktopUpdateReview } from "./DesktopUpdateReview";
 import { SidebarUpdatePill } from "./SidebarUpdatePill";
 import type { UpdateEverythingRow } from "./updateEverything.logic";
 
@@ -94,6 +95,36 @@ function publish(update: DesktopUpdateState | null) {
 const releaseNotes = () => document.querySelector('[aria-label="Update release notes"]');
 
 describe("SidebarUpdatePill release notes", () => {
+  it("shows the changes before downloading and installs only the reviewed version", async () => {
+    const offer = nightlyUpdate(RELEASE_NOTES);
+    const downloaded = {
+      ...offer,
+      status: "downloaded",
+      downloadedVersion: offer.availableVersion,
+    };
+    const downloadUpdate = vi
+      .fn()
+      .mockResolvedValue({ completed: true, accepted: true, state: downloaded });
+    const installUpdate = vi
+      .fn()
+      .mockResolvedValue({ completed: true, accepted: true, state: downloaded });
+    using _bridge = stubGlobal("desktopBridge", { downloadUpdate, installUpdate });
+    setup(offer);
+    await using screen = await render(
+      <ToastProvider>
+        <SidebarUpdatePill />
+        <DesktopUpdateReview />
+      </ToastProvider>,
+    );
+    await screen.getByRole("button", { name: /ready to download/ }).click();
+    const dialog = page.getByRole("dialog");
+    await expect.element(dialog.getByText("Faster sidebar.")).toBeVisible();
+    expect(downloadUpdate).not.toHaveBeenCalled();
+    await dialog.getByRole("button", { name: "Установить" }).click();
+    expect(downloadUpdate).toHaveBeenCalledWith(offer.availableVersion);
+    await vi.waitFor(() => expect(installUpdate).toHaveBeenCalledWith(offer.availableVersion));
+  });
+
   it("shows the version and changes after a manual check even when download has started", async () => {
     const offer = nightlyUpdate([
       {

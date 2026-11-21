@@ -162,6 +162,7 @@ export function attachVideoThumbnail(video: HTMLVideoElement, file: File): () =>
 export function buildExpandedImagePreview(
   images: ReadonlyArray<ChatImageAttachment | ComposerFileAttachment>,
   selectedImageId: string,
+  assetEnvironmentId?: EnvironmentId,
 ): ExpandedImagePreview | null {
   const selected = images.find((image) => image.id === selectedImageId);
   if (selected?.type === "file" && selected.file && isVideoAttachment(selected)) {
@@ -203,6 +204,19 @@ export function buildExpandedImagePreview(
       name: image.name,
       mimeType: image.mimeType,
       ...(image.source?.kind === "snap-shot" ? { source: image.source } : {}),
+      ...(assetEnvironmentId && !/^(blob|data):/.test(image.src)
+        ? {
+            actionsSource: {
+              kind: "image" as const,
+              name: image.name,
+              src: image.src,
+              asset: {
+                environmentId: assetEnvironmentId,
+                resource: { _tag: "attachment" as const, attachmentId: image.id },
+              },
+            },
+          }
+        : {}),
     })),
     index: selectedIndex,
   };
