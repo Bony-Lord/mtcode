@@ -55,7 +55,6 @@ import {
   usePaceMark,
   useResetCredit,
 } from "./UsageLimits";
-import { ConnectCodexLimits } from "./ConnectCodexLimits";
 
 function accountInitials(email: string): string {
   const [local = "", domain = ""] = email.split("@");
@@ -650,7 +649,10 @@ function accountLimitRows(
     const profiles = providers.filter(
       (provider) =>
         !provider.instanceId.startsWith("codex-quota-") &&
-        (includeAll || (provider.enabled && provider.auth.status === "authenticated")),
+        (includeAll ||
+          (provider.enabled &&
+            (provider.auth.status === "authenticated" ||
+              Boolean(provider.usageLimits?.windows.length)))),
     );
     const resolved = profiles.map((profile) => ({
       profile,
@@ -699,7 +701,13 @@ function AccountLimitList({
     <ul className="divide-y divide-border/60 border-t px-3.5">
       {accounts.map(({ environmentId, environmentLabel, profile, source }) => {
         const limits = source.usageLimits;
-        const windows = profile.enabled && limits && !limits.unavailable ? limits.windows : [];
+        const windows =
+          profile.enabled && limits && !limits.unavailable
+            ? limits.windows.filter(
+                (window) =>
+                  window.observedUntil === undefined || Date.parse(window.observedUntil) > now,
+              )
+            : [];
         const name = resolveProviderInstanceDisplayName(profile);
         const externalUsage = profile.usageLimits?.externalUsage;
         return (
@@ -735,11 +743,6 @@ function AccountLimitList({
                       ? "Не удалось обновить лимиты"
                       : "Числовые лимиты пока недоступны"}
                 </span>
-                {profile.enabled &&
-                profile.auth.subscriptionSharing &&
-                profile.auth.status === "authenticated" ? (
-                  <ConnectCodexLimits environmentId={environmentId} profile={profile} />
-                ) : null}
                 {externalUsage ? (
                   <Button
                     variant="ghost-muted"

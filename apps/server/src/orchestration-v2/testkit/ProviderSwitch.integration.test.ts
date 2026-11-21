@@ -1,5 +1,6 @@
 import { vi } from "vite-plus/test";
 import { historyResponseItems } from "@t3tools/provider-core/server/handoffBudget";
+import { NodeCrypto, NodeServices } from "@effect/platform-node";
 import { assert, describe, it } from "@effect/vitest";
 import {
   CommandId,
@@ -3485,7 +3486,10 @@ describe("orchestration v2 provider switching", () => {
           );
           assert.notEqual(turnFor("beta").providerThreadId, turnFor("alpha").providerThreadId);
           assert.notEqual(turnFor("beta").nativeThreadId, turnFor("alpha").nativeThreadId);
-          assert.equal(turnFor("beta").text, "Prompt beta");
+          assert.equal(
+            turnFor("beta").text.replace(/^<mt_work_profile\b[\s\S]*?<\/mt_work_profile>\n\n/u, ""),
+            "Prompt beta",
+          );
           if (queued) {
             assert.equal(turnFor("gamma").providerThreadId, turnFor("beta").providerThreadId);
           }
@@ -3741,6 +3745,172 @@ describe("orchestration v2 provider switching", () => {
     }),
   );
 
+  it.live("continues the fresh Codex thread after SQLite recovery and queued delivery", () =>
+    Effect.gen(function* () {
+      const cwd = yield* checkpointWorkspace("fresh-codex-restart");
+      const databaseLayer = SqlitePersistence.layerFromPath(`${cwd}/state.sqlite`).pipe(
+        Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+      );
+      const capturedTurns = yield* Ref.make<ReadonlyArray<CapturedTurn>>([]);
+      const resumedIds = yield* Ref.make<ReadonlyArray<string | undefined>>([]);
+      const started = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const layerRegistry = ProviderAdapterRegistry.layerFromAdapters([
+        makeTestAdapter({
+          instanceId: CODEX_MODEL_SELECTION.instanceId,
+          driver: CODEX_DRIVER,
+          capabilities: CodexProviderCapabilitiesV2,
+          modelSelection: CODEX_MODEL_SELECTION,
+          responseByRunOrdinal: {},
+          capturedTurns,
+          nativeThreadGeneration: yield* Ref.make(0),
+          beforeResume: (providerThread) =>
+            Ref.update(resumedIds, (ids) => [
+              ...ids,
+              providerThread.nativeThreadRef?.nativeId ?? undefined,
+            ]),
+          holdFirstTurn: started,
+          releaseFirstTurn: release,
+          holdRunOrdinal: 3,
+        }),
+      ]);
+      const id = ThreadId.make("thread:fresh-codex-restart");
+      const scenario = {
+        name: "fresh-codex-restart",
+        runtimePolicyOverride: { cwd },
+      };
+      const send = (name: string, freshContext = false) =>
+        Orchestrator.OrchestratorV2.use((orchestrator) =>
+          orchestrator.dispatch({
+            type: "message.dispatch",
+            createdBy: "user",
+            creationSource: "web",
+            commandId: CommandId.make(`command:fresh-codex-restart:${name}`),
+            threadId: id,
+            messageId: MessageId.make(`message:fresh-codex-restart:${name}`),
+            text: name,
+            attachments: [],
+            ...(freshContext ? { freshContext } : {}),
+            dispatchMode: { type: "queue_after_active" },
+          }),
+        );
+      const updateOldProviderThread = (providerThread: OrchestrationV2ProviderThread) =>
+        EventSink.EventSinkV2.use((sink) =>
+          DateTime.now.pipe(
+            Effect.flatMap((now) =>
+              sink.write({
+                events: [
+                  {
+                    id: EventId.make(`event:fresh-codex-restart:${providerThread.status}`),
+                    type: "provider-thread.updated",
+                    threadId: id,
+                    occurredAt: now,
+                    payload: { ...providerThread, updatedAt: now },
+                  },
+                ],
+              }),
+            ),
+          ),
+        );
+      const [oldThreadId, freshThreadId] = yield* Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+        yield* orchestrator.dispatch({
+          type: "thread.create",
+          createdBy: "user",
+          creationSource: "web",
+          commandId: CommandId.make("command:fresh-codex-restart:create"),
+          threadId: id,
+          projectId: ProjectId.make("project:fresh-codex-restart"),
+          title: "Fresh Codex restart",
+          modelSelection: CODEX_MODEL_SELECTION,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: cwd,
+        });
+        yield* send("old");
+        yield* worker.drain();
+        yield* waitForIdle(id);
+        const before = yield* orchestrator.getThreadProjection(id);
+        const oldThread = before.providerThreads.find(
+          (entry) => entry.id === before.thread.activeProviderThreadId,
+        )!;
+        yield* updateOldProviderThread({ ...oldThread, status: "active" });
+        yield* send("fresh", true);
+        yield* worker.drain();
+        yield* waitForIdle(id);
+        const saved = yield* orchestrator.getThreadProjection(id);
+        assert.equal(
+          saved.providerThreads.find((entry) => entry.id === oldThread.id)?.status,
+          "active",
+        );
+        assert.notEqual(saved.thread.activeProviderThreadId, oldThread.id);
+        return [oldThread.id, saved.thread.activeProviderThreadId] as const;
+      }).pipe(
+        Effect.provide(
+          ProviderReplayHarness.layerWithRegistry(scenario, layerRegistry, { databaseLayer }),
+        ),
+      );
+
+      yield* Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+        const recovered = yield* orchestrator.getThreadProjection(id);
+        const oldThread = recovered.providerThreads.find((entry) => entry.id === oldThreadId)!;
+        assert.equal(oldThread.status, "idle");
+        assert.equal(recovered.thread.activeProviderThreadId, freshThreadId);
+        const sink = yield* EventSink.EventSinkV2;
+        const throughSequence = yield* sink.latestSequence({ threadId: id });
+        const recoveredUpdate = yield* sink.stream({ threadId: id, afterSequence: 0 }).pipe(
+          Stream.takeUntil(({ sequence }) => sequence === throughSequence),
+          Stream.filter(
+            ({ event }) =>
+              event.type === "provider-thread.updated" &&
+              event.payload.id === oldThreadId &&
+              event.preserveActiveProviderThread === true,
+          ),
+          Stream.runHead,
+        );
+        assert.equal(recoveredUpdate._tag, "Some");
+
+        // An existing SQLite projection can still carry the pointer written by an older server.
+        yield* updateOldProviderThread(oldThread);
+        assert.equal(
+          (yield* orchestrator.getThreadProjection(id)).thread.activeProviderThreadId,
+          oldThreadId,
+        );
+        yield* send("manual after restart");
+        yield* Deferred.await(started);
+        yield* send("queued follow-up");
+        const queued = (yield* orchestrator.getThreadProjection(id)).runs.at(-1)!;
+        assert.equal(queued.status, "queued");
+        assert.equal(queued.providerThreadId, freshThreadId);
+        yield* Deferred.succeed(release, undefined);
+        yield* worker.drain();
+        yield* waitForIdle(id);
+
+        const [old, fresh, manual, delivered] = yield* Ref.get(capturedTurns);
+        assert.isString(fresh?.nativeThreadId);
+        assert.notEqual(old?.nativeThreadId, fresh?.nativeThreadId);
+        assert.equal(manual?.nativeThreadId, fresh?.nativeThreadId);
+        assert.equal(delivered?.nativeThreadId, fresh?.nativeThreadId);
+        const resumed = yield* Ref.get(resumedIds);
+        assert.isNotEmpty(resumed);
+        assert.isTrue(resumed.every((nativeId) => nativeId === fresh?.nativeThreadId));
+        assert.isTrue(manual?.nativeThreadHasTurns);
+        assert.isTrue(delivered?.nativeThreadHasTurns);
+      }).pipe(
+        Effect.provide(
+          ProviderReplayHarness.layerWithRegistry(scenario, layerRegistry, {
+            databaseLayer,
+            recoverOnStartup: true,
+          }),
+        ),
+      );
+    }),
+  );
+
   it.live("keeps the thread a queued fresh run reserved for that run", () =>
     Effect.gen(function* () {
       const cwd = yield* checkpointWorkspace("fresh-context-reserved");
@@ -3828,7 +3998,10 @@ describe("orchestration v2 provider switching", () => {
         assert.notEqual(turnFor("gamma").providerThreadId, turnFor("zero").providerThreadId);
         assert.notEqual(turnFor("delta").providerThreadId, turnFor("gamma").providerThreadId);
         assert.notEqual(turnFor("delta").nativeThreadId, turnFor("gamma").nativeThreadId);
-        assert.equal(turnFor("delta").text, "Prompt delta");
+        assert.equal(
+          turnFor("delta").text.replace(/^<mt_work_profile\b[\s\S]*?<\/mt_work_profile>\n\n/u, ""),
+          "Prompt delta",
+        );
       }).pipe(
         Effect.provide(
           ProviderReplayHarness.layerWithRegistry(

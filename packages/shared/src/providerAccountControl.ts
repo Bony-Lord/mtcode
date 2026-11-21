@@ -6,7 +6,11 @@ import {
   type ServerProvider,
   isProviderAvailable,
 } from "@t3tools/contracts";
-import { exhaustedUsageWindow, remainingPercent } from "./usageLimits.ts";
+import {
+  exhaustedAccountUsageWindow,
+  remainingPercent,
+  usageWindowApplies,
+} from "./usageLimits.ts";
 
 /** A different saved login, same driver and model, with a fresh known allowance. */
 export function availableAccountForModel(
@@ -24,8 +28,6 @@ export function availableAccountForModel(
       const chatGptAccount =
         provider.driver === "codex" &&
         (provider.auth.type === "chatgpt" || provider.auth.subscriptionSharing === true);
-      const externalAllowance =
-        provider.auth.subscriptionSharing === true && limits?.unavailable?.reason === "unsupported";
       return (
         provider.instanceId !== current.instanceId &&
         provider.driver === current.driver &&
@@ -43,10 +45,13 @@ export function availableAccountForModel(
         (config === undefined || resolveProviderInstanceEnabled(config)) &&
         provider.models.some((entry) => entry.slug === model) &&
         limits !== undefined &&
-        (externalAllowance || (!limits.unavailable && limits.windows.length > 0)) &&
+        !limits.unavailable &&
+        limits.windows.some(
+          (window) => window.observedUntil === undefined && usageWindowApplies(window, model),
+        ) &&
         now - Date.parse(limits.checkedAt) >= 0 &&
         now - Date.parse(limits.checkedAt) < 5 * 60_000 &&
-        !exhaustedUsageWindow(provider, now, model) &&
+        !exhaustedAccountUsageWindow(provider, providers, now, model) &&
         (!current.auth.email ||
           provider.auth.email?.toLowerCase() !== current.auth.email.toLowerCase()) &&
         (!current.usageLimits?.credentialFingerprint ||

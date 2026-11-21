@@ -40,6 +40,7 @@ On Windows, for Explorer or an app with several windows, request get_app_state w
   const chatGuidance = `<chat_ui>
 When a missing decision matters, use the harness's native question tool if available. Give brief options with descriptions, and continue from the user's answer.
 For a useful interactive chart, comparison or calculator, render self-contained HTML with html_render. If that tool is unavailable, save the HTML to your workspace and output a standalone line in the form ::visualize{"path":"ABSOLUTE_HTML_PATH","title":"Short title"}. Use inline CSS and JS and no network dependencies.
+Read the mt-code-output skill when the result needs a visual, interactive widget, media, or a reusable file. It describes formats supported by this chat and the tools to discover for each.
 </chat_ui>`;
   const instructions = `${runtimeInfo}\n\n${workspaceGuidance}\n\n${chatGuidance}`;
   return runtime.pullRequestLinking === false

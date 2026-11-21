@@ -212,25 +212,35 @@ export function LimitWindows({
           : "grid grid-cols-[11rem_minmax(0,1fr)_7rem] gap-x-4 gap-y-1"
       }
     >
-      {windows.map((window) => {
-        const pace = paceOf(window, now);
-        const resetsIn = formatResetsIn(window, now);
-        return (
-          <Fragment key={window.id}>
-            <span className="flex min-w-0 items-center gap-2 text-xs">
-              <span className="truncate text-muted-foreground">{window.label}</span>
-              <span className="ms-auto shrink-0 font-medium text-foreground tabular-nums">
-                {remainingPercent(window)}% left
+      {windows
+        .filter(
+          (window) => window.observedUntil === undefined || Date.parse(window.observedUntil) > now,
+        )
+        .map((window) => {
+          const pace = paceOf(window, now);
+          const resetsIn = formatResetsIn(window, now);
+          return (
+            <Fragment key={window.id}>
+              <span className="flex min-w-0 items-center gap-2 text-xs">
+                <span className="truncate text-muted-foreground">{window.label}</span>
+                {window.observedUntil === undefined ? (
+                  <span className="ms-auto shrink-0 font-medium text-foreground tabular-nums">
+                    {remainingPercent(window)}% left
+                  </span>
+                ) : null}
               </span>
-            </span>
-            <WindowBar color={color} window={window} now={now} />
-            <span className="flex items-center gap-2 text-xs whitespace-nowrap text-muted-foreground tabular-nums">
-              {pace ? <PaceIcon pace={pace} /> : null}
-              <span className="ms-auto shrink-0">{resetsIn ?? ""}</span>
-            </span>
-          </Fragment>
-        );
-      })}
+              {window.observedUntil === undefined ? (
+                <WindowBar color={color} window={window} now={now} />
+              ) : (
+                <span className="text-xs text-muted-foreground">Лимит исчерпан</span>
+              )}
+              <span className="flex items-center gap-2 text-xs whitespace-nowrap text-muted-foreground tabular-nums">
+                {pace ? <PaceIcon pace={pace} /> : null}
+                <span className="ms-auto shrink-0">{resetsIn ?? ""}</span>
+              </span>
+            </Fragment>
+          );
+        })}
     </div>
   );
 }

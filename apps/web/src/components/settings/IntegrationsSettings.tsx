@@ -10,8 +10,11 @@ import {
   BROWSER_PROFILE_MAX_COUNT,
   type BrowserLinkTarget,
   type BrowserProfile,
+  type ExternalBrowserId,
+  type ExternalBrowserOption,
   BrowserSearchEngine,
   BROWSER_CUSTOM_SEARCH_URL_MAX_LENGTH,
+  DEFAULT_EXTERNAL_BROWSER,
   type EnvironmentId,
   BROWSER_PROFILE_NAME_MAX_LENGTH,
   BROWSER_RECORDING_FRAME_RATES,
@@ -42,7 +45,7 @@ import { isValidSearchUrlTemplate } from "@t3tools/shared/preview";
 import { PREVIEW_VIEWPORT_PRESETS } from "@t3tools/shared/previewViewport";
 import { MoreVertical, Plus as PlusIcon } from "lucide-react";
 import * as Schema from "effect/Schema";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { ScreenRotationIcon } from "~/browser/ScreenRotationIcon";
 import { resolveEnvironmentOptionLabel } from "~/components/BranchToolbar.logic";
@@ -698,6 +701,102 @@ function BrowserLinkTargetSetting({ disabled }: { readonly disabled: boolean }) 
         </Select>
       }
     />
+  );
+}
+
+const EXTERNAL_BROWSER_LABELS: Readonly<Record<ExternalBrowserId, string>> = {
+  system: "System default",
+  chrome: "Google Chrome",
+  edge: "Microsoft Edge",
+  firefox: "Mozilla Firefox",
+  brave: "Brave",
+};
+
+function ExternalBrowserSettings({ disabled }: { readonly disabled: boolean }) {
+  const browser = useClientSettings((settings) => settings.externalBrowser);
+  const privateWindow = useClientSettings((settings) => settings.externalBrowserPrivate);
+  const updateSettings = useUpdateScopedSettings();
+  const [installed, setInstalled] = useState<readonly ExternalBrowserOption[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const bridge = window.desktopBridge;
+    if (!bridge?.listExternalBrowsers) return;
+    void bridge
+      .listExternalBrowsers()
+      .then((browsers) => {
+        if (!cancelled) setInstalled(browsers);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const options: ExternalBrowserOption[] = [
+    { id: "system", name: EXTERNAL_BROWSER_LABELS.system },
+    ...installed.filter((option) => option.id !== "system"),
+  ];
+  if (!options.some((option) => option.id === browser)) {
+    options.push({
+      id: browser,
+      name: `${EXTERNAL_BROWSER_LABELS[browser]} (not installed)`,
+    });
+  }
+
+  return (
+    <>
+      <SettingsRow
+        {...searchableSetting("external-browser")}
+        devicePreference
+        description="Which browser opens website links and provider sign-in pages. The in-app browser and remote or web clients are unaffected."
+        resetAction={
+          !disabled && browser !== DEFAULT_EXTERNAL_BROWSER ? (
+            <SettingResetButton
+              label="external browser"
+              onClick={() => updateSettings({ externalBrowser: DEFAULT_EXTERNAL_BROWSER })}
+            />
+          ) : null
+        }
+        control={
+          <Select
+            disabled={disabled}
+            value={browser}
+            onValueChange={(value) => {
+              if (typeof value === "string" && value in EXTERNAL_BROWSER_LABELS) {
+                updateSettings({ externalBrowser: value as ExternalBrowserId });
+              }
+            }}
+          >
+            <SelectTrigger size="sm" className="w-full sm:w-44" aria-label="External browser">
+              <SelectValue>{EXTERNAL_BROWSER_LABELS[browser]}</SelectValue>
+            </SelectTrigger>
+            <SelectPopup align="end" alignItemWithTrigger={false}>
+              {options.map((option) => (
+                <SelectItem hideIndicator key={option.id} value={option.id}>
+                  {option.name}
+                </SelectItem>
+              ))}
+            </SelectPopup>
+          </Select>
+        }
+      />
+      <SettingsRow
+        {...searchableSetting("external-browser-private")}
+        devicePreference
+        description="Open external links and sign-in pages in a private window. If no private window is available, the link is not opened in a normal window."
+        control={
+          <Switch
+            disabled={disabled}
+            checked={privateWindow}
+            aria-label="Open external links in a private window"
+            onCheckedChange={(checked) =>
+              updateSettings({ externalBrowserPrivate: Boolean(checked) })
+            }
+          />
+        }
+      />
+    </>
   );
 }
 
@@ -1605,6 +1704,7 @@ export function BrowserSettingsPanel() {
         <SettingsUnavailableGroup message={desktopOnlyMessage}>
           <BrowserProfilesSetting disabled={desktopOnly} />
           <BrowserLinkTargetSetting disabled={desktopOnly} />
+          <ExternalBrowserSettings disabled={desktopOnly} />
           <BrowserAutoShowFloatingPreviewSetting disabled={desktopOnly} />
         </SettingsUnavailableGroup>
         {/* Not desktop-only: web clients search from server-run browser tabs too. */}

@@ -389,6 +389,7 @@ export function applyOrchestrationV2ProjectionEvent(
         ...base,
         thread:
           event.payload.appThreadId === base.thread.id &&
+          event.preserveActiveProviderThread !== true &&
           !isQueuedProviderThreadPlaceholder(event.payload)
             ? { ...base.thread, activeProviderThreadId: event.payload.id }
             : base.thread,

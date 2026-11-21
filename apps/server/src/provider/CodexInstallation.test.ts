@@ -9,6 +9,7 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Hex from "effect/encoding/Hex";
 import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
 import * as Option from "effect/Option";
 import * as PlatformError from "effect/PlatformError";
 import * as Exit from "effect/Exit";
@@ -144,6 +145,42 @@ const terminalState = (installation: CodexInstallation.CodexInstallation["Servic
     Stream.runHead,
     Effect.map(Option.getOrThrow),
   );
+
+it.effect("account setup adopts a compatible managed executable without a download", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const platform = yield* HostProcess.Platform;
+    const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-codex-reuse-" });
+    const tools = path.join(baseDir, "tools", "codex");
+    const version = "0.156.0";
+    const runtime = path.join(tools, version);
+    const suffix = platform === "win32" ? ".exe" : "";
+    const entrypoint = `bin/codex${suffix}`;
+    const files = [entrypoint, `bin/codex-code-mode-host${suffix}`, `codex-path/rg${suffix}`];
+    for (const name of files) {
+      const file = path.join(runtime, name);
+      yield* fs.makeDirectory(path.dirname(file), { recursive: true });
+      yield* fs.writeFileString(file, "fixture", { mode: 0o755 });
+    }
+    yield* fs.writeFileString(
+      path.join(runtime, "codex-package.json"),
+      `{"layoutVersion":1,"version":"${version}","target":"${asset.target}","entrypoint":"${entrypoint}"}`,
+    );
+    yield* fs.writeFileString(
+      path.join(runtime, ".install-complete.json"),
+      `{"version":"${version}","target":"${asset.target}","sha256":"fixture"}`,
+    );
+    yield* fs.writeFileString(path.join(tools, "active.json"), `{"version":"${version}"}`);
+    const harness = yield* makeHarness({ baseDir, platform });
+    expect(yield* harness.installation.ensureInstalled).toMatchObject({
+      installedVersion: version,
+      operationId: null,
+      phase: "succeeded",
+    });
+    expect(harness.downloads()).toBe(0);
+  }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
+);
 
 it.effect.each(["0.156.0", "0.156.1", "0.156.2", "0.157.0"])(
   "reuses installed Codex %s without downloading or taking ownership of it",
@@ -364,7 +401,7 @@ it.effect("requires an update before running an older activated managed installa
   }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );
 
-it.effect("updates an older supported managed installation to the pinned release on startup", () =>
+it.effect("reuses an older supported managed installation until an update is requested", () =>
   Effect.gen(function* () {
     const first = yield* makeHarness();
     yield* first.installation.start;
@@ -384,7 +421,14 @@ it.effect("updates an older supported managed installation to the pinned release
       '{"version":"0.156.0"}',
     );
     const restarted = yield* makeHarness({ baseDir: first.baseDir });
-    expect((yield* restarted.installation.state).operationId).not.toBeNull();
+    expect((yield* restarted.installation.resolve()).version).toBe("0.156.0");
+    expect(yield* restarted.installation.ensureInstalled).toMatchObject({
+      phase: "succeeded",
+      installedVersion: "0.156.0",
+      operationId: null,
+    });
+    expect(restarted.downloads()).toBe(0);
+    yield* restarted.installation.start;
     expect((yield* terminalState(restarted.installation)).phase).toBe("succeeded");
     expect((yield* restarted.installation.resolve()).version).toBe("0.156.1");
     expect(restarted.downloads()).toBe(1);

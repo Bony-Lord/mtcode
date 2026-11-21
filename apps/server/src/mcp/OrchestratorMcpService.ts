@@ -1,5 +1,5 @@
 import { isSmartModel, selectSmartModel } from "@t3tools/shared/smartModelRouting";
-import { accountUsageBudgetBlock } from "@t3tools/shared/usageLimits";
+import { accountUsageBudgetBlock, exhaustedAccountUsageWindow } from "@t3tools/shared/usageLimits";
 import { AUTO_ESCALATION_PREFIX, resolveAgentWorkModes } from "@t3tools/shared/agentWorkProfiles";
 import { delegatedQuotaCooldown, DELEGATED_QUOTA_COOLDOWN_MS } from "./delegatedQuotaCooldown.ts";
 import {
@@ -8,6 +8,7 @@ import {
   isProviderAvailable,
   MessageId,
   type ModelSelection,
+  type ProviderInstanceId,
   NodeId,
   ORCHESTRATOR_MCP_RUNNING_TASK_NEXT,
   TurnItemId,
@@ -1529,9 +1530,26 @@ const make = Effect.gen(function* () {
     readonly providers: ReadonlyArray<ServerProvider>;
     /** Receipt replays bypass current settings because they start no work. Dispatch must reuse the checked command ID. */
     readonly skipProjectEnablementFilter?: boolean;
+    readonly quotaBlockedInstances?: ReadonlySet<ProviderInstanceId>;
   }): Effect.fn.Return<ResolvedTarget, OrchestratorMcpFailure> {
     const requestedInstanceId = input.target?.providerInstanceId;
     const requestedDriver = input.target?.driverKind;
+    const requestedModel = input.target?.model;
+    const inheritedSelection = input.parent.thread.modelSelection;
+    const now = DateTime.toEpochMillis(yield* DateTime.now);
+    const modelFor = (provider: ServerProvider) =>
+      requestedModel ??
+      (provider.instanceId === inheritedSelection.instanceId
+        ? inheritedSelection.model
+        : provider.models.find(
+            (entry) =>
+              input.skipProjectEnablementFilter ||
+              !exhaustedAccountUsageWindow(provider, input.providers, now, entry.slug),
+          )?.slug);
+    const quotaExhausted = (provider: ServerProvider, model: string) =>
+      !input.skipProjectEnablementFilter &&
+      (input.quotaBlockedInstances?.has(provider.instanceId) ||
+        exhaustedAccountUsageWindow(provider, input.providers, now, model) !== undefined);
     const orchestrationCapableInstanceIds = yield* loadOrchestrationCapableInstanceIds();
     let instanceId = requestedInstanceId;
 
@@ -1547,9 +1565,18 @@ const make = Effect.gen(function* () {
           `No V2 provider adapter is registered for driver ${requestedDriver}.`,
         );
       }
-      const healthyCandidates = candidates.filter(
-        (candidate) => providerConstraints(candidate, true).length === 0,
-      );
+      const healthyCandidates = candidates.filter((candidate) => {
+        const model = modelFor(candidate);
+        return (
+          providerConstraints(candidate, true).length === 0 &&
+          model !== undefined &&
+          (requestedModel === undefined ||
+            isSmartModel(requestedModel) ||
+            candidate.models.length === 0 ||
+            advertisedModel(candidate, requestedModel) !== undefined) &&
+          !quotaExhausted(candidate, model)
+        );
+      });
       const inheritedCandidate = healthyCandidates.find(
         (candidate) => candidate.instanceId === input.parent.thread.modelSelection.instanceId,
       );
@@ -1604,13 +1631,7 @@ const make = Effect.gen(function* () {
       );
     }
 
-    const inheritedSelection = input.parent.thread.modelSelection;
-    const requestedModel = input.target?.model;
-    const model =
-      requestedModel ??
-      (instanceId === inheritedSelection.instanceId
-        ? inheritedSelection.model
-        : provider.models[0]?.slug);
+    const model = modelFor(provider);
     if (model === undefined) {
       return yield* failure(
         "model_unavailable",
@@ -1618,6 +1639,12 @@ const make = Effect.gen(function* () {
       );
     }
     if (requestedModel !== undefined) yield* requireAdvertisedModel(provider, requestedModel);
+    if (quotaExhausted(provider, model)) {
+      return yield* failure(
+        "provider_unavailable",
+        `Provider ${instanceId} has reached its usage limit for ${model}.`,
+      );
+    }
     const advertised = advertisedModel(provider, model);
     const routingSettings = yield* serverSettings.getSettings.pipe(
       Effect.mapError(
@@ -1628,13 +1655,7 @@ const make = Effect.gen(function* () {
           }),
       ),
     );
-    const budget = accountUsageBudgetBlock(
-      provider,
-      input.providers,
-      routingSettings,
-      DateTime.toEpochMillis(yield* DateTime.now),
-      model,
-    );
+    const budget = accountUsageBudgetBlock(provider, input.providers, routingSettings, now, model);
     if (budget) return yield* failure("provider_unavailable", budget.message);
     const descriptors = advertised?.capabilities?.optionDescriptors;
     const requestedOptions = withLegacyUltracodeEffort(descriptors, input.target?.options);
@@ -2567,6 +2588,7 @@ const make = Effect.gen(function* () {
         Effect.mapError(() => failure("orchestration_error", "Unable to read server settings.")),
       );
       const inherited = parent?.thread.modelSelection;
+      const now = DateTime.toEpochMillis(yield* DateTime.now);
       const searchTerms = input.search?.toLowerCase().split(/\s+/).filter(Boolean) ?? [];
       return {
         parentThreadId: parent?.thread.id ?? null,
@@ -2591,12 +2613,20 @@ const make = Effect.gen(function* () {
               parent.thread.projectId,
               provider.instanceId,
             );
-          const constraints = providerConstraints(
-            enabledForCaller ? provider : { ...provider, enabled: false },
-            orchestrationCapableInstanceIds.has(provider.instanceId),
+          const availableModels = provider.models.filter(
+            (model) => !exhaustedAccountUsageWindow(provider, providers, now, model.slug),
           );
+          const constraints = [
+            ...providerConstraints(
+              enabledForCaller ? provider : { ...provider, enabled: false },
+              orchestrationCapableInstanceIds.has(provider.instanceId),
+            ),
+            ...(provider.models.length > 0 && availableModels.length === 0
+              ? ["All advertised models have reached their usage limits."]
+              : []),
+          ];
           const { listed, omitted } = listCapabilityModels({
-            provider,
+            provider: { ...provider, models: availableModels },
             preferences: settings.providerModelPreferences?.[provider.instanceId],
             searchTerms,
             isPinned: (model) =>
@@ -2698,6 +2728,18 @@ const make = Effect.gen(function* () {
         ),
       );
       const modes = resolveAgentWorkModes(settings, parent.thread.projectId);
+      const now = DateTime.toEpochMillis(yield* DateTime.now);
+      const blocked = isRetryOfAcceptedDelegation
+        ? new Set<ProviderInstanceId>()
+        : delegatedQuotaCooldown(
+            (yield* loadThreadRecords(parent.thread.id, ["subagents"], {
+              failedSubagentsSince: DateTime.formatIso(
+                DateTime.makeUnsafe(now - DELEGATED_QUOTA_COOLDOWN_MS),
+              ),
+            })).subagents,
+            providers,
+            now,
+          );
       let delegatedTarget = input.target;
       if (
         !isRetryOfAcceptedDelegation &&
@@ -2705,11 +2747,6 @@ const make = Effect.gen(function* () {
         modes.some((mode) => mode === "fast" || mode === "economy" || mode === "conductor")
       ) {
         const instanceIds = yield* loadOrchestrationCapableInstanceIds();
-        const now = DateTime.toEpochMillis(yield* DateTime.now);
-        const recentTasks = yield* loadThreadRecords(parent.thread.id, ["subagents"], {
-          failedSubagentsSince: new Date(now - DELEGATED_QUOTA_COOLDOWN_MS).toISOString(),
-        });
-        const blocked = delegatedQuotaCooldown(recentTasks.subagents, providers, now);
         const routed = selectSmartModel({
           requested: { ...parent.thread.modelSelection, model: "mt-auto/economy" },
           providers: providers.filter(
@@ -2736,6 +2773,7 @@ const make = Effect.gen(function* () {
         target: delegatedTarget,
         providers,
         skipProjectEnablementFilter: isRetryOfAcceptedDelegation,
+        quotaBlockedInstances: blocked,
       });
       const runtimeMode = yield* resolveRuntimeMode(
         parent.thread.runtimeMode,

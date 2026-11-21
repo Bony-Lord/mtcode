@@ -2,6 +2,7 @@ import type { DesktopBridge, DesktopUpdateState } from "@t3tools/contracts";
 import { ExternalLinkIcon } from "lucide-react";
 
 import {
+  getDesktopUpdateOfferedVersion,
   getDesktopUpdateReleaseHistoryUrl,
   getDesktopUpdateReleaseUrl,
 } from "../desktopUpdate.logic";
@@ -58,40 +59,60 @@ function ReleaseLink({
 export function SidebarUpdateReleaseNotes({
   shell,
   state,
-  tooltip,
-}: {
+  ...presentation
+}: Readonly<{
   readonly shell: DesktopUpdateShell | undefined;
   readonly state: DesktopUpdateState;
-  readonly tooltip: string;
-}) {
+}> &
+  ({ readonly tooltip: string; readonly inline?: false } | { readonly inline: true })) {
   if (state.releaseNotes.length === 0) {
-    return <>{tooltip}</>;
+    if (!presentation.inline) return <>{presentation.tooltip}</>;
+    const releaseUrl = getDesktopUpdateReleaseUrl(getDesktopUpdateOfferedVersion(state));
+    return releaseUrl ? (
+      <ReleaseLink releaseUrl={releaseUrl} shell={shell}>
+        View release on GitHub
+      </ReleaseLink>
+    ) : null;
   }
   const releasedAt = state.releaseNotes.find(
     (releaseNote) => releaseNote.version === state.availableVersion,
   )?.releasedAt;
 
   return (
-    <div className="flex max-h-[calc(var(--available-height)-0.5rem)] min-h-0 w-fit max-w-[min(24rem,calc(100vw-2rem))] flex-col text-left text-pretty">
-      <div className="shrink-0 px-1">
-        {state.status === "available" ? (
-          <div>
-            <div className="whitespace-nowrap text-sm leading-5 font-medium">
-              Update ready to download
-            </div>
-            {state.availableVersion ? (
-              <div className="mt-0.5 text-xs leading-4 text-muted-foreground">
-                {releasedAt
-                  ? `${state.availableVersion} · ${formatReleaseAge(releasedAt)}`
-                  : state.availableVersion}
+    <div
+      className={
+        presentation.inline
+          ? "text-left text-pretty"
+          : "flex max-h-[calc(var(--available-height)-0.5rem)] min-h-0 w-fit max-w-[min(24rem,calc(100vw-2rem))] flex-col text-left text-pretty"
+      }
+    >
+      {!presentation.inline && (
+        <div className="shrink-0 px-1">
+          {state.status === "available" ? (
+            <div>
+              <div className="whitespace-nowrap text-sm leading-5 font-medium">
+                Update ready to download
               </div>
-            ) : null}
-          </div>
-        ) : (
-          <div className="text-sm leading-5 font-medium">{tooltip}</div>
-        )}
-      </div>
-      <div className="min-h-0 max-h-[min(28rem,calc(100vh-6rem))] overflow-y-auto px-1 pt-3 pb-1">
+              {state.availableVersion ? (
+                <div className="mt-0.5 text-xs leading-4 text-muted-foreground">
+                  {releasedAt
+                    ? `${state.availableVersion} · ${formatReleaseAge(releasedAt)}`
+                    : state.availableVersion}
+                </div>
+              ) : null}
+            </div>
+          ) : (
+            <div className="text-sm leading-5 font-medium">{presentation.tooltip}</div>
+          )}
+        </div>
+      )}
+      <div
+        className={
+          presentation.inline
+            ? undefined
+            : "min-h-0 max-h-[min(28rem,calc(100vh-6rem))] overflow-y-auto px-1 pt-3 pb-1"
+        }
+      >
         {state.releaseNotes.map((releaseNote, index) => {
           const releaseUrl = getDesktopUpdateReleaseUrl(releaseNote.version);
           const omittedItemCount = Math.max(0, releaseNote.totalItems - releaseNote.items.length);
@@ -121,7 +142,8 @@ export function SidebarUpdateReleaseNotes({
                 <p className="break-words text-xs leading-5 text-popover-foreground">
                   {releaseNote.intro}
                 </p>
-              ) : releaseNote.items.length > 0 ? (
+              ) : null}
+              {releaseNote.items.length > 0 ? (
                 <ul className="space-y-1.5 pl-4 text-xs leading-5 text-popover-foreground/90">
                   {keyReleaseNoteItems(releaseNote.items).map(({ item, key }) => {
                     const highlight = /^\*\*([^*]+)\*\* (.+)$/.exec(item);

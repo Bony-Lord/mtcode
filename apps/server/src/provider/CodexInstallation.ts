@@ -143,6 +143,7 @@ interface CodexInstallationService {
     version: string,
   ) => Effect.Effect<ServerProviderCompatibilityAdvisory | undefined>;
   readonly start: Effect.Effect<ProviderInstallState, CodexInstallationError>;
+  readonly ensureInstalled: Effect.Effect<ProviderInstallState, CodexInstallationError>;
   readonly cancel: (
     operationId: string,
   ) => Effect.Effect<ProviderInstallState, CodexInstallationError>;
@@ -791,63 +792,85 @@ export const makeCodexInstallation = Effect.fn("makeCodexInstallation")(function
       ),
     ),
   );
-  const start = gate
-    .withPermit(
-      Effect.gen(function* () {
-        const current = yield* SubscriptionRef.get(state);
-        if (isRunning(current)) return current;
-        if (yield* reuseLocal()) return yield* SubscriptionRef.get(state);
-        const installedVersion = yield* keptInstall(managedVersion(current));
-        const release = selectManagedRelease(installedVersion, asset, upstream);
-        if (!release && installedVersion === null) {
-          return yield* installationError(
-            "start",
-            `OpenAI does not publish a Codex runtime for ${platform}-${arch}. Use a supported remote environment or a custom executable.`,
+  const startInstallation = (reuseInstalled: boolean) =>
+    gate
+      .withPermit(
+        Effect.gen(function* () {
+          const current = yield* SubscriptionRef.get(state);
+          if (isRunning(current)) return current;
+          if (yield* reuseLocal()) return yield* SubscriptionRef.get(state);
+          if (reuseInstalled) {
+            const existing = yield* resolveManaged().pipe(Effect.option);
+            if (Option.isSome(existing)) {
+              const { version, executablePath } = existing.value;
+              const ready: ProviderInstallState = {
+                ...current,
+                ...offer(version),
+                operationId: null,
+                phase: "succeeded",
+                downloadedBytes: 0,
+                source: "managed",
+                installedVersion: version,
+                executablePath,
+                canRemove: true,
+                message: null,
+              };
+              yield* SubscriptionRef.set(state, ready);
+              return ready;
+            }
+          }
+          const installedVersion = yield* keptInstall(managedVersion(current));
+          const release = selectManagedRelease(installedVersion, asset, upstream);
+          if (!release && installedVersion === null) {
+            return yield* installationError(
+              "start",
+              `OpenAI does not publish a Codex runtime for ${platform}-${arch}. Use a supported remote environment or a custom executable.`,
+            );
+          }
+          const operationId = yield* random.uuidV4();
+          const next: ProviderInstallState = {
+            ...current,
+            operationId,
+            phase: release ? "downloading" : "verifying",
+            downloadedBytes: 0,
+            ...offer(installedVersion),
+            message: release ? "Downloading Codex." : "Checking Codex.",
+          };
+          yield* SubscriptionRef.set(state, next);
+          const work = (release ? install(release) : reverify()).pipe(
+            Effect.onExit((exit) =>
+              Exit.isFailure(exit)
+                ? SubscriptionRef.update(state, (value) => {
+                    if (value.operationId !== operationId || value.phase === "succeeded")
+                      return value;
+                    const error = Cause.findErrorOption(exit.cause);
+                    const cancelled = Cause.hasInterruptsOnly(exit.cause);
+                    return {
+                      ...value,
+                      phase: cancelled ? "cancelled" : "failed",
+                      message: cancelled
+                        ? "Installation cancelled. The previous runtime is unchanged."
+                        : Option.isSome(error)
+                          ? error.value.detail
+                          : "Could not finish the Codex installation. Check disk space and directory access.",
+                    } satisfies ProviderInstallState;
+                  })
+                : Effect.void,
+            ),
+            Effect.ignoreCause,
+            Effect.ensuring(
+              Effect.sync(() => {
+                if (running?.operationId === operationId) running = undefined;
+              }),
+            ),
           );
-        }
-        const operationId = yield* random.uuidV4();
-        const next: ProviderInstallState = {
-          ...current,
-          operationId,
-          phase: release ? "downloading" : "verifying",
-          downloadedBytes: 0,
-          ...offer(installedVersion),
-          message: release ? "Downloading Codex." : "Checking Codex.",
-        };
-        yield* SubscriptionRef.set(state, next);
-        const work = (release ? install(release) : reverify()).pipe(
-          Effect.onExit((exit) =>
-            Exit.isFailure(exit)
-              ? SubscriptionRef.update(state, (value) => {
-                  if (value.operationId !== operationId || value.phase === "succeeded")
-                    return value;
-                  const error = Cause.findErrorOption(exit.cause);
-                  const cancelled = Cause.hasInterruptsOnly(exit.cause);
-                  return {
-                    ...value,
-                    phase: cancelled ? "cancelled" : "failed",
-                    message: cancelled
-                      ? "Installation cancelled. The previous runtime is unchanged."
-                      : Option.isSome(error)
-                        ? error.value.detail
-                        : "Could not finish the Codex installation. Check disk space and directory access.",
-                  } satisfies ProviderInstallState;
-                })
-              : Effect.void,
-          ),
-          Effect.ignoreCause,
-          Effect.ensuring(
-            Effect.sync(() => {
-              if (running?.operationId === operationId) running = undefined;
-            }),
-          ),
-        );
-        const fiber = yield* Effect.forkIn(Effect.interruptible(work), serviceScope);
-        running = { operationId, fiber };
-        return next;
-      }).pipe(Effect.uninterruptible),
-    )
-    .pipe(Effect.mapError(wrapFailure("start", "Could not start the Codex installation.")));
+          const fiber = yield* Effect.forkIn(Effect.interruptible(work), serviceScope);
+          running = { operationId, fiber };
+          return next;
+        }).pipe(Effect.uninterruptible),
+      )
+      .pipe(Effect.mapError(wrapFailure("start", "Could not start the Codex installation.")));
+  const start = startInstallation(false);
 
   const cancel = Effect.fn("CodexInstallation.cancel")(function* (operationId: string) {
     return yield* gate.withPermit(
@@ -959,8 +982,7 @@ export const makeCodexInstallation = Effect.fn("makeCodexInstallation")(function
           source: "managed",
         }) satisfies ProviderInstallState,
     );
-    // A supported older runtime still resolves, so a raised pin needs its own update.
-    if (asset && compareSemverVersions(installed.version, asset.version) < 0)
+    if (kept === null && asset && compareSemverVersions(installed.version, asset.version) < 0)
       yield* start.pipe(Effect.ignore);
   }).pipe(
     Effect.catch(() =>
@@ -982,6 +1004,7 @@ export const makeCodexInstallation = Effect.fn("makeCodexInstallation")(function
     acquire,
     compatibility,
     start,
+    ensureInstalled: startInstallation(true),
     cancel,
     state: SubscriptionRef.get(state),
     changes: SubscriptionRef.changes(state),

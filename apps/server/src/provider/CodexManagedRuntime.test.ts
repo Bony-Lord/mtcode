@@ -116,6 +116,7 @@ it.live.each(
           const effective = yield* runtime.resolve;
           assert.strictEqual(leases, 1);
           assert.strictEqual(effective.config.binaryPath, executable.executablePath);
+          assert.equal(effective.modelProvider, "openai_token_sharing");
           assert.notStrictEqual(effective.config.homePath, ambient.CODEX_HOME);
           assert.equal(runtime.homeLayout.sharedHomePath, sharedHome);
           if (account === "primary") {
@@ -123,15 +124,15 @@ it.live.each(
             assert.equal(runtime.homeLayout.mode, "direct");
           } else {
             assert.include(effective.config.homePath, instanceId);
-            assert.include(effective.config.homePath, "userdata/providers/codex");
+            assert.include(effective.config.homePath, path.join("userdata", "providers", "codex"));
             assert.equal(runtime.homeLayout.mode, "authOverlay");
             assert.equal(
               yield* fs.readLink(path.join(effective.config.homePath, "sessions")),
               path.join(sharedHome, "sessions"),
             );
             assert.equal(
-              yield* fs.readLink(path.join(effective.config.homePath, "config.toml")),
-              path.join(sharedHome, "config.toml"),
+              yield* fs.readFileString(path.join(effective.config.homePath, "config.toml")),
+              "# shared config\n",
             );
             assert.isFalse(yield* fs.exists(path.join(effective.config.homePath, "auth.json")));
           }

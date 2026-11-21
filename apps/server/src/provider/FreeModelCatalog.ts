@@ -1,17 +1,25 @@
 import {
+  buildGatewayConnectionPlan,
+  gatewayModelIds,
+  gatewayPreset,
+  type GatewayConnectInput,
   type CustomModelSetting,
   ProviderInstanceId,
   ServerSettingsError,
 } from "@t3tools/contracts";
 import { writeFileStringAtomically } from "@t3tools/shared/atomicWrite";
+import { resolveCommandPath } from "@t3tools/shared/shell";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import * as Semaphore from "effect/Semaphore";
 import * as HttpClient from "effect/http/HttpClient";
 import * as HttpClientResponse from "effect/http/HttpClientResponse";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { ServerSettingsService } from "../serverSettings.ts";
+import { ServerConfig } from "../config.ts";
 
 const price = Schema.Union([Schema.String, Schema.Number]);
 const remoteModel = Schema.Struct({
@@ -51,6 +59,7 @@ const decodeConnections = Schema.decodeUnknownEffect(
     ),
   }),
 );
+const gatewayWrites = Semaphore.makeUnsafe(1);
 
 export function freeTextCatalog(models: readonly RemoteModel[]) {
   const isZero = (price: unknown) =>
@@ -66,6 +75,92 @@ export function freeTextCatalog(models: readonly RemoteModel[]) {
       ),
   );
 }
+
+export const connectGatewayPreset = Effect.fn("FreeModelCatalog.connectGatewayPreset")(function* (
+  input: GatewayConnectInput,
+) {
+  const service = yield* ServerSettingsService;
+  const config = yield* ServerConfig;
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const settings = yield* service.getSettings;
+  const preset = gatewayPreset(input.presetId);
+  const instanceId = ProviderInstanceId.make(preset.providerInstanceId);
+  const current = settings.providerInstances[instanceId];
+  const failure = (detail: string) =>
+    new ServerSettingsError({
+      settingsPath: config.settingsPath,
+      providerInstanceId: instanceId,
+      operation: "connect-gateway",
+      detail,
+    });
+  const upsert = (instance: NonNullable<typeof current>) =>
+    service.updateProviderInstance({ operation: "upsert", instanceId, instance });
+
+  if (input.presetId === "omniroute" && current?.driver === "acpRegistry") {
+    const { freeAccountPaused: _paused, ...instance } = current;
+    return yield* upsert({ ...instance, enabled: true });
+  }
+
+  const gatewayDir = path.join(config.stateDir, "gateways");
+  let configPath = path.join(gatewayDir, "local-openai.json");
+  let agent: { commandPath: string; commandArgs: string[] } | undefined;
+  if (input.presetId === "omniroute") {
+    const workspace = path.join(yield* HostProcess.HomeDirectory, ".mt", "tools", "workspace");
+    const script = path.join(workspace, "web-assistant-acp.mjs");
+    configPath = path.join(workspace, "opencode-omniroute.json");
+    const node = yield* resolveCommandPath("node").pipe(Effect.orElseSucceed(() => null));
+    const [agentExists, configExists] = yield* Effect.all([
+      fs.exists(script),
+      fs.exists(configPath),
+    ]).pipe(Effect.orElseSucceed(() => [false, false]));
+    if (!node || !agentExists || !configExists) {
+      return yield* failure("OmniRoute and its MT Code agent must be installed on this computer.");
+    }
+    agent = { commandPath: node, commandArgs: [script] };
+  } else if (gatewayModelIds(input.models ?? []).length === 0) {
+    return yield* failure("Enter at least one model ID advertised by the local endpoint.");
+  }
+
+  const result = buildGatewayConnectionPlan({ ...input, configPath, ...(agent ? { agent } : {}) });
+  if (!result.ok) return yield* failure(result.error);
+  const { plan } = result;
+  if (current && current.driver !== plan.providerInstance.driver) {
+    return yield* failure("The gateway name is already used by a different provider.");
+  }
+  const save = upsert({
+    ...current,
+    ...plan.providerInstance,
+    providerGroup: preset.label,
+  });
+  const configFile = plan.configFile;
+  if (!configFile) return yield* save;
+  const write = (contents: string) => writeFileStringAtomically({ filePath: configPath, contents });
+  return yield* gatewayWrites.withPermit(
+    Effect.gen(function* () {
+      const previous = yield* fs.exists(configPath).pipe(
+        Effect.flatMap((exists) =>
+          exists
+            ? fs.readFileString(configPath).pipe(Effect.map(Option.some))
+            : Effect.succeed(Option.none()),
+        ),
+        Effect.mapError(() => failure("Could not read the existing local gateway configuration.")),
+      );
+      yield* fs.makeDirectory(gatewayDir, { recursive: true }).pipe(
+        Effect.andThen(write(configFile.contents)),
+        Effect.mapError(() => failure("Could not save the local gateway configuration.")),
+      );
+      return yield* save.pipe(
+        Effect.onError(() =>
+          (Option.isSome(previous)
+            ? write(previous.value)
+            : fs.remove(configPath, { force: true })
+          ).pipe(Effect.ignore),
+        ),
+      );
+    }),
+  );
+});
 
 export const syncFreeModelCatalogs = Effect.fn("FreeModelCatalog.sync")(function* () {
   const service = yield* ServerSettingsService;

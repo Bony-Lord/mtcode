@@ -66,6 +66,7 @@ import {
   getWindowFullscreenState,
   openExternal,
   openPrivateExternal,
+  listExternalBrowsers,
   readMedia,
   restartAudioService,
   openSystemSettings,
@@ -182,6 +183,7 @@ export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers"
   yield* ipc.handle(showContextMenu);
   yield* ipc.handle(openExternal);
   yield* ipc.handle(openPrivateExternal);
+  yield* ipc.handle(listExternalBrowsers);
   yield* ipc.handle(computerUsePause);
   yield* ipc.handle(openTerminal);
   yield* ipc.handle(requestTerminalPermission);

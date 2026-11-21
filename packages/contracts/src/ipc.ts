@@ -13,7 +13,12 @@ import type {
 import { AuthAccessTokenResult, AuthSessionState } from "./auth.ts";
 import { AdvertisedEndpoint } from "./remoteAccess.ts";
 import { ExecutionEnvironmentDescriptor } from "./environment.ts";
-import { type ClientSettings, type QuitConfirmationMode, SnapShotShortcut } from "./settings.ts";
+import {
+  type ClientSettings,
+  type ExternalBrowserOption,
+  type QuitConfirmationMode,
+  SnapShotShortcut,
+} from "./settings.ts";
 import type { EditorId } from "./editor.ts";
 import type {
   ComputerHistoryClearScope,
@@ -1283,6 +1288,8 @@ export interface DesktopBridge {
   openExternal: (url: string) => Promise<boolean>;
   /** Opens a private browser window to choose another account without shared cookies. */
   openPrivateExternal?: (url: string) => Promise<boolean>;
+  /** Supported external browsers installed on this computer, for the link preference. */
+  listExternalBrowsers?: () => Promise<readonly ExternalBrowserOption[]>;
   computerUsePause?: (resume?: boolean) => Promise<boolean>;
   onComputerUsePauseChange?: (listener: (paused: boolean) => void) => () => void;
   /** Reads http(s) media in the main process, outside renderer CORS and CSP; null on network failure. */

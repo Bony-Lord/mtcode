@@ -1407,7 +1407,7 @@ function contextBoundaryOrdinal(
   return boundary;
 }
 
-/** The provider thread a message continues: the active one, unless a fresh-session schedule run started it. */
+/** The active conversation can differ from the provider thread last updated by background work. */
 function conversationProviderThread(
   projection: Pick<
     OrchestrationV2ThreadProjection,
@@ -1423,8 +1423,13 @@ function conversationProviderThread(
   const active = projection.providerThreads.find(
     (candidate) => candidate.id === projection.thread.activeProviderThreadId,
   );
-  if (active === undefined || !startedByScheduledFreshRun(active)) return active;
   const boundary = contextBoundaryOrdinal(projection);
+  const activeInContext =
+    active !== undefined && !providerThreadPredatesBoundary(active, boundary) ? active : undefined;
+  if (activeInContext !== undefined && !startedByScheduledFreshRun(activeInContext)) {
+    return activeInContext;
+  }
+  if (active === undefined && boundary === 0) return undefined;
   return (
     projection.providerThreads
       .filter(
@@ -1436,7 +1441,7 @@ function conversationProviderThread(
           !startedByScheduledFreshRun(candidate),
       )
       .toSorted((left, right) => (right.lastRunOrdinal ?? 0) - (left.lastRunOrdinal ?? 0))[0] ??
-    active
+    activeInContext
   );
 }
 
@@ -1669,7 +1674,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             : {}),
           images,
           escalate,
-          excludedModels: escalate
+          excludedSelections: escalate
             ? projection.runs
                 .filter(
                   (run) =>
@@ -1677,7 +1682,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                     run.status !== "queued" &&
                     run.status !== "cancelled",
                 )
-                .map((run) => run.modelSelection.model)
+                .map((run) => run.modelSelection)
             : [],
           now: nowMs,
           previous: latestExecutedRun(projection.runs)?.modelSelection,

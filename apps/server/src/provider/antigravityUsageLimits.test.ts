@@ -183,6 +183,7 @@ describe("Antigravity subscription limits", () => {
       const byId = new Map(limits.windows.map((window) => [window.id, window]));
       expect(byId.get("3p-5h")).toEqual({
         id: "3p-5h",
+        modelFamilies: ["Claude", "GPT"],
         label: "Claude & GPT (shared) · 5-hour",
         kind: "session",
         usedPercent: 0,
@@ -190,6 +191,7 @@ describe("Antigravity subscription limits", () => {
       });
       expect(byId.get("3p-weekly")).toEqual({
         id: "3p-weekly",
+        modelFamilies: ["Claude", "GPT"],
         label: "Claude & GPT (shared) · Weekly",
         kind: "weekly",
         usedPercent: 0,
@@ -376,6 +378,7 @@ describe("Antigravity subscription limits", () => {
           id: "3p-5h",
           label: "Claude & GPT (shared) · 5-hour",
           kind: "session",
+          modelFamilies: ["Claude", "GPT"],
           usedPercent: 50,
           windowDurationMins: 300,
           resetsAt: "2026-10-21T13:16:04.000Z",
@@ -384,6 +387,7 @@ describe("Antigravity subscription limits", () => {
           id: "3p-weekly",
           label: "Claude & GPT (shared) · Weekly",
           kind: "weekly",
+          modelFamilies: ["Claude", "GPT"],
           usedPercent: 0,
           windowDurationMins: 10080,
         },
@@ -413,8 +417,12 @@ describe("Antigravity subscription limits", () => {
           windowDurationMins,
         })),
       ).toEqual([
-        { id: "gemini-weekly", resetsAt: "2026-10-28T10:16:04.000Z", windowDurationMins: 10080 },
-        { id: "gemini-quota", resetsAt: "2026-10-21T15:16:04.000Z", windowDurationMins: undefined },
+        { id: "gemini-a-weekly", resetsAt: "2026-10-28T10:16:04.000Z", windowDurationMins: 10080 },
+        {
+          id: "gemini-a-quota",
+          resetsAt: "2026-10-21T15:16:04.000Z",
+          windowDurationMins: undefined,
+        },
       ]);
     }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
   );
@@ -611,8 +619,11 @@ describe("Antigravity subscription limits", () => {
         },
       });
       const limits = yield* probe;
-      expect(limits.windows).toHaveLength(2);
-      expect(limits.windows.find((window) => window.id === "gemini-quota")?.usedPercent).toBe(40);
+      expect(limits.windows).toHaveLength(3);
+      expect(limits.windows.find((window) => window.id === "gemini-b-quota")).toMatchObject({
+        usedPercent: 40,
+        modelIds: ["gemini-b"],
+      });
       expect(
         limits.windows.every(
           (window) => window.kind === "other" && window.windowDurationMins === undefined,
@@ -637,6 +648,7 @@ describe("Antigravity subscription limits", () => {
           id: "gemini-5h",
           kind: "session",
           label: "Gemini · 5-hour",
+          modelFamilies: ["Gemini"],
           usedPercent: 0,
           windowDurationMins: 300,
         },

@@ -5,9 +5,15 @@ import {
   type ServerSettings,
   resolveProjectProviderInstanceEnabled,
 } from "@t3tools/contracts";
-import { exhaustedUsageWindow, accountUsageBudgetBlock } from "./usageLimits.ts";
+import {
+  exhaustedAccountUsageWindow,
+  accountUsageBudgetBlock,
+  providerUsageDisplaySource,
+  usageWindowApplies,
+} from "./usageLimits.ts";
 import { resolveAgentWorkModes } from "./agentWorkProfiles.ts";
 import { BENCHMARK_SOURCES, DEFAULT_MODEL_BENCHMARKS, modelBenchmark } from "./modelBenchmarks.ts";
+import { modelFamily } from "./model.ts";
 
 // Terminal-Bench 4.0, Codex harness, max effort. Snapshot of the public
 // leaderboard on 2026-11-17. Scores are a tie-break for code, not a generic rank.
@@ -83,6 +89,7 @@ export function selectSmartModel(input: {
   readonly observations?: readonly RoutingObservation[];
   readonly escalate?: boolean;
   readonly excludedModels?: readonly string[];
+  readonly excludedSelections?: readonly ModelSelection[];
   readonly advice?:
     | {
         readonly task: ReturnType<typeof routingTask>;
@@ -116,6 +123,7 @@ export function selectSmartModel(input: {
     input.requested.model === "mt-auto/quality";
   const benchmarkSnapshot = input.settings.modelBenchmarkSnapshot ?? DEFAULT_MODEL_BENCHMARKS;
   const task = !trivial && deliberate && detectedTask === "quick" ? "reasoning" : detectedTask;
+  const previousFamily = input.previous ? modelFamily(input.previous.model) : undefined;
   const candidates = input.providers
     .flatMap((provider) => {
       const config = input.settings.providerInstances[provider.instanceId];
@@ -142,10 +150,18 @@ export function selectSmartModel(input: {
         (input.requested.model === "mt-auto/subscription" && tier !== "subscription")
       )
         return [];
+      const usageWindows =
+        providerUsageDisplaySource(provider, input.providers)?.usageLimits?.windows ?? [];
       return provider.models.flatMap((model) => {
         if (
           input.excludedModels?.includes(model.slug) ||
-          (input.escalate && input.previous?.model === model.slug)
+          input.excludedSelections?.some(
+            (selection) =>
+              selection.instanceId === provider.instanceId && selection.model === model.slug,
+          ) ||
+          (input.escalate &&
+            input.previous?.instanceId === provider.instanceId &&
+            input.previous.model === model.slug)
         )
           return [];
         const slug = model.slug.toLowerCase();
@@ -160,7 +176,7 @@ export function selectSmartModel(input: {
             input.now,
             model.slug,
           ) ||
-          exhaustedUsageWindow(provider, input.now, model.slug)
+          exhaustedAccountUsageWindow(provider, input.providers, input.now, model.slug)
         )
           return [];
         const recent =
@@ -207,11 +223,16 @@ export function selectSmartModel(input: {
         if (local && task !== "quick" && measured === undefined) priority -= 15;
         if (fast) priority += quality ? (small && strong ? 8 : 0) : small ? 35 : -15;
         if (economy) priority += quality ? (free && strong ? 25 : 0) : free ? 35 : -15;
-        const remaining = Math.min(
-          100,
-          ...(provider.usageLimits?.windows ?? []).map((window) => 100 - window.usedPercent),
+        if (input.escalate && previousFamily && modelFamily(model.slug) === previousFamily)
+          priority += 8;
+        const measuredWindows = usageWindows.filter(
+          (window) => window.observedUntil === undefined && usageWindowApplies(window, model.slug),
         );
-        priority -= Math.max(0, 30 - remaining);
+        const remaining =
+          measuredWindows.length > 0
+            ? Math.min(...measuredWindows.map((window) => 100 - window.usedPercent))
+            : null;
+        if (remaining !== null) priority -= Math.max(0, 30 - remaining);
         if (
           input.previous?.instanceId === provider.instanceId &&
           input.previous.model === model.slug
@@ -279,7 +300,7 @@ export function selectSmartModel(input: {
         ? { options: [{ id: reasoningOption.id, value: effort }] }
         : {}),
     },
-    reason: `${taskLabel}; ${target.local ? "локальная модель" : target.free ? "бесплатный маршрут" : "подключённая подписка"}; ${target.provider.usageLimits?.windows.length ? `остаток квоты ${Math.round(target.remaining)}%` : "числовая квота не предоставлена"}; выбор из ${candidates.length} доступных маршрутов${evidence}${advised === target && input.advice ? `; совет нейророутера: ${input.advice.reason}` : ""}`,
+    reason: `${taskLabel}; ${target.local ? "локальная модель" : target.free ? "бесплатный маршрут" : "подключённая подписка"}; ${target.remaining !== null ? `остаток квоты ${Math.round(target.remaining)}%` : "числовая квота не предоставлена"}; выбор из ${candidates.length} доступных маршрутов${evidence}${advised === target && input.advice ? `; совет нейророутера: ${input.advice.reason}` : ""}`,
     alternatives: candidates.length,
   };
 }

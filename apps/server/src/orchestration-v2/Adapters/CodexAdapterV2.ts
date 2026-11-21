@@ -16,7 +16,10 @@ import {
   type CodexTurnTokenUsageState,
 } from "../../provider/CodexTurnTokenUsage.ts";
 import type { ManagedServerProvider } from "@t3tools/provider-core/server/snapshot";
-import type { CodexEffectiveRuntime } from "../../provider/CodexManagedRuntime.ts";
+import {
+  MANAGED_CODEX_MODEL_PROVIDER,
+  type CodexEffectiveRuntime,
+} from "../../provider/CodexManagedRuntime.ts";
 import { classifyCodexManagedError } from "../../provider/CodexManagedErrors.ts";
 import {
   buildCodexInitializeParams,
@@ -1636,7 +1639,10 @@ const decodeMtQuestionChoices = Schema.decodeUnknownOption(
   }),
 );
 const decodeCodexResumeMetadata = Schema.decodeUnknownEffect(
-  Schema.Struct({ thread: Schema.Struct({ id: Schema.String, updatedAt: Schema.Number }) }),
+  Schema.Struct({
+    modelProvider: Schema.optionalKey(Schema.String),
+    thread: Schema.Struct({ id: Schema.String, updatedAt: Schema.Number }),
+  }),
 );
 
 const CodexChildSelection = Schema.Struct({
@@ -1924,7 +1930,7 @@ export const createCodexAdapterV2 = Effect.fn("CodexAdapterV2.createCodexAdapter
   { instanceId, environment, enabled, config }: ProviderAdapterDriverCreateInput<CodexSettings>,
   hooks: Pick<
     CodexAdapterV2Options,
-    "onUsageLimits" | "resolveRuntime" | "compatibility" | "models"
+    "onUsageLimits" | "onAuthenticationFailure" | "resolveRuntime" | "compatibility" | "models"
   > = {},
 ) {
   const clientFactory = yield* CodexAppServerClientFactory;
@@ -1996,6 +2002,7 @@ export interface CodexAdapterV2Options {
   readonly environment: NodeJS.ProcessEnv;
   readonly clientFactory: CodexAppServerClientFactoryShape;
   readonly onUsageLimits?: ManagedServerProvider["applyUsageLimits"];
+  readonly onAuthenticationFailure?: Effect.Effect<void>;
   /** The provider's published models, read per turn for catalog defaults. */
   readonly models?: Effect.Effect<ReadonlyArray<ServerProviderModel>>;
   readonly resolveRuntime?: Effect.Effect<CodexEffectiveRuntime, ProviderSetupError, Scope.Scope>;
@@ -2066,6 +2073,24 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               );
         const sessionSettings = resolvedRuntime?.config ?? adapterOptions.settings;
         const sessionEnvironment = resolvedRuntime?.environment ?? adapterOptions.environment;
+        const modelProvider = resolvedRuntime?.modelProvider;
+        const modelProviderParams = modelProvider === undefined ? {} : { modelProvider };
+        const verifyModelProvider = <A extends { readonly modelProvider?: string }>(
+          response: A,
+        ) => {
+          const matches =
+            modelProvider === undefined
+              ? response.modelProvider !== MANAGED_CODEX_MODEL_PROVIDER
+              : response.modelProvider === modelProvider;
+          return matches
+            ? Effect.succeed(response)
+            : Effect.fail(
+                new ProviderAdapter.ProviderAdapterProtocolError({
+                  driver: CODEX_PROVIDER,
+                  detail: "The native Codex thread belongs to a different model provider.",
+                }),
+              );
+        };
         // MT Code: offer Computer Use (`mt-desktop`) whenever the desktop MCP
         // resolves and is enabled, wired via Codex `-c mcp_servers.*` like the
         // V1 adapter. Launch args that already configure the server win.
@@ -2238,6 +2263,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           Effect.forkScoped,
         );
         const rateLimitSnapshot = yield* Ref.make<CodexRateLimitSnapshot | undefined>(undefined);
+        const scopedLimitSnapshots = new Map<string, CodexRateLimitSnapshot>();
         const limitedTurnItems = yield* Ref.make(
           new Map<ProviderThreadId, Extract<OrchestrationV2TurnItem, { type: "error" }>>(),
         );
@@ -5076,6 +5102,21 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
 
         yield* client.handleServerNotification("account/rateLimits/updated", (payload) =>
           Effect.gen(function* () {
+            const scopedId = payload.rateLimits.limitId;
+            if (scopedId && scopedId !== "codex") {
+              const update = codexRateLimitsToUpdate(
+                payload.rateLimits,
+                scopedLimitSnapshots.get(scopedId),
+              );
+              scopedLimitSnapshots.set(scopedId, payload.rateLimits);
+              if (update && adapterOptions.onUsageLimits) {
+                yield* adapterOptions.onUsageLimits({
+                  ...update,
+                  checkedAt: DateTime.formatIso(yield* DateTime.now),
+                });
+              }
+              return;
+            }
             const previous = yield* Ref.getAndUpdate(rateLimitSnapshot, (previous) =>
               mergeCodexRateLimits(previous, payload.rateLimits),
             );
@@ -6624,6 +6665,14 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               ) {
                 failure = { ...failure, class: "transport_error" };
               }
+              if (
+                adapterOptions.onAuthenticationFailure !== undefined &&
+                [input.failureErrorInfo, notification?.errorInfo, retry?.errorInfo].some(
+                  (info) => codexErrorHttpStatus(info) === 401,
+                )
+              ) {
+                yield* adapterOptions.onAuthenticationFailure;
+              }
               return {
                 type: "turn.terminal",
                 driver: CODEX_PROVIDER,
@@ -7727,7 +7776,11 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           threadId: string,
           params: Record<string, unknown>,
         ) {
-          const resume = client.raw.request("thread/resume", { threadId, ...params });
+          const resume = client.raw.request("thread/resume", {
+            threadId,
+            ...params,
+            ...modelProviderParams,
+          });
           return yield* resume.pipe(
             Effect.catchTags({
               CodexAppServerRequestError: (cause) => {
@@ -7747,6 +7800,8 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 return Effect.fail(cause);
               },
             }),
+            Effect.flatMap(decodeCodexResumeMetadata),
+            Effect.flatMap(verifyModelProvider),
           );
         });
 
@@ -8152,6 +8207,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               Effect.andThen(mcpSessions.read(threadInput.threadId)),
               Effect.flatMap((mcpSession) =>
                 client.request("thread/start", {
+                  ...modelProviderParams,
                   ...codexThreadRuntimeParams({
                     threadId: threadInput.threadId,
                     mcpSession,
@@ -8164,6 +8220,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                     : {}),
                 }),
               ),
+              Effect.flatMap(verifyModelProvider),
               Effect.map((response): OrchestrationV2ProviderThread =>
                 providerThreadFromCodexThread({
                   appThreadId: threadInput.threadId,
@@ -8200,10 +8257,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                     : { runtimePolicy: threadInput.runtimePolicy }),
                 }),
               });
-              const response = yield* ensureInitialized.pipe(
-                Effect.andThen(resume),
-                Effect.flatMap(decodeCodexResumeMetadata),
-              );
+              const response = yield* ensureInitialized.pipe(Effect.andThen(resume));
               return {
                 ...threadInput.providerThread,
                 providerSessionId: input.providerSessionId,
@@ -9089,6 +9143,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               const fork = client.request("thread/fork", {
                 threadId,
                 excludeTurns: true,
+                ...modelProviderParams,
                 ...(boundary.lastTurnId === undefined ? {} : { lastTurnId: boundary.lastTurnId }),
                 ...codexThreadRuntimeParams({
                   threadId: threadInput.targetThreadId,
@@ -9114,6 +9169,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                     }),
                   ),
                 ),
+                Effect.flatMap(verifyModelProvider),
                 Effect.mapError(
                   (cause) =>
                     new ProviderAdapter.ProviderAdapterForkThreadError({

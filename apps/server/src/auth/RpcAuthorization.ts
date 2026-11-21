@@ -7,6 +7,7 @@ import {
   AuthAccessReadScope,
   ServerSettingsPatch,
   ProviderInstanceMutation,
+  GatewayConnectInput,
   requiredScopesForServerSettingsPatch,
   requiredScopesForProjectMutation,
   ProjectMutation,
@@ -271,6 +272,7 @@ const SettingsUpdate = Schema.Struct({
   patch: ServerSettingsPatch,
   providerInstanceMutation: Schema.optionalKey(ProviderInstanceMutation),
   refreshFreeModels: Schema.optionalKey(Schema.Boolean),
+  gatewayConnection: Schema.optionalKey(GatewayConnectInput),
 });
 // Middleware receives the payload already decoded, so it is checked against the decoded shape.
 const decodeSettingsUpdate = Schema.decodeUnknownSync(Schema.toType(SettingsUpdate));
@@ -278,7 +280,7 @@ const decodeSettingsUpdate = Schema.decodeUnknownSync(Schema.toType(SettingsUpda
 const requiredScopesForSettingsUpdate = (payload: unknown) => {
   const input = decodeSettingsUpdate(payload);
   const scopes = requiredScopesForServerSettingsPatch(input.patch);
-  if (input.refreshFreeModels === true) {
+  if (input.refreshFreeModels === true || input.gatewayConnection !== undefined) {
     const patchScopes = Object.values(input.patch).every((value) => value === undefined)
       ? []
       : scopes;

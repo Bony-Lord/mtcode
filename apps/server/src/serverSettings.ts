@@ -11,6 +11,7 @@
  * @module ServerSettings
  */
 import * as NodePath from "@effect/platform-node/NodePath";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 
 import {
   DEFAULT_SERVER_SETTINGS,
@@ -26,6 +27,7 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   resolveProviderInstanceEnabled,
+  resolveProviderInstanceProfiles,
   ResponseStreamingMode,
   ServerSettings,
   ServerSettingsError,
@@ -72,6 +74,8 @@ import {
   isModelSelectionProviderEnabled,
 } from "@t3tools/shared/serverSettings";
 import * as ServerSecretStore from "./auth/ServerSecretStore.ts";
+import { keyForBinding } from "./provider/ProviderCredentialStore.ts";
+import { withChatGptSessionLock } from "./provider/CodexChatGptSessionLock.ts";
 import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
 import * as ManagedPolicy from "./policy/ManagedPolicy.ts";
 import { secretProviderDefinitions } from "./secrets/secretProviderDefinitions.ts";
@@ -265,10 +269,46 @@ export function applyProviderInstanceMutation(
   const providerInstances = { ...settings.providerInstances };
   if (mutation.operation === "upsert" || mutation.operation === "create") {
     providerInstances[mutation.instanceId] = mutation.instance;
-  } else {
-    delete providerInstances[mutation.instanceId];
+    return { ...settings, providerInstances };
   }
-  return { ...settings, providerInstances };
+  const id = mutation.instanceId;
+  const entry = Object.hasOwn(providerInstances, id) ? providerInstances[id] : undefined;
+  delete providerInstances[id];
+  // A default slot is reset. Real account removal also clears settings that target it.
+  if (!entry || id === defaultInstanceIdForDriver(entry.driver)) {
+    return { ...settings, providerInstances };
+  }
+  if (Object.values(providerInstances).some((instance) => instance.settingsProfileId === id)) {
+    const effective = resolveProviderInstanceProfiles(settings.providerInstances);
+    for (const [rawId, child] of Object.entries(providerInstances)) {
+      if (child.settingsProfileId !== id) continue;
+      const childId = ProviderInstanceId.make(rawId);
+      const { settingsProfileId: _removedParent, ...retained } = effective[childId] ?? child;
+      providerInstances[childId] = retained;
+    }
+  }
+  const providerRuntimeModeDefaults = { ...settings.providerRuntimeModeDefaults };
+  delete providerRuntimeModeDefaults[id];
+  const projectSettingsOverrides = { ...settings.projectSettingsOverrides };
+  for (const [rawId, project] of Object.entries(projectSettingsOverrides)) {
+    if (!project?.providerInstances || !Object.hasOwn(project.providerInstances, id)) continue;
+    const providerOverrides = { ...project.providerInstances };
+    delete providerOverrides[id];
+    projectSettingsOverrides[ProjectId.make(rawId)] = {
+      ...project,
+      providerInstances: providerOverrides,
+    };
+  }
+  return {
+    ...settings,
+    providerInstances,
+    providerRuntimeModeDefaults,
+    projectSettingsOverrides,
+    defaultModelSelection:
+      settings.defaultModelSelection?.instanceId === id ? null : settings.defaultModelSelection,
+    fallbackModelSelection:
+      settings.fallbackModelSelection?.instanceId === id ? null : settings.fallbackModelSelection,
+  };
 }
 
 const secretProviderConfigGuards = new Map(
@@ -1308,6 +1348,7 @@ const make = Effect.gen(function* () {
   const updateAndPersistSettings = (
     patch: ServerSettingsPatch,
     update: (current: ServerSettings) => Effect.Effect<ServerSettings, ServerSettingsError>,
+    removedInstanceId?: ProviderInstanceId,
   ): Effect.Effect<ServerSettings, ServerSettingsError> =>
     writeSemaphore.withPermits(1)(
       Effect.gen(function* () {
@@ -1361,10 +1402,30 @@ const make = Effect.gen(function* () {
           withoutRemovedSecretProviderReferences(current, vettedProviders.settings),
         );
         const next = yield* normalizeServerSettings(persisted.settings, pathService);
-        const materializedNext = yield* Effect.uninterruptibleMask(() =>
+        const forgetChatGpt =
+          removedInstanceId !== undefined &&
+          removedInstanceId !== "codex" &&
+          Object.hasOwn(current.providerInstances, removedInstanceId) &&
+          current.providerInstances[removedInstanceId]?.driver === "codex" &&
+          !Object.hasOwn(next.providerInstances, removedInstanceId);
+        const credentialKeys = forgetChatGpt
+          ? yield* Effect.forEach(["codex-chatgpt", "codex-chatgpt-registration"], (namespace) =>
+              keyForBinding(namespace, removedInstanceId),
+            ).pipe(Effect.provide(NodeCrypto.layer))
+          : [];
+        const changes: SecretChange[] = [
+          ...persisted.changes,
+          ...credentialKeys.map((secretName) => ({
+            kind: "remove" as const,
+            operation: "remove-stale-secret" as const,
+            secretName,
+            providerInstanceId: removedInstanceId!,
+          })),
+        ];
+        const save = Effect.uninterruptibleMask(() =>
           Effect.gen(function* () {
             yield* invalidateMaterialized;
-            const rollbackSecretChanges = yield* applySettingsSecretChanges(persisted.changes);
+            const rollbackSecretChanges = yield* applySettingsSecretChanges(changes);
             const materializedExit = yield* Effect.exit(materializeSettingsSecrets(next));
             if (Exit.isFailure(materializedExit)) {
               yield* rollbackSecretChanges;
@@ -1377,12 +1438,40 @@ const make = Effect.gen(function* () {
             }
             return materializedExit.value;
           }).pipe(Effect.ensuring(invalidateMaterialized)),
+        ).pipe(
+          Effect.flatMap((materializedNext) =>
+            Effect.gen(function* () {
+              yield* Cache.set(settingsCache, cacheKey, {
+                settings: next,
+                parseFailure: Option.none(),
+              });
+              const resolved = toEffective(materializedNext);
+              materialized = { source: next, value: resolved };
+              yield* emitChange(next);
+              return resolved;
+            }),
+          ),
+          Effect.uninterruptible,
         );
-        yield* Cache.set(settingsCache, cacheKey, { settings: next, parseFailure: Option.none() });
-        const resolved = toEffective(materializedNext);
-        materialized = { source: next, value: resolved };
-        yield* emitChange(next);
-        return resolved;
+        const [sessionKey] = credentialKeys;
+        if (!sessionKey || !removedInstanceId) return yield* save;
+        return yield* withChatGptSessionLock(
+          secretStore.directory,
+          sessionKey,
+          removedInstanceId,
+          save,
+        ).pipe(
+          Effect.catchTag(
+            "ProviderSetupError",
+            (cause) =>
+              new ServerSettingsError({
+                settingsPath,
+                operation: "remove-stale-secret",
+                providerInstanceId: removedInstanceId,
+                cause,
+              }),
+          ),
+        );
       }),
     );
 
@@ -1501,13 +1590,16 @@ const make = Effect.gen(function* () {
         ),
       ),
     updateProviderInstance: (mutation, patch = {}) =>
-      updateAndPersistSettings(patch, (current) =>
-        Effect.gen(function* () {
-          yield* ensureSecretProviderWritesAllowed(patch, settingsPath);
-          yield* ensureProviderInstanceMutationAllowed(current, mutation, settingsPath);
-          const patched = applyServerSettingsPatch(current, patch);
-          return applyProviderInstanceMutation(patched, mutation);
-        }),
+      updateAndPersistSettings(
+        patch,
+        (current) =>
+          Effect.gen(function* () {
+            yield* ensureSecretProviderWritesAllowed(patch, settingsPath);
+            yield* ensureProviderInstanceMutationAllowed(current, mutation, settingsPath);
+            const patched = applyServerSettingsPatch(current, patch);
+            return applyProviderInstanceMutation(patched, mutation);
+          }),
+        mutation.operation === "remove" ? mutation.instanceId : undefined,
       ),
     withSettingsSnapshot,
     get streamChanges() {

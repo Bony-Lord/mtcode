@@ -1,3 +1,4 @@
+import { DEFAULT_CLIENT_SETTINGS } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as Option from "effect/Option";
@@ -6,6 +7,8 @@ import {
   cancelCodexAuthCallback,
   CodexAuthCallbackError,
 } from "../../app/CodexAuthCallback.ts";
+import { openExternalBrowser } from "../../electron/externalBrowser.ts";
+import * as DesktopClientSettings from "../../settings/DesktopClientSettings.ts";
 import * as ElectronShell from "../../electron/ElectronShell.ts";
 import * as ElectronWindow from "../../electron/ElectronWindow.ts";
 import * as DesktopIpc from "../DesktopIpc.ts";
@@ -20,11 +23,19 @@ export const receiveProviderAuthCallback = DesktopIpc.makeIpcMethod({
   handler: Effect.fn("desktop.ipc.providerAuth.receive")(function* (authorizationUrl) {
     const shell = yield* ElectronShell.ElectronShell;
     const windows = yield* ElectronWindow.ElectronWindow;
+    const clientSettings = yield* DesktopClientSettings.DesktopClientSettings;
+    const settings = Option.getOrElse(yield* clientSettings.get, () => DEFAULT_CLIENT_SETTINGS);
     const context = yield* Effect.context<ElectronShell.ElectronShell>();
     const runPromise = Effect.runPromiseWith(context);
     const callbackUrl = yield* Effect.tryPromise({
       try: () =>
-        receiveCodexAuthCallback(authorizationUrl, (url) => runPromise(shell.openExternal(url))),
+        receiveCodexAuthCallback(authorizationUrl, (url) =>
+          openExternalBrowser(
+            url,
+            { browser: settings.externalBrowser, private: settings.externalBrowserPrivate },
+            (target) => runPromise(shell.openExternal(target)),
+          ),
+        ),
       catch: () =>
         new CodexAuthCallbackError({
           detail:

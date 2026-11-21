@@ -54,6 +54,30 @@ const input = {
   now: Date.parse("2026-11-17T00:00:00Z"),
 };
 
+it("avoids exhausted account and model families while keeping usable models on the same gateway", () => {
+  const [free, codex] = providers;
+  const gateway = {
+    ...free!,
+    models: provider("free", "opencode", ["ovh-free/claude-haiku", "ovh-free/gemini-flash"]).models,
+    usageLimits: {
+      checkedAt: free!.checkedAt,
+      windows: [
+        {
+          id: "claude-monthly",
+          label: "Claude",
+          kind: "monthly" as const,
+          modelFamilies: ["Claude"],
+          usedPercent: 100,
+        },
+      ],
+    },
+  };
+  expect(selectSmartModel({ ...input, providers: [gateway, codex!] })?.selection).toMatchObject({
+    instanceId: gateway.instanceId,
+    model: "ovh-free/gemini-flash",
+  });
+});
+
 it("keeps arithmetic cheap and recognizes the user's perceptron app as substantial coding", () => {
   expect(routingTaskText("продолжай", ["создай приложение перцептрона", "итоговый"])).toContain(
     "создай приложение",

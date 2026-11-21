@@ -4,7 +4,7 @@ import {
   managedUpdatesDenial,
 } from "@t3tools/contracts";
 import { TriangleAlertIcon } from "lucide-react";
-import { type ComponentProps, useId, useRef, useState } from "react";
+import { type ComponentProps, useEffect, useId, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { settlePromise, squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import { isElectron } from "../../env";
@@ -27,7 +27,10 @@ import {
   shouldShowArm64IntelBuildWarning,
   shouldToastDesktopUpdateActionResult,
 } from "../desktopUpdate.logic";
-import { showDesktopUpdateDownloadedToast } from "../desktopUpdate.toast";
+import {
+  showDesktopUpdateAvailableToast,
+  showDesktopUpdateDownloadedToast,
+} from "../desktopUpdate.toast";
 import { useCheckProviderUpdates } from "../ProviderUpdatesAction";
 import { Alert, AlertDescription, AlertTitle } from "../ui/alert";
 import { Popover, PopoverCreateHandle, PopoverPopup, PopoverTrigger } from "../ui/popover";
@@ -198,6 +201,15 @@ export function SidebarUpdatePill() {
 
 function SidebarUpdateControl() {
   const state = useDesktopUpdateState();
+  const updateCheckBaseline = useRef<DesktopUpdateState | null>(null);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- The updater publishes the result independently of the check RPC.
+  useEffect(() => {
+    const baseline = updateCheckBaseline.current;
+    const bridge = window.desktopBridge;
+    if (!bridge || !baseline || !state || state === baseline || state.status === "checking") return;
+    updateCheckBaseline.current = null;
+    showDesktopUpdateAvailableToast(bridge, state);
+  }, [state]);
   // The desktop updates this machine, whose policy the primary environment reports.
   const updatesDenial = managedUpdatesDenial(usePrimaryManagedPolicy());
   const [isActionPending, setIsActionPending] = useState(false);
@@ -333,10 +345,12 @@ function SidebarUpdateControl() {
       setIsCheckAnimationLatched(true);
       setCheckAnimationKey((key) => key + 1);
     }
+    updateCheckBaseline.current = state;
     const appCheck = bridge
       .checkForUpdate()
       .then((result) => {
         if (result.checked) return;
+        updateCheckBaseline.current = null;
         toastManager.add(
           stackedThreadToast({
             type: "error",
@@ -349,6 +363,7 @@ function SidebarUpdateControl() {
         );
       })
       .catch((error) => {
+        updateCheckBaseline.current = null;
         toastManager.add(
           stackedThreadToast({
             type: "error",

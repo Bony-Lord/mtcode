@@ -86,6 +86,7 @@ import {
   type SourceControlCloneRepositoryEvent,
   type SourceControlRepositoryError,
   type ServerConfig as ClientServerConfig,
+  ServerSettingsError,
   type ServerConfigStreamEvent,
   type ServerLifecycleStreamEvent,
   type ServerProvider,
@@ -185,7 +186,7 @@ import * as OrchestrationEventStore from "./persistence/OrchestrationEventStore.
 import { userFacingDispatchErrorMessage } from "./orchestration-v2/UserFacingErrors.ts";
 import { ProviderAccountLoginRunner } from "./provider/ProviderAccountLoginRunner.ts";
 import * as ProviderRegistry from "./provider/ProviderRegistry.ts";
-import { syncFreeModelCatalogs } from "./provider/FreeModelCatalog.ts";
+import { connectGatewayPreset, syncFreeModelCatalogs } from "./provider/FreeModelCatalog.ts";
 import { refreshModelBenchmarks } from "./provider/ModelBenchmarks.ts";
 import * as SecretCheck from "./secrets/SecretCheck.ts";
 import * as AcpRegistrySessions from "./provider/AcpRegistrySessions.ts";
@@ -2747,7 +2748,27 @@ export const layerWsRpc = (
         ),
       [WS_METHODS.serverUpdateSettings]:
         /* Request instrumentation already owns the span; keep this helper in that context. */
-        Effect.fnUntraced(function* ({ patch, providerInstanceMutation, refreshFreeModels }) {
+        Effect.fnUntraced(function* ({
+          patch,
+          providerInstanceMutation,
+          refreshFreeModels,
+          gatewayConnection,
+        }) {
+          if (gatewayConnection !== undefined) {
+            if (
+              providerInstanceMutation ||
+              refreshFreeModels ||
+              Object.values(patch).some((value) => value !== undefined)
+            ) {
+              return yield* new ServerSettingsError({
+                settingsPath: config.settingsPath,
+                operation: "connect-gateway",
+                detail: "Connect the gateway in a separate settings request.",
+              });
+            }
+            const connected = yield* connectGatewayPreset(gatewayConnection);
+            return ServerSettings.redactServerSettingsForClient(connected, settingsClient);
+          }
           const deviceHosts = patch.deviceHosts
             ? yield* remoteSshDeviceHosts(patch.deviceHosts).pipe(Effect.provide(deviceHostContext))
             : undefined;

@@ -18,6 +18,7 @@ interface CodexRateLimitWindow {
 
 export interface CodexRateLimitSnapshot {
   readonly limitId?: string | null;
+  readonly limitName?: string | null;
   readonly planType?: string | null;
   readonly rateLimitReachedType?: string | null;
   readonly primary?: CodexRateLimitWindow | null;
@@ -47,21 +48,34 @@ function isoFromEpochSeconds(value: number | null | undefined): string | undefin
 }
 
 function kindForDuration(mins: number): ServerProviderUsageWindow["kind"] {
-  if (mins >= MONTH_MINS) return "monthly";
-  if (mins >= WEEK_MINS) return "weekly";
-  return "session";
+  if (mins >= 28 * 24 * 60 && mins <= 31 * 24 * 60) return "monthly";
+  if (mins === WEEK_MINS) return "weekly";
+  return mins <= SESSION_MINS ? "session" : "other";
 }
 
-function labelForKind(kind: ServerProviderUsageWindow["kind"]): string {
-  return kind === "session" ? "Session" : kind === "weekly" ? "Weekly" : "Monthly";
+function labelForKind(kind: ServerProviderUsageWindow["kind"], mins: number): string {
+  if (kind === "session") return "Session";
+  if (kind === "weekly") return "Weekly";
+  if (kind === "monthly") return "Monthly";
+  if (mins % 1440 === 0) return `${mins / 1440} days`;
+  if (mins % 60 === 0) return `${mins / 60} hours`;
+  return `${mins} minutes`;
 }
 
 /** primary/secondary are positions; without windowDurationMins, paid plans use 5-hour/weekly windows and Free/Go use monthly. */
 function codexRateLimitsToWindows(
   snapshot: CodexRateLimitSnapshot,
 ): ReadonlyArray<ServerProviderUsageWindow> {
-  // Keep model-specific limits out of main allowance rows; older CLIs omit limit IDs.
-  if (snapshot.limitId && snapshot.limitId !== "codex") return [];
+  const scope = snapshot.limitId && snapshot.limitId !== "codex" ? snapshot.limitId : undefined;
+  const spark = scope === "codex_bengalfox";
+  const modelIds = scope
+    ? spark
+      ? ["gpt-5.3-codex-spark"]
+      : /^(?:gpt-[\w.-]+|o[134](?:-[\w.-]+)?)$/u.test(scope)
+        ? [scope]
+        : []
+    : undefined;
+  const scopeLabel = scope ? snapshot.limitName?.trim() || (spark ? "Codex Spark" : scope) : null;
   const isMonthlyPlan = snapshot.planType === "free" || snapshot.planType === "go";
   const positions = [
     ["primary", snapshot.primary, isMonthlyPlan ? MONTH_MINS : SESSION_MINS],
@@ -75,16 +89,17 @@ function codexRateLimitsToWindows(
     const kind = kindForDuration(windowDurationMins);
     const resetsAt = isoFromEpochSeconds(window.resetsAt);
     windows.push({
-      id,
+      id: scope ? `${scope}:${id}` : id,
       kind,
-      label: labelForKind(kind),
+      label: [scopeLabel, labelForKind(kind, windowDurationMins)].filter(Boolean).join(" · "),
+      ...(modelIds ? { modelIds } : {}),
       usedPercent: clampPercent(window.usedPercent),
       windowDurationMins,
       ...(resetsAt ? { resetsAt } : {}),
     });
   }
   const individualLimit = snapshot.individualLimit;
-  if (individualLimit && Number.isFinite(individualLimit.remainingPercent)) {
+  if (!scope && individualLimit && Number.isFinite(individualLimit.remainingPercent)) {
     const resetsAt = isoFromEpochSeconds(individualLimit.resetsAt);
     windows.push({
       id: "individual",
@@ -123,7 +138,12 @@ export function codexRateLimitsToLimits(input: {
   readonly checkedAt: string;
 }): ServerProviderUsageLimits {
   const resetCredits = codexResetCreditsToContract(input.resetCredits);
-  const windows = codexRateLimitsToWindows(input.rateLimitsByLimitId?.codex ?? input.snapshot);
+  const buckets = { ...input.rateLimitsByLimitId };
+  const snapshotId = input.snapshot.limitId || "codex";
+  if (!Object.hasOwn(buckets, snapshotId)) buckets[snapshotId] = input.snapshot;
+  const windows = Object.entries(buckets).flatMap(([limitId, snapshot]) =>
+    codexRateLimitsToWindows({ ...snapshot, limitId }),
+  );
   return {
     ...makeUsageLimits({
       checkedAt: input.checkedAt,

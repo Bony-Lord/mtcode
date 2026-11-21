@@ -10,10 +10,16 @@ import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
+import * as Layer from "effect/Layer";
 import * as HttpClient from "effect/http/HttpClient";
 import * as HttpClientResponse from "effect/http/HttpClientResponse";
 import { ServerSettingsService } from "../serverSettings.ts";
-import { freeTextCatalog, syncFreeModelCatalogs } from "./FreeModelCatalog.ts";
+import { ServerConfig } from "../config.ts";
+import {
+  connectGatewayPreset,
+  freeTextCatalog,
+  syncFreeModelCatalogs,
+} from "./FreeModelCatalog.ts";
 
 it("keeps only explicitly zero-priced text models when refreshing a mixed catalog", () => {
   const pricing = { prompt: "0", completion: "0" };
@@ -29,6 +35,49 @@ it("keeps only explicitly zero-priced text models when refreshing a mixed catalo
     ]),
   ).toEqual([free]);
 });
+
+it.effect("connects a loopback gateway and rejects a remote endpoint without changing it", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const stateDir = yield* fs.makeTempDirectoryScoped({ prefix: "mt-local-gateway-" });
+    const configPath = path.join(stateDir, "gateways", "local-openai.json");
+    yield* Effect.gen(function* () {
+      const connected = yield* connectGatewayPreset({
+        presetId: "local-openai-compatible",
+        baseUrl: "http://127.0.0.1:1234/v1",
+        models: "qwen3, gemma3",
+      });
+      expect(connected.providerInstances[ProviderInstanceId.make("local-openai")]).toMatchObject({
+        driver: "opencode",
+        accountTier: "local",
+        config: { customModels: ["local-openai/qwen3", "local-openai/gemma3"] },
+        environment: [{ name: "OPENCODE_CONFIG", value: configPath }],
+      });
+      const saved = yield* fs.readFileString(configPath);
+      expect(saved).toContain("http://127.0.0.1:1234/v1");
+      const denied = yield* Effect.flip(
+        connectGatewayPreset({
+          presetId: "local-openai-compatible",
+          baseUrl: "https://outside.invalid/v1",
+          models: "qwen3",
+        }),
+      );
+      expect(denied.operation).toBe("connect-gateway");
+      expect(yield* fs.readFileString(configPath)).toBe(saved);
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          ServerSettingsService.layerTest(DEFAULT_SERVER_SETTINGS),
+          Layer.mock(ServerConfig)({
+            stateDir,
+            settingsPath: path.join(stateDir, "settings.json"),
+          }),
+        ),
+      ),
+    );
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
 
 it.effect(
   "refreshing a catalog preserves every other provider and the target connection settings",

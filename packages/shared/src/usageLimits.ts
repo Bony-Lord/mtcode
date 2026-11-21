@@ -20,6 +20,7 @@ import {
 } from "@t3tools/contracts";
 
 import * as DateTime from "effect/DateTime";
+import { modelFamily } from "./model.ts";
 
 import { isLocalLoopbackHost, isWildcardHost } from "./hostClassification.ts";
 
@@ -103,6 +104,23 @@ export function accountUsageBudgetBlock(
   return usageBudgetBlock(measured ?? provider, policy, now, model);
 }
 
+export function usageWindowApplies(window: ServerProviderUsageWindow, model: string): boolean {
+  const family = modelFamily(model);
+  const normalized = model.toLowerCase();
+  const quotaFamily =
+    family === "Gemini" && /\bargon\b/.test(normalized)
+      ? "Gemini Argon"
+      : family === "Gemini" && /\bcarbon\b/.test(normalized)
+        ? "Gemini Carbon"
+        : family;
+  return (
+    (!window.modelIds || window.modelIds.includes(model)) &&
+    (!window.modelFamilies ||
+      (quotaFamily !== undefined && window.modelFamilies.includes(quotaFamily))) &&
+    (!window.providerIds || window.providerIds.includes(model.split("/")[0] ?? ""))
+  );
+}
+
 export function exhaustedUsageWindow(
   provider: ServerProvider | undefined,
   now: number,
@@ -112,15 +130,15 @@ export function exhaustedUsageWindow(
   const exhausted = windows.filter(
     (window) =>
       (window.usedPercent ?? 0) >= 100 &&
-      (model === undefined || window.modelIds === undefined || window.modelIds.includes(model)) &&
-      (model === undefined ||
-        window.providerIds === undefined ||
-        window.providerIds.includes(model.split("/")[0] ?? "")) &&
+      (window.observedUntil === undefined || Date.parse(window.observedUntil) > now) &&
+      (model === undefined || usageWindowApplies(window, model)) &&
       (!window.resetsAt ||
         !Number.isFinite(Date.parse(window.resetsAt)) ||
         Date.parse(window.resetsAt) > now),
   );
   if (model === undefined) return exhausted[0];
+  const observed = exhausted.find((window) => window.observedUntil !== undefined);
+  if (observed) return observed;
   switch (provider?.driver) {
     case "cursor": {
       const api = exhausted.find((window) => window.id === "apiPercentUsed");
@@ -130,6 +148,7 @@ export function exhaustedUsageWindow(
     case "antigravity": {
       const family = model.match(/^(gemini|claude|gpt)-/)?.[1];
       return exhausted.find((window) => {
+        if (window.modelFamilies || window.modelIds) return true;
         const pool = window.id.match(/^(gemini|claude|gpt|3p)-/)?.[1];
         return (
           pool === undefined ||
@@ -155,6 +174,19 @@ export function exhaustedUsageWindow(
   }
 }
 
+export function exhaustedAccountUsageWindow(
+  provider: ServerProvider,
+  providers: readonly ServerProvider[],
+  now: number,
+  model: string,
+) {
+  const source = providerUsageDisplaySource(provider, providers);
+  return (
+    exhaustedUsageWindow(provider, now, model) ??
+    (source !== provider ? exhaustedUsageWindow(source, now, model) : undefined)
+  );
+}
+
 export function usageLimitHasRecovered(input: {
   readonly provider: ServerProvider | null | undefined;
   readonly model: string;
@@ -169,11 +201,7 @@ export function usageLimitHasRecovered(input: {
     Date.parse(limits.checkedAt) <= Date.parse(input.stoppedAt)
   )
     return false;
-  const applicable = limits.windows.some(
-    (window) =>
-      (!window.modelIds || window.modelIds.includes(input.model)) &&
-      (!window.providerIds || window.providerIds.includes(input.model.split("/")[0] ?? "")),
-  );
+  const applicable = limits.windows.some((window) => usageWindowApplies(window, input.model));
   return (
     applicable &&
     exhaustedUsageWindow(input.provider ?? undefined, input.now, input.model) === undefined
@@ -1170,5 +1198,11 @@ export function collectProviderUsageLimits(
       notices.push(`${source.label}: ${source.error}`);
     }
   }
+  const selectedKey = resolveKey(nativeReport(selected));
+  const selectedAccountId =
+    nativeByAccount.get(selectedKey ?? `instance:${instanceId}`)?.usage.provider.instanceId ??
+    instanceId;
+  const selectedAccount = accounts.findIndex((account) => account.instanceId === selectedAccountId);
+  if (selectedAccount > 0) accounts.unshift(...accounts.splice(selectedAccount, 1));
   return { createdAt: DateTime.formatIso(DateTime.makeUnsafe(now)), accounts, notices };
 }

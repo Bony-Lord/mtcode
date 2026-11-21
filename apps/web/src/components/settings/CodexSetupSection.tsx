@@ -561,12 +561,12 @@ function ManagedCodexSetup({
   const setup = async (methodId = "chatgpt") => {
     if (unavailable || busy) return;
     const signal = beginOperation();
-    if (installed && !updateAvailable) {
+    if (installed || provider?.installed) {
       await signIn(methodId, signal);
       return;
     }
     await run(
-      () => startInstall({ environmentId, input: { instanceId } }),
+      () => startInstall({ environmentId, input: { instanceId, reuseInstalled: true } }),
       (started) => {
         void waitForQuerySettled({
           registry: appAtomRegistry,

@@ -37,6 +37,15 @@ function shownAfterDismissing(dismissed: ServerProvider, shown: ServerProvider):
 }
 
 describe("compatibility banners", () => {
+  it("shows a lost-login banner even if the last runtime status was ready", () => {
+    const { compatibilityAdvisory: _advisory, ...ready } = provider;
+    const signedOut: ServerProvider = {
+      ...ready,
+      auth: { status: "unauthenticated" },
+    };
+    expect(shouldShowProviderStatusBanner(signedOut, false)).toBe(true);
+    expect(getProviderStatusMessage(signedOut)).toContain("authenticate again");
+  });
   it("shows and dismisses a warning on a healthy provider, then clears it after policy relaxation", () => {
     expect(shouldShowProviderStatusBanner(provider, false)).toBe(true);
     expect(shownAfterDismissing(provider, provider)).toBe(false);

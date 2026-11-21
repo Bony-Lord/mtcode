@@ -1,12 +1,14 @@
 import {
   ContextMenuItemSchema,
   ContextMenuSource,
+  DEFAULT_CLIENT_SETTINGS,
   DesktopAppBrandingSchema,
   DesktopEnvironmentBootstrapSchema,
   DesktopMediaReadSchema,
   DesktopThemeSchema,
   EDITORS,
   EditorId,
+  ExternalBrowserOption,
   PickedThemeFileSchema,
   PickFolderOptionsSchema,
   PRIMARY_LOCAL_ENVIRONMENT_ID,
@@ -34,6 +36,7 @@ import * as DesktopEnvironment from "../../app/DesktopEnvironment.ts";
 import * as DesktopManagedPolicy from "../../app/DesktopManagedPolicy.ts";
 import * as DesktopPrimaryPaste from "../../app/DesktopPrimaryPaste.ts";
 import * as DesktopAppSettings from "../../settings/DesktopAppSettings.ts";
+import * as DesktopClientSettings from "../../settings/DesktopClientSettings.ts";
 import * as DesktopWslBackend from "../../wsl/DesktopWslBackend.ts";
 import * as DesktopWslEnvironment from "../../wsl/DesktopWslEnvironment.ts";
 import * as ElectronApp from "../../electron/ElectronApp.ts";
@@ -41,7 +44,10 @@ import * as ElectronAudio from "../../electron/ElectronAudio.ts";
 import * as ElectronDialog from "../../electron/ElectronDialog.ts";
 import * as ElectronMenu from "../../electron/ElectronMenu.ts";
 import * as ElectronShell from "../../electron/ElectronShell.ts";
-import { openPrivateBrowser } from "../../electron/privateBrowser.ts";
+import {
+  listInstalledExternalBrowsers,
+  openExternalBrowser,
+} from "../../electron/externalBrowser.ts";
 import * as ElectronTheme from "../../electron/ElectronTheme.ts";
 import * as ElectronWindow from "../../electron/ElectronWindow.ts";
 import * as Electron from "electron";
@@ -357,7 +363,15 @@ export const openExternal = DesktopIpc.makeIpcMethod({
   result: Schema.Boolean,
   handler: Effect.fn("desktop.ipc.window.openExternal")(function* (url) {
     const shell = yield* ElectronShell.ElectronShell;
-    return yield* shell.openExternal(url);
+    const clientSettings = yield* DesktopClientSettings.DesktopClientSettings;
+    const settings = Option.getOrElse(yield* clientSettings.get, () => DEFAULT_CLIENT_SETTINGS);
+    return yield* Effect.promise(() =>
+      openExternalBrowser(
+        url,
+        { browser: settings.externalBrowser, private: settings.externalBrowserPrivate },
+        (target) => Effect.runPromise(shell.openExternal(target)),
+      ),
+    );
   }),
 });
 
@@ -366,7 +380,23 @@ export const openPrivateExternal = DesktopIpc.makeIpcMethod({
   payload: Schema.String,
   result: Schema.Boolean,
   handler: Effect.fn("desktop.ipc.window.openPrivateExternal")(function* (url) {
-    return yield* Effect.promise(() => openPrivateBrowser(url));
+    const shell = yield* ElectronShell.ElectronShell;
+    const clientSettings = yield* DesktopClientSettings.DesktopClientSettings;
+    const settings = Option.getOrElse(yield* clientSettings.get, () => DEFAULT_CLIENT_SETTINGS);
+    return yield* Effect.promise(() =>
+      openExternalBrowser(url, { browser: settings.externalBrowser, private: true }, (target) =>
+        Effect.runPromise(shell.openExternal(target)),
+      ),
+    );
+  }),
+});
+
+export const listExternalBrowsers = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.LIST_EXTERNAL_BROWSERS_CHANNEL,
+  payload: Schema.Void,
+  result: Schema.Array(ExternalBrowserOption),
+  handler: Effect.fn("desktop.ipc.window.listExternalBrowsers")(function* () {
+    return listInstalledExternalBrowsers();
   }),
 });
 

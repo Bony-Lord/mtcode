@@ -128,30 +128,34 @@ describe("codexRateLimitsToLimits", () => {
     ]);
   });
 
-  it("selects the main Codex allowance and leaves Spark out", () => {
+  it("keeps the main Codex allowance and scopes the Spark windows to Spark", () => {
     const spark = {
       limitId: "codex_bengalfox",
       individualLimit: { remainingPercent: 99, resetsAt: 1_784_500_000 },
       primary: { usedPercent: 0, windowDurationMins: 300 },
       secondary: { usedPercent: 90, windowDurationMins: 10080 },
     };
-    expect(
-      codexRateLimitsToLimits({
-        checkedAt,
-        snapshot: spark,
-        rateLimitsByLimitId: {
-          codex_bengalfox: spark,
-          codex: { secondary: { usedPercent: 42, windowDurationMins: 10080 } },
-        },
-      }).windows,
-    ).toEqual([
-      {
-        id: "secondary",
-        kind: "weekly",
-        label: "Weekly",
-        usedPercent: 42,
-        windowDurationMins: 10080,
+    const { windows } = codexRateLimitsToLimits({
+      checkedAt,
+      snapshot: spark,
+      rateLimitsByLimitId: {
+        codex_bengalfox: spark,
+        codex: { secondary: { usedPercent: 42, windowDurationMins: 10080 } },
       },
+    });
+    expect(windows.find((window) => window.id === "secondary")).toEqual({
+      id: "secondary",
+      kind: "weekly",
+      label: "Weekly",
+      usedPercent: 42,
+      windowDurationMins: 10080,
+    });
+    expect(windows.filter((window) => window.id.startsWith("codex_bengalfox:"))).toEqual([
+      expect.objectContaining({ id: "codex_bengalfox:primary", modelIds: ["gpt-5.3-codex-spark"] }),
+      expect.objectContaining({
+        id: "codex_bengalfox:secondary",
+        modelIds: ["gpt-5.3-codex-spark"],
+      }),
     ]);
   });
 
@@ -209,15 +213,15 @@ describe("codexRateLimitsToUpdate", () => {
     expect(codexRateLimitsToUpdate({ planType: "plus" })).toBeUndefined();
   });
 
-  it("ignores Spark notifications so they cannot overwrite the main allowance", () => {
+  it("publishes Spark notifications under independent window IDs", () => {
     expect(
       codexRateLimitsToUpdate({
         limitId: "codex_bengalfox",
         individualLimit: { remainingPercent: 99, resetsAt: 1_784_500_000 },
         primary: { usedPercent: 0, windowDurationMins: 300 },
         secondary: { usedPercent: 90, windowDurationMins: 10080 },
-      }),
-    ).toBeUndefined();
+      })?.windows.map((window) => window.id),
+    ).toEqual(["codex_bengalfox:primary", "codex_bengalfox:secondary"]);
     expect(
       codexRateLimitsToUpdate({
         limitId: "codex",

@@ -2067,6 +2067,7 @@ export const OrchestrationV2DomainEvent = Schema.Union([
   Schema.Struct({
     ...OrchestrationV2EventBase.fields,
     type: Schema.Literal("provider-thread.updated"),
+    preserveActiveProviderThread: Schema.optional(Schema.Literal(true)),
     payload: OrchestrationV2ProviderThread,
   }),
   Schema.Struct({
@@ -3011,6 +3012,7 @@ export const OrchestrationV2DomainEventJson = Schema.Union([
   Schema.Struct({
     ...OrchestrationV2JsonEventBaseFields,
     type: Schema.Literal("provider-thread.updated"),
+    preserveActiveProviderThread: Schema.optional(Schema.Literal(true)),
     payload: OrchestrationV2ProviderThreadJson,
   }),
   Schema.Struct({

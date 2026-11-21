@@ -115,6 +115,7 @@ const decodeOAuthError = Schema.decodeUnknownSync(OAuthError);
 
 export const makeCodexChatGptAuth = Effect.fn("makeCodexChatGptAuth")(function* (options: {
   readonly instanceId: ProviderInstanceId;
+  readonly requireConfiguredAccount?: boolean;
   readonly discoveryUrl?: string;
   readonly resource?: string;
   readonly defaultReturnUrl?: string;
@@ -187,6 +188,15 @@ export const makeCodexChatGptAuth = Effect.fn("makeCodexChatGptAuth")(function* 
   const resource = options.resource ?? RESOURCE;
   const failure = (operation: string, detail: string) =>
     new ProviderSetupError({ instanceId: options.instanceId, operation, detail });
+  const requireConfiguredAccount = Effect.gen(function* () {
+    if (!options.requireConfiguredAccount || Option.isNone(settings)) return;
+    const current = yield* settings.value.getSettings.pipe(
+      Effect.mapError(() => failure("account", "Could not verify the configured ChatGPT account.")),
+    );
+    if (!Object.hasOwn(current.providerInstances, options.instanceId)) {
+      return yield* failure("account", "This ChatGPT account was removed from MT Code.");
+    }
+  });
   let metadata: typeof Discovery.Type | undefined;
   const discover = Effect.gen(function* () {
     if (metadata) return metadata;
@@ -386,6 +396,7 @@ export const makeCodexChatGptAuth = Effect.fn("makeCodexChatGptAuth")(function* 
     Effect.provideService(Digest.Digest, digest),
   );
   const saveRegistration = Effect.fnUntraced(function* (profile: typeof Registration.Type) {
+    yield* requireConfiguredAccount;
     const saved = yield* readRegistrations;
     let connectionNumber = saved.profiles.length + 1;
     while (
@@ -410,6 +421,7 @@ export const makeCodexChatGptAuth = Effect.fn("makeCodexChatGptAuth")(function* 
     );
   });
   const save = Effect.fnUntraced(function* (record: CodexChatGptCredentials, activate = true) {
+    yield* requireConfiguredAccount;
     const saved = yield* readSessions;
     yield* writeSessions({
       activeClientId: activate ? record.clientId : saved.activeClientId,
@@ -819,6 +831,7 @@ export const makeCodexChatGptAuth = Effect.fn("makeCodexChatGptAuth")(function* 
       )
       .pipe(Effect.map(Hex.encode), Effect.orDie);
   const access = Effect.gen(function* () {
+    yield* requireConfiguredAccount;
     const saved = yield* read;
     if (Option.isNone(saved))
       return yield* failure("access", "Sign in with ChatGPT to use managed Codex.");

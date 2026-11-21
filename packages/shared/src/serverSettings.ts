@@ -482,6 +482,7 @@ export function applyServerSettingsPatch(
     sourceControlHosts: sourceControlHostsPatch,
     usagePriceOverrides: usagePriceOverridesPatch,
     providerRuntimeModeDefaults: providerRuntimeModeDefaultsPatch,
+    providerRuntimePreferences: providerRuntimePreferencesPatch,
     usageModelAliases: usageModelAliasesPatch,
     // Entry replacement: deepMerge would keep keys the client meant to clear.
     projectSettingsOverrides: projectSettingsOverridesPatch,
@@ -715,6 +716,14 @@ export function applyServerSettingsPatch(
           providerRuntimeModeDefaults: mergeSettingsEntries(
             current.providerRuntimeModeDefaults,
             providerRuntimeModeDefaultsPatch,
+          ),
+        }
+      : {}),
+    ...(providerRuntimePreferencesPatch !== undefined
+      ? {
+          providerRuntimePreferences: mergeSettingsEntries(
+            current.providerRuntimePreferences,
+            providerRuntimePreferencesPatch,
           ),
         }
       : {}),

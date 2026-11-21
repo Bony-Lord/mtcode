@@ -236,6 +236,7 @@ function withFakeCodexEnv<A, E, R>(
             config,
             environment: input.environment ?? process.env,
             revision: "test",
+            modelProvider: "openai_token_sharing" as const,
           })
         : undefined,
     );

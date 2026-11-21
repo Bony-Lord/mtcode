@@ -53,6 +53,7 @@ import {
   ProviderInstanceConfig,
   ProviderInstanceId,
   ProviderDriverKind,
+  ProviderRuntimePreferences,
 } from "./providerInstance.ts";
 import { PullRequestMergeMethod } from "./pullRequest.ts";
 import {
@@ -423,6 +424,19 @@ export const BrowserLinkTarget = Schema.Literals(["system", "app"]);
 export type BrowserLinkTarget = typeof BrowserLinkTarget.Type;
 export const DEFAULT_BROWSER_LINK_TARGET: BrowserLinkTarget = "system";
 /**
+ * Which external browser MT Code hands website links and sign-in pages to.
+ * "system" uses the OS default; the others name a supported installed browser.
+ * Only the desktop app can honour this; the in-app preview browser is separate.
+ */
+export const ExternalBrowserId = Schema.Literals(["system", "chrome", "edge", "firefox", "brave"]);
+export type ExternalBrowserId = typeof ExternalBrowserId.Type;
+export const DEFAULT_EXTERNAL_BROWSER: ExternalBrowserId = "system";
+export const ExternalBrowserOption = Schema.Struct({
+  id: ExternalBrowserId,
+  name: Schema.String,
+});
+export type ExternalBrowserOption = typeof ExternalBrowserOption.Type;
+/**
  * What the address bar searches with when the input is not an address.
  * "custom" uses `browserCustomSearchUrl`, a template with `%s` for the query.
  */
@@ -553,6 +567,13 @@ export const ClientSettingsSchema = Schema.Struct({
   browserLinkTarget: BrowserLinkTarget.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_BROWSER_LINK_TARGET)),
   ),
+
+  externalBrowser: ExternalBrowserId.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_EXTERNAL_BROWSER)),
+  ),
+
+  /** Opens external links and sign-in pages in a private window; never falls back to a normal one. */
+  externalBrowserPrivate: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
 
   browserSearchEngine: BrowserSearchEngine.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_BROWSER_SEARCH_ENGINE)),
@@ -1778,6 +1799,9 @@ export const ServerSettings = Schema.Struct({
   providerRuntimeModeDefaults: Schema.Record(ProviderInstanceId, RuntimeMode).pipe(
     Schema.withDecodingDefault(Effect.succeed({})),
   ),
+  providerRuntimePreferences: ProviderRuntimePreferences.pipe(
+    Schema.withDecodingDefault(Effect.succeed({})),
+  ),
   newWorktreesStartFromOrigin: Schema.Boolean.pipe(
     Schema.withDecodingDefault(Effect.succeed(true)),
   ),
@@ -2018,6 +2042,7 @@ export const resolveIdleCompaction = (
 };
 
 export const ServerSettingsOperation = Schema.Literals([
+  "connect-gateway",
   "normalize",
   "check-exists",
   "create-provider-instance",
@@ -2053,10 +2078,13 @@ export class ServerSettingsError extends Schema.TaggedError<ServerSettingsError>
     managedBy: Schema.optional(Schema.String),
     /** For `use-disallowed-provider`: the provider's name as users know it. */
     providerLabel: Schema.optional(Schema.String),
+    detail: Schema.optionalKey(Schema.String),
     cause: Schema.optional(Schema.Defect()),
   },
 ) {
   override get message(): string {
+    if (this.operation === "connect-gateway")
+      return this.detail ?? "Could not connect the gateway.";
     if (this.operation === "refresh-free-models") {
       return `Не удалось обновить каталоги ${this.providerInstanceId ?? "бесплатных моделей"}. Сохранённые модели доступны. Повтори обновление позже.`;
     }
@@ -2247,6 +2275,9 @@ export const ServerSettingsPatch = Schema.Struct({
   providerRuntimeModeDefaults: Schema.optionalKey(
     Schema.Record(ProviderInstanceId, Schema.NullOr(RuntimeMode)),
   ),
+  providerRuntimePreferences: Schema.optionalKey(
+    Schema.Record(TrimmedNonEmptyString, Schema.NullOr(ProviderRuntimePreferences.value)),
+  ),
   newWorktreesStartFromOrigin: Schema.optionalKey(Schema.Boolean),
   worktreeBranchPrefix: Schema.optionalKey(WorktreeBranchPrefix),
   worktreeSubmodules: Schema.optionalKey(Schema.NullOr(WorktreeSubmodules)),
@@ -2342,6 +2373,7 @@ export function requiredScopesForServerSettingsPatch(
     } else if (
       key === "providers" ||
       key === "providerInstances" ||
+      key === "providerRuntimePreferences" ||
       key === "usageLimitSources" ||
       key === "textGenerators" ||
       key === "secretProviders"
@@ -2393,6 +2425,8 @@ export const ClientSettingsPatch = Schema.Struct({
   browserRecordingShowKeyPresses: Schema.optionalKey(Schema.Boolean),
   browserRecordingShowMousePresses: Schema.optionalKey(Schema.Boolean),
   browserLinkTarget: Schema.optionalKey(BrowserLinkTarget),
+  externalBrowser: Schema.optionalKey(ExternalBrowserId),
+  externalBrowserPrivate: Schema.optionalKey(Schema.Boolean),
   browserSearchEngine: Schema.optionalKey(BrowserSearchEngine),
   browserCustomSearchUrl: Schema.optionalKey(BrowserCustomSearchUrl),
   browserAutoShowFloatingPreview: Schema.optionalKey(Schema.Boolean),

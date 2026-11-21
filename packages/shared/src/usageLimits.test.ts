@@ -1803,7 +1803,7 @@ describe("/usage-limits", () => {
         [],
         now,
       )?.accounts.map((account) => account.id),
-    ).toEqual(["workspace-a-fresh", "codex"]);
+    ).toEqual(["codex", "workspace-a-fresh"]);
     expect(
       collectProviderUsageLimits(
         selected.instanceId,
@@ -1811,7 +1811,7 @@ describe("/usage-limits", () => {
         [],
         now,
       )?.accounts.map((account) => account.id),
-    ).toEqual(["workspace-a-fresh", "codex", "workspace-b"]);
+    ).toEqual(["codex", "workspace-a-fresh", "workspace-b"]);
   });
 
   it("supports a source-only provider and keeps duplicates when the native probe failed", () => {

@@ -7,6 +7,7 @@ export const SET_THEME_CHANNEL = "desktop:set-theme";
 export const CONTEXT_MENU_CHANNEL = "desktop:context-menu";
 export const OPEN_EXTERNAL_CHANNEL = "desktop:open-external";
 export const OPEN_PRIVATE_EXTERNAL_CHANNEL = "desktop:open-private-external";
+export const LIST_EXTERNAL_BROWSERS_CHANNEL = "desktop:list-external-browsers";
 export const COMPUTER_USE_PAUSE_CHANNEL = "desktop:computer-use-pause";
 export const COMPUTER_USE_PAUSE_STATE_CHANNEL = "desktop:computer-use-pause-state";
 export const READ_MEDIA_CHANNEL = "desktop:read-media";

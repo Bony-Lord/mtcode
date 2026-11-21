@@ -1,4 +1,5 @@
 import { useLegendListRef } from "~/hooks/useLegendListRef";
+import { modelFamily } from "@t3tools/shared/model";
 import {
   ANTIGRAVITY_DEFAULT_MODEL,
   type ProviderInstanceId,
@@ -273,11 +274,13 @@ function ModelPickerProviderNotices({
 function ModelPickerList({
   listRef,
   itemKeys,
+  initialIndex,
   extraData,
   renderItem,
 }: {
   listRef: RefObject<LegendListRef | null>;
   itemKeys: ReadonlyArray<string>;
+  initialIndex: number;
   extraData: unknown;
   renderItem: (props: { item: string; index: number }) => ReactNode;
 }) {
@@ -306,6 +309,9 @@ function ModelPickerList({
           keyExtractor={(modelKey) => modelKey}
           renderItem={renderItem}
           estimatedItemSize={MODEL_LIST_ESTIMATED_ITEM_SIZE}
+          {...(initialIndex >= 0
+            ? { initialScrollIndex: { index: initialIndex, viewPosition: 0.35 } }
+            : {})}
           drawDistance={480}
           recycleItems
           contentContainerClassName="pl-2 pr-px"
@@ -442,6 +448,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
       if (isSmartModel(props.model)) return AUTO_PROFILE_ID;
       if (
         props.lockedProvider !== null ||
+        activeModel !== undefined ||
         activeInstanceHasSelectableUnavailableModel ||
         activeInstanceNeedsSetup
       ) {
@@ -775,6 +782,19 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
       .map(({ model }) => model);
   })();
 
+  const groupByModelFamily =
+    !isSearching &&
+    selectedInstanceId !== "favorites" &&
+    selectedInstanceId !== AUTO_PROFILE_ID &&
+    selectedInstanceId !== MANUFACTURER_PROFILE_ID &&
+    new Set(filteredModels.map((model) => modelFamily(model.slug))).size > 1;
+  const scopedModels = groupByModelFamily
+    ? filteredModels.toSorted((left, right) => {
+        const a = modelFamily(left.slug);
+        const b = modelFamily(right.slug);
+        return a && b ? a.localeCompare(b) : Number(Boolean(b)) - Number(Boolean(a));
+      })
+    : filteredModels;
   const legacySection = (() => {
     if (
       isSearching ||
@@ -785,7 +805,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
     }
     const currentModels: ModelPickerItem[] = [];
     const legacyModels: ModelPickerItem[] = [];
-    for (const model of filteredModels) {
+    for (const model of scopedModels) {
       const isLegacy =
         model.isLegacy && !favoritesSet.has(providerModelKey(model.instanceId, model.slug));
       (isLegacy ? legacyModels : currentModels).push(model);
@@ -803,7 +823,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
 
   const visibleModels = (() => {
     if (!legacySection) {
-      return filteredModels;
+      return scopedModels;
     }
     return [
       ...legacySection.currentModels,
@@ -855,6 +875,17 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
     // The toggle trails the list, so expanding it reveals older models above it.
     return legacySection ? [...modelKeys, legacySection.key] : modelKeys;
   })();
+  const familyHeaders = new Map<string, string>();
+  if (groupByModelFamily) {
+    let previousFamily: string | undefined;
+    for (const model of visibleModels) {
+      const family = modelFamily(model.slug) ?? "Другие модели";
+      if (family !== previousFamily) {
+        familyHeaders.set(providerModelKey(model.instanceId, model.slug), family);
+        previousFamily = family;
+      }
+    }
+  }
   const filteredModelByKey = ((): ReadonlyMap<string, ModelPickerItem> =>
     new Map(
       visibleModels.map(
@@ -1156,6 +1187,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
               <ModelPickerList
                 listRef={modelListRef}
                 itemKeys={filteredItemKeys}
+                initialIndex={activeModelKey ? filteredItemKeys.indexOf(activeModelKey) : -1}
                 extraData={modelListExtraData}
                 renderItem={({ item: modelKey, index }) => {
                   if (legacySection?.key === modelKey) {
@@ -1197,7 +1229,8 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
                         snapshot: catalogSettings?.modelBenchmarkSnapshot,
                       })}
                       manufacturerHeader={
-                        selectedInstanceId === MANUFACTURER_PROFILE_ID &&
+                        familyHeaders.get(providerModelKey(model.instanceId, model.slug)) ??
+                        (selectedInstanceId === MANUFACTURER_PROFILE_ID &&
                         !isSearching &&
                         (index === 0 ||
                           modelCatalogBrand(
@@ -1209,7 +1242,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
                               ?.manufacturer)
                           ? (modelCatalogBrand(model.instanceId, model.slug, model.driverKind)
                               ?.manufacturer ?? "Другие производители")
-                          : undefined
+                          : undefined)
                       }
                       subProvider={model.subProvider}
                       instanceId={model.instanceId}

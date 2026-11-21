@@ -3,6 +3,7 @@ import { ArrowRightIcon } from "lucide-react";
 
 import {
   getDesktopUpdateDownloadedVersion,
+  getDesktopUpdateOfferedVersion,
   getDesktopUpdateReleaseUrl,
 } from "./desktopUpdate.logic";
 import { toastManager } from "./ui/toast";
@@ -55,6 +56,35 @@ export function showDesktopUpdateDownloadedToast(
     description: (
       <>
         Restart the app from the update button to install it.
+        {releaseUrl ? <ReleaseNotesLink releaseUrl={releaseUrl} shell={shell} /> : null}
+      </>
+    ),
+  });
+}
+
+export function showDesktopUpdateAvailableToast(
+  shell: DesktopUpdateShell,
+  state: DesktopUpdateState,
+): void {
+  const version = getDesktopUpdateOfferedVersion(state);
+  if (version === null) return;
+
+  const notes = state.releaseNotes.find((entry) => entry.version === version);
+  const items = [...new Set(notes?.items)].slice(0, 3);
+  const releaseUrl = getDesktopUpdateReleaseUrl(version);
+  toastManager.add({
+    type: "info",
+    title: `Update ${version} available`,
+    description: (
+      <>
+        {notes?.intro ? <p>{notes.intro}</p> : null}
+        {items.length > 0 ? (
+          <ul className="list-disc pl-4">
+            {items.map((item) => (
+              <li key={item}>{item}</li>
+            ))}
+          </ul>
+        ) : null}
         {releaseUrl ? <ReleaseNotesLink releaseUrl={releaseUrl} shell={shell} /> : null}
       </>
     ),

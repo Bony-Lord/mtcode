@@ -27,6 +27,7 @@ import {
 import * as Context from "effect/Context";
 import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
+import * as Option from "effect/Option";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -51,6 +52,7 @@ import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProviderEventIngestor from "./ProviderEventIngestor.ts";
 import * as ProviderUsageAnalytics from "../telemetry/ProviderUsageAnalytics.ts";
+import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import type { ProjectionStoreV2Error } from "./ProjectionStore.ts";
 import {
   knownProviderFailureMessage,
@@ -668,6 +670,52 @@ export const layer: Layer.Layer<
     const finalizationObserver = yield* RunFinalizationService.RunFinalizationObserver;
     const turnAnalytics = yield* ProviderUsageAnalytics.ProviderTurnAnalytics;
     const threadCommands = yield* ThreadCommandExecutor.ThreadCommandExecutor;
+    const providerInstances = yield* Effect.serviceOption(
+      ProviderInstanceRegistry.ProviderInstanceRegistry,
+    );
+
+    const recordQuotaExhaustion = Effect.fn("RunExecutionService.recordQuotaExhaustion")(function* (
+      run: OrchestrationV2Run,
+      terminal: ProviderTerminalEvent,
+    ) {
+      if (
+        terminal.status !== "failed" ||
+        terminal.failure.class !== "usage_limit" ||
+        Option.isNone(providerInstances)
+      )
+        return;
+      const instance = yield* providerInstances.value.getInstance(run.providerInstanceId);
+      if (instance === undefined) return;
+      const now = yield* DateTime.now;
+      const reset = terminal.failure.resetAt;
+      const futureReset =
+        reset && Date.parse(reset) > DateTime.toEpochMillis(now) ? reset : undefined;
+      const model = run.modelSelection.model;
+      const subscriptionQuota = terminal.failure.code?.startsWith("subscription_sharing_") === true;
+      const gatewayPool =
+        model.includes("/") &&
+        /\b(?:free|subscription|account|plan) (?:usage )?limit\b/i.test(terminal.failure.message)
+          ? model.split("/")[0]
+          : undefined;
+      yield* instance.snapshot.applyUsageLimits({
+        checkedAt: DateTime.formatIso(now),
+        windows: [
+          {
+            id: subscriptionQuota ? "observed:account" : `observed:${gatewayPool ?? model}`,
+            label: subscriptionQuota ? "Account" : (gatewayPool ?? model),
+            kind: "other",
+            ...(subscriptionQuota
+              ? {}
+              : gatewayPool
+                ? { providerIds: [gatewayPool] }
+                : { modelIds: [model] }),
+            usedPercent: 100,
+            observedUntil: futureReset ?? DateTime.formatIso(DateTime.add(now, { minutes: 5 })),
+            ...(futureReset ? { resetsAt: futureReset } : {}),
+          },
+        ],
+      });
+    });
 
     const writeFinalRunEvents = Effect.fn("RunExecutionService.writeFinalRunEvents")(
       function* (input: {
@@ -1727,6 +1775,7 @@ export const layer: Layer.Layer<
             );
           }
           if (event.type === "turn.terminal") {
+            yield* recordQuotaExhaustion(input.run, event);
             yield* Ref.set(terminalEvent, event);
             yield* Ref.set(rootTerminalSeen, true);
             yield* finalizeRootRun(event);

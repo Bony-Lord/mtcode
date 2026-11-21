@@ -120,6 +120,8 @@ export type BrowserDefaultSettings = Pick<
   | "browserRecordingShowKeyPresses"
   | "browserRecordingShowMousePresses"
   | "browserLinkTarget"
+  | "externalBrowser"
+  | "externalBrowserPrivate"
   | "browserSearchEngine"
   | "browserCustomSearchUrl"
   | "browserAutoShowFloatingPreview"
@@ -159,6 +161,12 @@ export function getChangedBrowserSettingLabels(settings: BrowserDefaultSettings)
     ...(settings.browserRecordingShowMousePresses ? ["Recording mouse presses"] : []),
     ...(settings.browserLinkTarget !== DEFAULT_UNIFIED_SETTINGS.browserLinkTarget
       ? ["Open links in"]
+      : []),
+    ...(settings.externalBrowser !== DEFAULT_UNIFIED_SETTINGS.externalBrowser
+      ? ["External browser"]
+      : []),
+    ...(settings.externalBrowserPrivate !== DEFAULT_UNIFIED_SETTINGS.externalBrowserPrivate
+      ? ["Private window"]
       : []),
     ...(settings.browserSearchEngine !== DEFAULT_UNIFIED_SETTINGS.browserSearchEngine ||
     settings.browserCustomSearchUrl !== DEFAULT_UNIFIED_SETTINGS.browserCustomSearchUrl

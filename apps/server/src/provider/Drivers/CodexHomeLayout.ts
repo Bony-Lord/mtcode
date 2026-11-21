@@ -538,9 +538,13 @@ export const materializeCodexShadowHome = Effect.fn("materializeCodexShadowHome"
   });
 });
 
-export function codexContinuationIdentity(layout: CodexHomeLayout) {
+export function codexContinuationIdentity(layout: CodexHomeLayout, modelProvider?: string) {
   return {
     driverKind: ProviderDriverKind.make("codex"),
-    continuationKey: layout.continuationKey,
+    // Codex stores the route with the thread and refuses to change it on resume.
+    continuationKey:
+      modelProvider === undefined
+        ? layout.continuationKey
+        : `${layout.continuationKey}:model-provider:${modelProvider}`,
   };
 }

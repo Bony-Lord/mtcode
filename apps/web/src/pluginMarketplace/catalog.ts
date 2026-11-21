@@ -193,8 +193,8 @@ function listingHasArtwork(plugin: Pick<MarketplacePlugin, "hasLocalLogo" | "log
 function compareMarketplaceListings(left: MarketplacePlugin, right: MarketplacePlugin): number {
   return (
     Number(right.installed) - Number(left.installed) ||
-    Number(listingHasArtwork(right)) - Number(listingHasArtwork(left)) ||
     Number(right.installPolicy === "AVAILABLE") - Number(left.installPolicy === "AVAILABLE") ||
+    Number(listingHasArtwork(right)) - Number(listingHasArtwork(left)) ||
     Number(right.marketplaceName !== "ChatGPT Public") -
       Number(left.marketplaceName !== "ChatGPT Public") ||
     LISTING_HARNESS_RANK[left.sourceHarness] - LISTING_HARNESS_RANK[right.sourceHarness] ||
@@ -228,6 +228,7 @@ export function mergeMarketplaceListings(
     }
     return {
       ...primary,
+      logoUrl: primary.logoUrl ?? group.find((plugin) => plugin.logoUrl)?.logoUrl ?? null,
       installed: group.some((plugin) => plugin.installed),
       enabled: group.some((plugin) => plugin.enabled),
       support: [...byHarness.values()].toSorted(

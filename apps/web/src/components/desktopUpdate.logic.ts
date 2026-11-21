@@ -27,6 +27,13 @@ export function getDesktopUpdateDownloadedVersion(state: DesktopUpdateState): st
   return state.downloadedVersion ?? state.availableVersion;
 }
 
+export function getDesktopUpdateOfferedVersion(state: DesktopUpdateState): string | null {
+  const action = resolveDesktopUpdateButtonAction(state);
+  if (action === "install") return getDesktopUpdateDownloadedVersion(state);
+  if (action === "download" || state.status === "downloading") return state.availableVersion;
+  return null;
+}
+
 export function getDesktopUpdateReleaseUrl(
   version: string | null,
   repository: string | undefined = import.meta.env.T3CODE_DESKTOP_UPDATE_REPOSITORY,

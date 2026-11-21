@@ -141,6 +141,7 @@ interface AddProviderInstanceDialogProps {
   readonly environmentLabel: string;
   readonly onOpenChange: (open: boolean) => void;
   readonly onCreated?: (instanceId: ProviderInstanceId, driver: ProviderDriverKind) => void;
+  readonly initialAccountDriver?: ProviderDriverKind;
   /** Opens with "Show more" expanded, so the ACP Registry search is in view. */
   readonly showMoreProviders?: boolean;
 }
@@ -151,6 +152,7 @@ export function AddProviderInstanceDialog({
   environmentLabel,
   onOpenChange,
   onCreated,
+  initialAccountDriver,
   showMoreProviders: initialShowMoreProviders = false,
 }: AddProviderInstanceDialogProps) {
   const settings = useEnvironmentSettings(environmentId);
@@ -171,6 +173,9 @@ export function AddProviderInstanceDialog({
   const acpRegistryAllowed = isManagedDriverAllowed(managedPolicy, ACP_REGISTRY_DRIVER_KIND);
   const [driver, setDriver] = useState<ProviderDriverKind>(
     () =>
+      (initialAccountDriver && isManagedDriverAllowed(managedPolicy, initialAccountDriver)
+        ? initialAccountDriver
+        : undefined) ??
       (featuredDriverOptions[0] ?? moreDriverOptions[0])?.driverKind ??
       (acpRegistryAllowed ? ACP_REGISTRY_DRIVER_KIND : DEFAULT_DRIVER_KIND),
   );
@@ -437,7 +442,7 @@ export function AddProviderInstanceDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <WizardPopup size="wide">
         <WizardHeader
-          title="Add provider"
+          title={initialAccountDriver ? "Добавить аккаунт" : "Добавить провайдера"}
           description={<>Add an account or configure a provider on {environmentLabel}.</>}
         >
           {isAcpRegistry ? (

@@ -12,6 +12,8 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
+import { MANAGED_CODEX_MODEL_PROVIDER } from "../provider/CodexManagedRuntime.ts";
+import { codexContinuationIdentity } from "../provider/Drivers/CodexHomeLayout.ts";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import { acpSelectionTransition } from "@t3tools/provider-core/server/selectionTransition";
 import * as ProviderSwitch from "./ProviderSwitchService.ts";
@@ -313,6 +315,50 @@ it.effect("distinguishes compatible and incompatible instances of the same drive
       }),
     ),
   ),
+);
+
+const sharedCodexHome = {
+  mode: "direct",
+  sharedHomePath: "/codex",
+  effectiveHomePath: "/codex",
+  continuationKey: "codex:home:/codex",
+} as const;
+const regularCodex = codexContinuationIdentity(sharedCodexHome);
+const connectedCodex = codexContinuationIdentity(sharedCodexHome, MANAGED_CODEX_MODEL_PROVIDER);
+
+it.effect.each([
+  { from: "codex_regular", to: "codex_managed", transition: "create_with_handoff" },
+  { from: "codex_managed", to: "codex_regular", transition: "create_with_handoff" },
+  { from: "codex_managed", to: "codex_other_managed", transition: "restart_and_resume" },
+] as const)(
+  "plans $transition for $from → $to with the same Codex home",
+  ({ from, to, transition }) =>
+    Effect.gen(function* () {
+      const service = yield* ProviderSwitch.ProviderSwitchServiceV2;
+      const base = projection();
+      const instanceId = ProviderInstanceId.make(from);
+      const plan = yield* service.plan({
+        projection: {
+          ...base,
+          thread: { ...base.thread, modelSelection: { ...base.thread.modelSelection, instanceId } },
+          providerSessions: [{ ...base.providerSessions[0]!, providerInstanceId: instanceId }],
+        },
+        targetModelSelection: {
+          ...base.thread.modelSelection,
+          instanceId: ProviderInstanceId.make(to),
+        },
+      });
+      assert.equal(plan.transition.type, transition);
+      assert.deepEqual(plan.releaseProviderSessionIds, [currentSessionId]);
+    }).pipe(
+      Effect.provide(
+        layerTest({
+          codex_regular: regularCodex,
+          codex_managed: connectedCodex,
+          codex_other_managed: connectedCodex,
+        }),
+      ),
+    ),
 );
 
 it.effect(

@@ -3,7 +3,8 @@ import { describe, expect, it, vi } from "vite-plus/test";
 import { page, userEvent } from "vite-plus/test/browser";
 
 import "~/index.css";
-import { act, render } from "../../../test/render";
+import { act, render, stubGlobal } from "../../../test/render";
+import { ToastProvider } from "../ui/toast";
 import { SidebarUpdatePill } from "./SidebarUpdatePill";
 import type { UpdateEverythingRow } from "./updateEverything.logic";
 
@@ -93,6 +94,35 @@ function publish(update: DesktopUpdateState | null) {
 const releaseNotes = () => document.querySelector('[aria-label="Update release notes"]');
 
 describe("SidebarUpdatePill release notes", () => {
+  it("shows the version and changes after a manual check even when download has started", async () => {
+    const offer = nightlyUpdate([
+      {
+        version: "0.0.50-nightly.2",
+        intro: "This release improves updates.",
+        items: ["Faster sidebar."],
+        totalItems: 2,
+      },
+    ]);
+    const idle = { ...nightlyUpdate([]), status: "idle", availableVersion: null } as const;
+    const checking = { ...idle, status: "checking" } as const;
+    const checkForUpdate = vi.fn().mockResolvedValue({ checked: true, state: checking });
+    using _bridge = stubGlobal("desktopBridge", { checkForUpdate });
+    setup(idle);
+    await using screen = await render(
+      <ToastProvider>
+        <SidebarUpdatePill />
+      </ToastProvider>,
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Check for updates" }));
+    expect(checkForUpdate).toHaveBeenCalledOnce();
+    await publish(checking);
+    await publish({ ...offer, status: "downloading" });
+
+    await expect.element(page.getByText("Update 0.0.50-nightly.2 available")).toBeVisible();
+    await expect.element(page.getByText("This release improves updates.")).toBeVisible();
+    await expect.element(page.getByText("Faster sidebar.")).toBeVisible();
+  });
+
   it("closes when the release notes stop applying", async () => {
     setup(nightlyUpdate(RELEASE_NOTES));
     await using _screen = await render(<SidebarUpdatePill />);

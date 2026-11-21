@@ -53,7 +53,11 @@ export function applyUsageLimitsUpdate(input: {
   readonly checkedAt: string;
 }): ServerProviderUsageLimits | undefined {
   const { previous, update } = input;
-  if (update.windows.length === 0 || previous?.unavailable?.reason === "unsupported") {
+  const observation = update.windows.some((window) => window.observedUntil !== undefined);
+  if (
+    update.windows.length === 0 ||
+    (!observation && previous?.unavailable?.reason === "unsupported")
+  ) {
     return previous;
   }
   const merged = new Map(previous?.windows.map((window) => [window.id, window] as const));
@@ -64,7 +68,9 @@ export function applyUsageLimitsUpdate(input: {
     const next: ServerProviderUsageWindow = {
       ...window,
       usedPercent: clampPercent(window.usedPercent),
-      ...(window.resetsAt === undefined && existing?.resetsAt !== undefined
+      ...(window.observedUntil === undefined &&
+      window.resetsAt === undefined &&
+      existing?.resetsAt !== undefined
         ? { resetsAt: existing.resetsAt }
         : {}),
       ...(window.windowDurationMins === undefined && existing?.windowDurationMins !== undefined
@@ -79,10 +85,24 @@ export function applyUsageLimitsUpdate(input: {
   if (!changed && previous !== undefined) {
     return previous;
   }
-  const unavailable =
-    previous === undefined ? { reason: "probeFailed" as const } : previous.unavailable;
+  const unavailable = observation
+    ? undefined
+    : previous === undefined
+      ? { reason: "probeFailed" as const }
+      : previous.unavailable;
   return {
-    ...makeUsageLimits({ checkedAt: input.checkedAt, windows: merged.values() }),
+    ...makeUsageLimits({
+      checkedAt:
+        observation && previous?.windows.some((window) => window.observedUntil === undefined)
+          ? previous.checkedAt
+          : input.checkedAt,
+      windows: merged.values(),
+    }),
+    ...(previous?.plan !== undefined ? { plan: previous.plan } : {}),
+    ...(previous?.externalUsage !== undefined ? { externalUsage: previous.externalUsage } : {}),
+    ...(previous?.credentialFingerprint !== undefined
+      ? { credentialFingerprint: previous.credentialFingerprint }
+      : {}),
     ...(previous?.resetCredits !== undefined ? { resetCredits: previous.resetCredits } : {}),
     ...(previous?.zeroSpendCap ? { zeroSpendCap: true } : {}),
     ...(unavailable !== undefined ? { unavailable } : {}),
@@ -105,7 +125,13 @@ function usageWindowEquals(a: ServerProviderUsageWindow, b: ServerProviderUsageW
         b.providerIds !== undefined &&
         a.providerIds.length === b.providerIds.length &&
         a.providerIds.every((id, index) => id === b.providerIds?.[index]))) &&
+    (a.modelFamilies === b.modelFamilies ||
+      (a.modelFamilies !== undefined &&
+        b.modelFamilies !== undefined &&
+        a.modelFamilies.length === b.modelFamilies.length &&
+        a.modelFamilies.every((id, index) => id === b.modelFamilies?.[index]))) &&
     a.resetsAt === b.resetsAt &&
+    a.observedUntil === b.observedUntil &&
     a.windowDurationMins === b.windowDurationMins
   );
 }
@@ -115,6 +141,35 @@ export function resolveUsageLimitsAfterProbe(input: {
   readonly probed: ServerProviderUsageLimits | undefined;
 }): ServerProviderUsageLimits | undefined {
   const { published, probed } = input;
+  const observed =
+    published?.windows.filter(
+      (window) =>
+        window.observedUntil !== undefined &&
+        (!probed || Date.parse(window.observedUntil) > Date.parse(probed.checkedAt)),
+    ) ?? [];
+  if (published && !probed && observed.length > 0) return { ...published, windows: observed };
+  if (
+    published &&
+    probed &&
+    observed.length > 0 &&
+    (!probed.credentialFingerprint ||
+      !published.credentialFingerprint ||
+      probed.credentialFingerprint === published.credentialFingerprint)
+  ) {
+    const { unavailable: _unavailable, ...reported } = probed;
+    const numeric = probed.windows.filter((window) => window.observedUntil === undefined);
+    const liveObserved = observed.filter(
+      (window) =>
+        !numeric.some(
+          (measurement) =>
+            measurement.modelIds?.some((model) => window.modelIds?.includes(model)) &&
+            Date.parse(probed.checkedAt) >= Date.parse(published.checkedAt),
+        ),
+    );
+    if (liveObserved.length > 0) {
+      return { ...reported, windows: sortWindows([...numeric, ...liveObserved]) };
+    }
+  }
   if (probed?.unavailable?.reason === "probeFailed" && published && !published.unavailable) {
     return published;
   }

@@ -942,6 +942,7 @@ export const make = Effect.gen(function* () {
         events.push({
           id: yield* allocateEventId(),
           type: "provider-thread.updated",
+          preserveActiveProviderThread: true,
           threadId: projection.thread.id,
           driver: providerThread.driver,
           providerInstanceId: providerThread.providerInstanceId,

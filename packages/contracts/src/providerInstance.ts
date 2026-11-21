@@ -74,6 +74,7 @@ export type ResolvedProviderInstanceEnvironment = ReadonlyArray<
 /** Drivers decode their own config; unknown-driver envelopes round-trip verbatim across versions. */
 export const ProviderInstanceConfig = Schema.Struct({
   driver: ProviderDriverKind,
+  providerGroup: Schema.optionalKey(TrimmedNonEmptyString),
   settingsProfileId: Schema.optionalKey(ProviderInstanceId),
   accountTier: Schema.optionalKey(
     Schema.Literals(["free", "subscription", "paid-api", "local", "unknown"]),
@@ -120,16 +121,44 @@ export type ProviderInstanceMutation = typeof ProviderInstanceMutation.Type;
 export const ProviderInstanceConfigMap = Schema.Record(ProviderInstanceId, ProviderInstanceConfig);
 export type ProviderInstanceConfigMap = typeof ProviderInstanceConfigMap.Type;
 
+/** The driver identifies the runtime. ACP registry entries also identify the actual agent. */
+export function providerGroupId(
+  instance: Pick<ProviderInstanceConfig, "driver" | "config" | "providerGroup">,
+): string {
+  if (instance.providerGroup) return `${instance.driver}:${instance.providerGroup}`;
+  if (instance.driver !== "acpRegistry") return instance.driver;
+  if (typeof instance.config !== "object" || instance.config === null) return instance.driver;
+  const config = instance.config as Record<string, unknown>;
+  const agent = config["agentId"];
+  if (typeof agent === "string" && agent.trim()) return `acpRegistry:${agent.trim()}`;
+  const command = config["commandPath"];
+  const args = config["commandArgs"];
+  if (typeof command === "string" && command.trim()) {
+    return `acpRegistry:${JSON.stringify([command, args ?? []])}`;
+  }
+  return instance.driver;
+}
+
+export const ProviderRuntimePreferences = Schema.Record(
+  TrimmedNonEmptyString,
+  Schema.Struct({ binaryPath: TrimmedNonEmptyString }),
+);
+export type ProviderRuntimePreferences = typeof ProviderRuntimePreferences.Type;
+
 /** Resolve common runtime options while keeping each account's credentials and home private. */
 export function resolveProviderInstanceProfiles(
   instances: ProviderInstanceConfigMap,
 ): ProviderInstanceConfigMap {
-  const resolved: Record<string, ProviderInstanceConfig> = {};
+  const resolved = new Map<string, ProviderInstanceConfig>();
   const visiting = new Set<string>();
   const resolve = (id: string): ProviderInstanceConfig => {
     const own = instances[ProviderInstanceId.make(id)]!;
-    if (resolved[id]) return resolved[id];
-    const parent = own.settingsProfileId && instances[own.settingsProfileId];
+    const existing = resolved.get(id);
+    if (existing) return existing;
+    const parent =
+      own.settingsProfileId && Object.hasOwn(instances, own.settingsProfileId)
+        ? instances[own.settingsProfileId]
+        : undefined;
     if (!parent || parent.driver !== own.driver || visiting.has(id)) return own;
     visiting.add(id);
     const base = resolve(own.settingsProfileId!);
@@ -152,7 +181,7 @@ export function resolveProviderInstanceProfiles(
         .filter(
           (item) =>
             !item.sensitive &&
-            !/(?:TOKEN|SECRET|KEY|PASSWORD|CREDENTIAL|AUTH|HOME)/.test(item.name),
+            !/(?:TOKEN|SECRET|KEY|PASSWORD|CREDENTIAL|AUTH|HOME)/i.test(item.name),
         )
         .map((item) => [item.name, item]),
     );
@@ -162,7 +191,7 @@ export function resolveProviderInstanceProfiles(
       config: { ...config, ...overrides },
       environment: [...variables.values()],
     };
-    resolved[id] = next;
+    resolved.set(id, next);
     return next;
   };
   return Object.fromEntries(Object.keys(instances).map((id) => [id, resolve(id)]));

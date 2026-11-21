@@ -1,5 +1,10 @@
 import { useAtomValue } from "@effect/atom-react";
-import { providerUsageDisplaySource, remainingPercent } from "@t3tools/shared/usageLimits";
+import {
+  providerUsageDisplaySource,
+  remainingPercent,
+  usageWindowApplies,
+} from "@t3tools/shared/usageLimits";
+import { useState } from "react";
 import { isSmartModel } from "@t3tools/shared/smartModelRouting";
 import { refreshUsageLimits } from "@t3tools/client-runtime/state/usage";
 import { environmentPresentations } from "../../state/presentation";
@@ -16,6 +21,7 @@ import { selectedUsageModel } from "./QuickUsageLimits.logic";
 const arcs = ["M9.771 6.674 A14 14 0 0 1 26.229 6.674", "M29.326 9.771 A14 14 0 1 1 6.674 9.771"];
 
 export function QuickUsageLimits({ onOpenUsage }: { readonly onOpenUsage: () => void }) {
+  const [now, setNow] = useState(Date.now);
   const target = useThreadRouteTarget();
   const threadRef = target?.kind === "server" ? target.threadRef : null;
   const thread = useQuietThreadShell(threadRef);
@@ -56,10 +62,8 @@ export function QuickUsageLimits({ onOpenUsage }: { readonly onOpenUsage: () => 
   const windows =
     limits?.windows.filter(
       (window) =>
-        !selection ||
-        ((!window.modelIds || window.modelIds.includes(selection.model)) &&
-          (!window.providerIds ||
-            window.providerIds.includes(selection.model.split("/")[0] ?? ""))),
+        (window.observedUntil === undefined || Date.parse(window.observedUntil) > now) &&
+        (!selection || usageWindowApplies(window, selection.model)),
     ) ?? [];
   const session =
     windows.find((window) => window.kind === "session") ??
@@ -74,6 +78,7 @@ export function QuickUsageLimits({ onOpenUsage }: { readonly onOpenUsage: () => 
   });
   const refresh = (open: boolean) => {
     if (!open || !environmentId || !source) return;
+    setNow(Date.now());
     if (presentations.get(environmentId)?.connection.phase !== "connected") return;
     void refreshUsageLimits(
       environmentId,
@@ -137,37 +142,37 @@ export function QuickUsageLimits({ onOpenUsage }: { readonly onOpenUsage: () => 
                 {automatic
                   ? "Авто выберет модель при отправке запроса."
                   : provider?.auth.subscriptionSharing
-                    ? "Лимиты можно посмотреть в ChatGPT → Настройки → Использование. Для процентов здесь нужен вход под этим же аккаунтом в Codex."
+                    ? "Лимиты доступны в ChatGPT → Настройки → Использование."
                     : "Провайдер не передаёт числовые лимиты."}
               </div>
             ) : (
-              [session, weekly]
-                .filter((window) => window !== undefined)
-                .map((window) => (
-                  <div key={window.id}>
-                    <div>
-                      {window.kind === "weekly"
-                        ? "Недельный лимит"
-                        : window.kind === "session"
-                          ? window.windowDurationMins === 300
-                            ? "5 часов"
-                            : "Сессия"
-                          : window.label}
-                      : осталось {remainingPercent(window)}%
-                    </div>
-                    {window.resetsAt && Number.isFinite(Date.parse(window.resetsAt)) ? (
-                      <div className="text-muted-foreground">
-                        Сброс:{" "}
-                        {new Date(window.resetsAt).toLocaleString("ru-RU", {
-                          day: "numeric",
-                          month: "short",
-                          hour: "2-digit",
-                          minute: "2-digit",
-                        })}
-                      </div>
-                    ) : null}
+              windows.map((window) => (
+                <div key={window.id}>
+                  <div>
+                    {window.kind === "weekly"
+                      ? "Недельный лимит"
+                      : window.kind === "session"
+                        ? window.windowDurationMins === 300
+                          ? "5 часов"
+                          : "Сессия"
+                        : window.label}
+                    {window.observedUntil === undefined
+                      ? `: осталось ${remainingPercent(window)}%`
+                      : ": лимит исчерпан"}
                   </div>
-                ))
+                  {window.resetsAt && Number.isFinite(Date.parse(window.resetsAt)) ? (
+                    <div className="text-muted-foreground">
+                      Сброс:{" "}
+                      {new Date(window.resetsAt).toLocaleString("ru-RU", {
+                        day: "numeric",
+                        month: "short",
+                        hour: "2-digit",
+                        minute: "2-digit",
+                      })}
+                    </div>
+                  ) : null}
+                </div>
+              ))
             )}
             <div className="pt-1 text-muted-foreground">Нажми, чтобы открыть использование</div>
           </div>

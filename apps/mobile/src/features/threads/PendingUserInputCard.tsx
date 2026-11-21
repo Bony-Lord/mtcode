@@ -8,7 +8,7 @@ import {
   type TextDirection,
 } from "@t3tools/shared/textDirection";
 import { useNavigation } from "@react-navigation/native";
-import { useRef } from "react";
+import { useRef, useState } from "react";
 import { Platform, Pressable, ScrollView, View, type LayoutChangeEvent } from "react-native";
 import Animated, {
   useAnimatedStyle,
@@ -120,6 +120,7 @@ function QuestionText(props: {
 }
 
 export function PendingUserInputCard(props: PendingUserInputCardProps) {
+  const [customQuestions, setCustomQuestions] = useState<Record<string, boolean>>({});
   const questionCount = props.pendingUserInput.questions.length;
   const canRespond = props.pendingUserInput.responseCapability !== "not_resumable";
   const isResponding = props.respondingUserInputId === props.pendingUserInput.requestId;
@@ -259,6 +260,11 @@ export function PendingUserInputCard(props: PendingUserInputCardProps) {
         ) : null}
         {props.pendingUserInput.questions.map((question) => {
           const draft = props.drafts[question.id];
+          const hasOptions = question.options.length > 0;
+          const customSelected =
+            customQuestions[question.id] === true ||
+            Boolean(draft?.customAnswer?.trim()) ||
+            (draft?.attachmentCount ?? 0) > 0;
           return (
             <View key={question.id} className="gap-2 pt-1">
               <Text
@@ -291,13 +297,14 @@ export function PendingUserInputCard(props: PendingUserInputCardProps) {
                           "min-h-12 w-full rounded-2xl border px-3.5 py-3",
                           selected ? "border-primary bg-primary/10" : "border-border bg-input",
                         )}
-                        onPress={() =>
+                        onPress={() => {
+                          setCustomQuestions((current) => ({ ...current, [question.id]: false }));
                           props.onSelectOption(
                             props.pendingUserInput.requestId,
                             question,
                             optionValue,
-                          )
-                        }
+                          );
+                        }}
                       >
                         <View className="min-w-0 flex-1 gap-0.5">
                           <Text
@@ -334,8 +341,31 @@ export function PendingUserInputCard(props: PendingUserInputCardProps) {
                     </View>
                   );
                 })}
+                {hasOptions && question.allowCustomAnswer !== false ? (
+                  <Pressable
+                    accessibilityRole="radio"
+                    accessibilityState={{ checked: customSelected, disabled: responseDisabled }}
+                    disabled={responseDisabled}
+                    className={cn(
+                      "min-h-12 w-full rounded-2xl border px-3.5 py-3",
+                      customSelected ? "border-primary bg-primary/10" : "border-border bg-input",
+                    )}
+                    onPress={() => {
+                      setCustomQuestions((current) => ({ ...current, [question.id]: true }));
+                      if (!customSelected) {
+                        props.onChangeCustomAnswer(
+                          props.pendingUserInput.requestId,
+                          question.id,
+                          "",
+                        );
+                      }
+                    }}
+                  >
+                    <Text className="font-t3-bold text-sm text-foreground">Свой ответ</Text>
+                  </Pressable>
+                ) : null}
               </View>
-              {question.allowCustomAnswer !== false ? (
+              {question.allowCustomAnswer !== false && (!hasOptions || customSelected) ? (
                 <QuestionAttachments
                   key={`${props.pendingUserInput.requestId}:${question.id}`}
                   requestId={props.pendingUserInput.requestId}

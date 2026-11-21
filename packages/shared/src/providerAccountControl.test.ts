@@ -59,8 +59,8 @@ it("switches only to a different verified saved account with fresh allowance and
       { ...instances, b: { driver: current.driver } },
       "gpt-test",
       now,
-    )?.instanceId,
-  ).toBe("b");
+    ),
+  ).toBeUndefined();
   expect(
     availableAccountForModel(current, [managed], instances, "gpt-test", now, new Set(["b"])),
   ).toBeUndefined();

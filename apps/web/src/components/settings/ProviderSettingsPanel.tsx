@@ -5,6 +5,9 @@ import {
   AuthSettingsWriteScope,
   AuthProvidersManageScope,
   AuthOrchestrationReadScope,
+  AuthFilesystemWriteScope,
+  LOCAL_OPENAI_COMPATIBLE_BASE_URL,
+  type GatewayConnectInput,
 } from "@t3tools/contracts";
 import { useEnvironmentScope, readEnvironmentScope } from "../../state/session";
 import { useAtomValue } from "@effect/atom-react";
@@ -27,6 +30,7 @@ import {
   type ProjectId,
   type ProviderInstanceConfig,
   ProviderInstanceId,
+  providerGroupId,
   type RuntimeMode,
   type ServerProvider,
   resolveEnvironmentMachineKind,
@@ -82,6 +86,7 @@ import {
 } from "../ProviderUpdateLaunchNotification.logic";
 import { ProviderUpdatesAction } from "../ProviderUpdatesAction";
 import { Button } from "../ui/button";
+import { Input } from "../ui/input";
 import {
   Empty,
   EmptyContent,
@@ -170,6 +175,109 @@ function providerConfigString(config: unknown, key: string): string | null {
   if (config === null || typeof config !== "object") return null;
   const value = (config as Record<string, unknown>)[key];
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function ProviderSharedBinaryPath({
+  value,
+  disabled,
+  onSave,
+}: {
+  readonly value: string;
+  readonly disabled: boolean;
+  readonly onSave: (value: string) => void;
+}) {
+  const [draft, setDraft] = useState<string | null>(null);
+  const path = (draft ?? value).trim();
+  return (
+    <SettingsRow
+      title="Общий путь к программе"
+      description="Используется аккаунтами этого провайдера, если в аккаунте нет своего пути. Codex с управляемой установкой использует общий двоичный файл MT Code."
+      control={
+        <form
+          className="flex min-w-0 flex-wrap items-center justify-end gap-2"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (disabled || path === value) return;
+            onSave(path);
+          }}
+        >
+          <Input
+            aria-label="Общий путь к программе"
+            placeholder="Автоматически"
+            value={draft ?? value}
+            disabled={disabled}
+            onChange={(event) => setDraft(event.target.value)}
+          />
+          <Button size="sm" type="submit" variant="outline" disabled={disabled || path === value}>
+            Сохранить
+          </Button>
+        </form>
+      }
+    />
+  );
+}
+
+function LocalGatewaySettings({
+  canConnect,
+  connecting,
+  onConnect,
+}: {
+  readonly canConnect: boolean;
+  readonly connecting: boolean;
+  readonly onConnect: (input: GatewayConnectInput) => void;
+}) {
+  const [url, setUrl] = useState(LOCAL_OPENAI_COMPATIBLE_BASE_URL);
+  const [models, setModels] = useState("");
+  const disabled = !canConnect || connecting;
+  return (
+    <SettingsSection title="Локальные шлюзы">
+      <SettingsRow
+        title="OmniRoute"
+        description="Подключает уже установленный шлюз и его каталог моделей."
+        control={
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={disabled}
+            onClick={() => onConnect({ presetId: "omniroute" })}
+          >
+            Подключить OmniRoute
+          </Button>
+        }
+      />
+      <SettingsRow
+        title="OpenAI-совместимый API"
+        description="Подключает локальный сервер моделей через OpenCode."
+        control={
+          <div className="flex w-full flex-col gap-2 sm:w-64">
+            <Input
+              aria-label="Адрес локального API"
+              value={url}
+              disabled={disabled}
+              onChange={(event) => setUrl(event.target.value)}
+            />
+            <Input
+              aria-label="Идентификаторы моделей"
+              value={models}
+              disabled={disabled}
+              placeholder="model-a, model-b"
+              onChange={(event) => setModels(event.target.value)}
+            />
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={disabled || !url.trim() || !models.trim()}
+              onClick={() =>
+                onConnect({ presetId: "local-openai-compatible", baseUrl: url, models })
+              }
+            >
+              Подключить локальный API
+            </Button>
+          </div>
+        }
+      />
+    </SettingsSection>
+  );
 }
 
 const PROVIDER_SETTINGS = providerClients.definitions.map((definition) => ({
@@ -593,6 +701,8 @@ export function EnvironmentProviderSettings({
   const canRefreshProviders = useEnvironmentScope(environmentId, AuthOrchestrationReadScope);
   const updateSettings = useUpdateEnvironmentSettings(environmentId);
   const syncFreeCatalog = useAtomCommand(serverEnvironment.updateSettings, { reportFailure: true });
+  const canWriteGatewayFiles = useEnvironmentScope(environmentId, AuthFilesystemWriteScope);
+  const [connectingGateway, setConnectingGateway] = useState(false);
   const [isSyncingFreeCatalog, setIsSyncingFreeCatalog] = useState(false);
   const updateModelPreferences = useUpdateEnvironmentModelPreferences(environmentId);
   const toggleModelFavorite = useToggleEnvironmentModelFavorite(environmentId);
@@ -619,6 +729,7 @@ export function EnvironmentProviderSettings({
   const [isRefreshingProviders, setIsRefreshingProviders] = useState(false);
   const [isTogglingFreeAccounts, setIsTogglingFreeAccounts] = useState(false);
   const [isAddInstanceDialogOpen, setIsAddInstanceDialogOpen] = useState(false);
+  const [accountDriver, setAccountDriver] = useState<ProviderDriverKind>();
   const [isAddCodexAccountOpen, setIsAddCodexAccountOpen] = useState(false);
   const [showHiddenProviders, setShowHiddenProviders] = useState(false);
   const [selectedInstanceId, setSelectedInstanceId] = useState<ProviderInstanceId | null>(
@@ -777,12 +888,13 @@ export function EnvironmentProviderSettings({
     const driver = providerSettings.provider;
     const defaultInstanceId = defaultInstanceIdForDriver(driver);
     const explicitInstance = settings.providerInstances?.[defaultInstanceId];
-    if (explicitInstance?.hidden && !showHiddenProviders && defaultInstanceId !== targetInstanceId)
-      continue;
     const isDirty = explicitInstance !== undefined;
     const hasDefaultSlot = providerSettings.hasDefaultInstance || explicitInstance !== undefined;
     if (
       hasDefaultSlot &&
+      (!explicitInstance?.hidden ||
+        showHiddenProviders ||
+        defaultInstanceId === targetInstanceId) &&
       (driver === "codex" ||
         driver === "claudeAgent" ||
         isDirty ||
@@ -828,6 +940,29 @@ export function EnvironmentProviderSettings({
   const selectedRow =
     rows.find((row) => row.instanceId === selectedInstanceId) ??
     (targetInstanceMissing ? null : (rows[0] ?? null));
+  const rowGroup = (row: InstanceRow) =>
+    providerGroupId(row.explicitInstance ?? { driver: row.driver });
+  const providerGroups = new Map<string, InstanceRow[]>();
+  for (const row of rows) {
+    const id = rowGroup(row);
+    const accounts = providerGroups.get(id);
+    if (accounts) accounts.push(row);
+    else providerGroups.set(id, [row]);
+  }
+  const selectedGroupId = selectedRow === null ? null : rowGroup(selectedRow);
+  const selectedAccounts =
+    selectedGroupId === null ? [] : (providerGroups.get(selectedGroupId) ?? []);
+  const groupLabel = (groupId: string, row: InstanceRow) => {
+    if (row.explicitInstance?.providerGroup) return row.explicitInstance.providerGroup;
+    if (groupId !== row.driver) {
+      return (
+        providerConfigString(row.explicitInstance?.config, "agentName") ??
+        row.explicitInstance?.displayName ??
+        providerInstanceName({ driver: row.driver })
+      );
+    }
+    return PROVIDER_DISPLAY_NAMES[row.driver] ?? providerInstanceName({ driver: row.driver });
+  };
   const hasPausedFreeAccounts =
     selectedRow !== null &&
     Object.values(settings.providerInstances).some(
@@ -894,11 +1029,20 @@ export function EnvironmentProviderSettings({
   );
 
   const deleteInstance = useStableCallback(
-    async (instanceId: ProviderInstanceId, instance: ProviderInstanceConfig) => {
-      const confirmed = await confirmProviderInstanceRemoval(
-        `Remove the ${providerInstanceName(instance)} provider instance?`,
-      );
-      if (!confirmed) return;
+    async (
+      instanceId: ProviderInstanceId,
+      instance: ProviderInstanceConfig,
+      skipConfirm = false,
+    ) => {
+      if (!skipConfirm) {
+        const confirmed = await settlePromise(() =>
+          ensureLocalApi().dialogs.confirm(
+            `Удалить аккаунт «${providerInstanceName(instance)}» из MT Code? История чатов сохранится. Для продолжения чатов выберите другой аккаунт.`,
+            { variant: "destructive" },
+          ),
+        );
+        if (confirmed._tag !== "Success" || !confirmed.value) return false;
+      }
       const updateResult = await persistProviderInstance({
         operation: "remove",
         instanceId,
@@ -910,15 +1054,14 @@ export function EnvironmentProviderSettings({
           title: "Could not delete provider instance",
           description: error instanceof Error ? error.message : "The settings update failed.",
         });
-        return;
+        return false;
       }
-      // Fork: drop the per-instance runtime-mode default along with the instance.
-      updateSettings({ providerRuntimeModeDefaults: { [instanceId]: null } });
+      if (skipConfirm) return true;
 
-      if (instance.driver !== ProviderDriverKind.make("acpRegistry")) return;
-      if (providerConfigString(instance.config, "source") === "local") return;
+      if (instance.driver !== ProviderDriverKind.make("acpRegistry")) return true;
+      if (providerConfigString(instance.config, "source") === "local") return true;
       const agentId = providerConfigString(instance.config, "agentId");
-      if (agentId === null) return;
+      if (agentId === null) return true;
 
       // Concurrent removals race client snapshots; let the server decide whether the agent remains in use.
       const uninstallResult = await uninstallAcpRegistryManagedBinary({
@@ -933,6 +1076,7 @@ export function EnvironmentProviderSettings({
           description: error instanceof Error ? error.message : "Managed binary cleanup failed.",
         });
       }
+      return true;
     },
   );
 
@@ -976,7 +1120,42 @@ export function EnvironmentProviderSettings({
       updateSettings({ providerRuntimeModeDefaults: { [instanceId]: runtimeMode } });
     },
   );
-  const openAddInstanceDialog = useStableCallback(() => setIsAddInstanceDialogOpen(true));
+  const openAddInstanceDialog = useStableCallback(() => {
+    setAccountDriver(undefined);
+    setIsAddInstanceDialogOpen(true);
+  });
+  const openAddAccount = (driver: ProviderDriverKind) => {
+    if (driver === "codex") {
+      setIsAddCodexAccountOpen(true);
+      return;
+    }
+    setAccountDriver(driver);
+    setIsAddInstanceDialogOpen(true);
+  };
+  const [removingProvider, setRemovingProvider] = useState(false);
+  const removeProvider = async () => {
+    if (!selectedRow || selectedGroupId === null || removingProvider || readOnly) return;
+    const confirmed = await settlePromise(() =>
+      ensureLocalApi().dialogs.confirm(
+        `Удалить провайдера «${groupLabel(selectedGroupId, selectedRow)}» из списка? Его дополнительные аккаунты будут удалены, встроенный профиль будет скрыт. История чатов и установленная программа сохранятся.`,
+        { variant: "destructive" },
+      ),
+    );
+    if (confirmed._tag !== "Success" || !confirmed.value) return;
+    setRemovingProvider(true);
+    try {
+      for (const row of selectedAccounts) {
+        const instance = row.explicitInstance ?? { driver: row.driver };
+        const done = row.isDefault
+          ? await persistInstance(row.instanceId, { ...instance, enabled: false, hidden: true })
+          : await deleteInstance(row.instanceId, instance, true);
+        if (!done) return;
+      }
+      setSelectedInstanceId(null);
+    } finally {
+      setRemovingProvider(false);
+    }
+  };
 
   const stableUpdateModelPreferences = useStableCallback(updateModelPreferences);
   const stableToggleModelFavorite = useStableCallback(toggleModelFavorite);
@@ -992,7 +1171,6 @@ export function EnvironmentProviderSettings({
     toggleModelFavorite: stableToggleModelFavorite,
     selectInstance: setSelectedInstanceId,
     setProviderRuntimeModeDefault,
-    openAddInstanceDialog: canAddProvider ? openAddInstanceDialog : undefined,
   };
   // resolveModelPreferences falls back to a fresh `[]`; keep it stable for the rows.
   const favorites = settings.favorites.length > 0 ? settings.favorites : NO_FAVORITES;
@@ -1060,7 +1238,7 @@ export function EnvironmentProviderSettings({
                   <Button
                     size="icon-xs"
                     variant="ghost-muted"
-                    onClick={() => setIsAddInstanceDialogOpen(true)}
+                    onClick={openAddInstanceDialog}
                     aria-label="Add provider"
                   >
                     <PlusIcon />
@@ -1191,63 +1369,29 @@ export function EnvironmentProviderSettings({
               className="@min-[48rem]/providers:min-h-0 @min-[48rem]/providers:flex-1"
             >
               <div className="divide-y divide-border/50">
-                {[...new Set(rows.map((row) => row.driver))].map((driver) => {
-                  const members = rows.filter((row) => row.driver === driver);
-                  const commonCodex =
-                    driver === "codex" ? members.find((row) => row.isDefault) : undefined;
-                  if (commonCodex)
-                    return (
-                      <div key={driver}>
-                        <div className="flex items-center gap-1 border-b border-border/50 bg-muted/20 px-3 py-2">
-                          <button
-                            type="button"
-                            className="min-w-0 flex-1 cursor-pointer text-left text-xs font-medium hover:text-primary"
-                            aria-current={
-                              selectedRow?.instanceId === commonCodex.instanceId
-                                ? "true"
-                                : undefined
-                            }
-                            onClick={() => setSelectedInstanceId(commonCodex.instanceId)}
-                          >
-                            Codex · общий профиль
-                          </button>
-                          {canAddProvider ? (
-                            <Button
-                              size="icon-xs"
-                              variant="ghost-muted"
-                              aria-label="Добавить аккаунт Codex"
-                              onClick={() => setIsAddCodexAccountOpen(true)}
-                            >
-                              <PlusIcon className="size-3.5" />
-                            </Button>
-                          ) : null}
-                        </div>
-                        <div className="ml-3 border-l border-border/60">
-                          {members
-                            .filter((row) => row !== commonCodex)
-                            .map((row) => renderProviderInstance(row, "list"))}
-                        </div>
-                      </div>
-                    );
-                  return members.length > 1 &&
-                    ["codex", "claudeAgent", "antigravity"].includes(driver) ? (
-                    <details key={driver} open className="group/accounts">
-                      <summary className="cursor-pointer bg-muted/20 px-3 py-2 text-xs font-medium">
-                        {PROVIDER_DISPLAY_NAMES[driver] ?? driver} · {members.length} аккаунта
-                      </summary>
+                {[...providerGroups].map(([groupId, members]) => (
+                  <div key={groupId}>
+                    <button
+                      type="button"
+                      className="flex w-full cursor-pointer justify-between gap-2 bg-muted/20 px-3 py-2 text-left text-xs font-medium hover:bg-muted/40"
+                      aria-expanded={selectedGroupId === groupId}
+                      onClick={() => setSelectedInstanceId(members[0]!.instanceId)}
+                    >
+                      <span>{groupLabel(groupId, members[0]!)}</span>
+                      <span className="text-muted-foreground">{members.length}</span>
+                    </button>
+                    {selectedGroupId === groupId ? (
                       <div className="ml-3 border-l border-border/60">
                         {members.map((row) => renderProviderInstance(row, "list"))}
                       </div>
-                    </details>
-                  ) : (
-                    members.map((row) => renderProviderInstance(row, "list"))
-                  );
-                })}
+                    ) : null}
+                  </div>
+                ))}
                 {canAddProvider ? (
                   <button
                     type="button"
                     className="flex w-full cursor-pointer items-center gap-3 px-3 py-3 text-left text-sm text-muted-foreground transition-colors outline-none hover:bg-muted/25 hover:text-foreground focus-visible:bg-muted/25 focus-visible:text-foreground sm:px-4"
-                    onClick={() => setIsAddInstanceDialogOpen(true)}
+                    onClick={openAddInstanceDialog}
                   >
                     <PlusIcon className="size-4 shrink-0" />
                     Add provider
@@ -1273,6 +1417,52 @@ export function EnvironmentProviderSettings({
               <ScrollArea scrollFade chainVerticalScroll className="@min-[48rem]/providers:h-full">
                 {/* Flat sections run dividers edge to edge and inset text like the list beside them. */}
                 <div className="space-y-6 py-4">
+                  <SettingsSection title={groupLabel(selectedGroupId!, selectedRow)}>
+                    {selectedRow.driver !== "acpRegistry" ? (
+                      <ProviderSharedBinaryPath
+                        key={selectedGroupId}
+                        value={
+                          settings.providerRuntimePreferences[selectedGroupId!]?.binaryPath ?? ""
+                        }
+                        disabled={readOnly}
+                        onSave={(binaryPath) =>
+                          updateSettings({
+                            providerRuntimePreferences: {
+                              [selectedGroupId!]: binaryPath ? { binaryPath } : null,
+                            },
+                          })
+                        }
+                      />
+                    ) : null}
+                    <SettingsRow
+                      title="Управление аккаунтами"
+                      description="Выберите аккаунт слева, чтобы изменить его настройки или вход."
+                      control={
+                        canAddProvider ? (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => openAddAccount(selectedRow.driver)}
+                          >
+                            Добавить аккаунт
+                          </Button>
+                        ) : undefined
+                      }
+                    />
+                    <SettingsRow
+                      title="Удаление провайдера"
+                      control={
+                        <Button
+                          size="sm"
+                          variant="ghost-destructive"
+                          disabled={readOnly || removingProvider}
+                          onClick={() => void removeProvider()}
+                        >
+                          Удалить провайдера
+                        </Button>
+                      }
+                    />
+                  </SettingsSection>
                   {renderProviderInstance(selectedRow, "editor")}
                 </div>
               </ScrollArea>
@@ -1286,6 +1476,20 @@ export function EnvironmentProviderSettings({
           </div>
         </SettingsGroup>
       </SettingsSection>
+
+      {isLocalGatewayEnvironment ? (
+        <LocalGatewaySettings
+          canConnect={!readOnly && canWriteSettings && canWriteGatewayFiles}
+          connecting={connectingGateway}
+          onConnect={(gatewayConnection) => {
+            setConnectingGateway(true);
+            void syncFreeCatalog({
+              environmentId,
+              input: { patch: {}, gatewayConnection },
+            }).finally(() => setConnectingGateway(false));
+          }}
+        />
+      ) : null}
 
       {isLocalGatewayEnvironment &&
       settings.providerInstances[ProviderInstanceId.make("omniroute-free")] ? (
@@ -1426,6 +1630,7 @@ export function EnvironmentProviderSettings({
           key={`text-generators:${environmentId}`}
           environmentId={environmentId}
           environmentLabel={environmentLabel}
+          {...(accountDriver ? { initialAccountDriver: accountDriver } : {})}
           providers={serverProviders}
           readOnly={readOnly}
         />
@@ -1536,7 +1741,7 @@ interface ProviderInstanceRowActions {
   readonly deleteInstance: (
     instanceId: ProviderInstanceId,
     instance: ProviderInstanceConfig,
-  ) => Promise<void>;
+  ) => Promise<boolean>;
   readonly resetDefaultInstance: (driverKind: ProviderDriverKind) => Promise<void>;
   readonly writeProjectOverride: (
     instanceId: ProviderInstanceId,
@@ -1549,7 +1754,6 @@ interface ProviderInstanceRowActions {
     instanceId: ProviderInstanceId,
     runtimeMode: RuntimeMode | null,
   ) => void;
-  readonly openAddInstanceDialog: (() => void) | undefined;
 }
 
 const NO_MODELS: ReadonlyArray<string> = [];
@@ -1779,7 +1983,7 @@ function ProviderInstanceRow({
           ? () => actions.deleteInstance(instanceId, instance)
           : undefined
       }
-      onAddAccount={readOnly || driver === "codex" ? undefined : actions.openAddInstanceDialog}
+      onAddAccount={undefined}
       headerAction={
         mode === "editor" && isDefault && isDirty ? (
           <SettingResetButton

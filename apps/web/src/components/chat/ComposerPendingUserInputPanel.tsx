@@ -1,6 +1,6 @@
 import { type RuntimeRequestId, type ScopedThreadRef } from "@t3tools/contracts";
 import { markdownProseDirection, textDirection } from "~/textDirection";
-import { memo, use, useEffect, useEffectEvent, useRef, useState } from "react";
+import { memo, use, useEffect, useEffectEvent, useRef, useState, type ClipboardEvent } from "react";
 import { BackgroundThreadContext } from "./backgroundThread";
 import { useStableCallback } from "~/hooks/useStableCallback";
 import { type PendingUserInput } from "../../session-logic";
@@ -23,6 +23,8 @@ interface PendingUserInputPanelProps {
   answers: Record<string, PendingUserInputDraftAnswer>;
   questionIndex: number;
   onToggleOption: (questionId: string, optionValue: string) => void;
+  onChangeCustomAnswer?: (value: string, cursor: number) => void;
+  onPasteCustomAnswer?: (event: ClipboardEvent<HTMLElement>) => void;
   onAdvance: () => void;
   onDismiss: (requestId: RuntimeRequestId) => void;
 }
@@ -36,6 +38,8 @@ export const ComposerPendingUserInputPanel = memo(function ComposerPendingUserIn
   answers,
   questionIndex,
   onToggleOption,
+  onChangeCustomAnswer,
+  onPasteCustomAnswer,
   onAdvance,
   onDismiss,
 }: PendingUserInputPanelProps) {
@@ -54,6 +58,8 @@ export const ComposerPendingUserInputPanel = memo(function ComposerPendingUserIn
       answers={answers}
       questionIndex={questionIndex}
       onToggleOption={onToggleOption}
+      onChangeCustomAnswer={onChangeCustomAnswer}
+      onPasteCustomAnswer={onPasteCustomAnswer}
       onAdvance={onAdvance}
       onDismiss={onDismiss}
     />
@@ -69,6 +75,8 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
   answers,
   questionIndex,
   onToggleOption,
+  onChangeCustomAnswer,
+  onPasteCustomAnswer,
   onAdvance,
   onDismiss,
 }: {
@@ -80,6 +88,8 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
   answers: Record<string, PendingUserInputDraftAnswer>;
   questionIndex: number;
   onToggleOption: (questionId: string, optionValue: string) => void;
+  onChangeCustomAnswer?: ((value: string, cursor: number) => void) | undefined;
+  onPasteCustomAnswer?: ((event: ClipboardEvent<HTMLElement>) => void) | undefined;
   onAdvance: () => void;
   onDismiss: (requestId: RuntimeRequestId) => void;
 }) {
@@ -93,14 +103,21 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
     optionValue: string;
   } | null>(null);
   const [collapsedQuestionId, setCollapsedQuestionId] = useState<string | null>(null);
+  const [customQuestionId, setCustomQuestionId] = useState<string | null>(null);
+  const customInput = useRef<HTMLTextAreaElement>(null);
   // Keep question identity stable for its shortcut listener.
   const progress = derivePendingUserInputProgress(prompt.questions, answers, questionIndex);
   const activeQuestion = progress.activeQuestion;
   const customAnswerActive = progress.customAnswer.trim().length > 0;
+  const showCustomOption =
+    onChangeCustomAnswer !== undefined &&
+    activeQuestion?.allowCustomAnswer !== false &&
+    (activeQuestion?.options.length ?? 0) > 0;
+  const customSelected = customQuestionId === activeQuestion?.id || customAnswerActive;
   // Read before later hooks to preserve the question's compiler cache.
   const draftSelectedOptions = activeQuestion?.options.map(
     (option) =>
-      !customAnswerActive && progress.selectedOptionValues.includes(option.value ?? option.label),
+      !customSelected && progress.selectedOptionValues.includes(option.value ?? option.label),
   );
   const isCollapsed = collapsedQuestionId !== null && collapsedQuestionId === activeQuestion?.id;
 
@@ -128,7 +145,8 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
   }, [activeQuestion?.id, disabled]);
 
   const handleOptionSelection = (questionId: string, optionValue: string) => {
-    if (disabled || isResponding) return;
+    if (responseDisabled) return;
+    setCustomQuestionId(null);
     if (activeQuestion?.multiSelect) {
       onToggleOption(questionId, optionValue);
       return;
@@ -339,6 +357,62 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
                   </div>
                 );
               })}
+              {showCustomOption ? (
+                <div className="rounded-md">
+                  <button
+                    type="button"
+                    aria-pressed={customSelected}
+                    disabled={responseDisabled}
+                    className={cn(
+                      questionTextAlign,
+                      "flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-sm font-medium hover:bg-muted/30 focus-visible:ring-1",
+                    )}
+                    onClick={() => {
+                      if (autoAdvanceTimerRef.current !== null) {
+                        window.clearTimeout(autoAdvanceTimerRef.current);
+                        autoAdvanceTimerRef.current = null;
+                      }
+                      setOptimisticSingleSelect(null);
+                      setCustomQuestionId(activeQuestion.id);
+                      if (!customAnswerActive) onChangeCustomAnswer?.("", 0);
+                      window.requestAnimationFrame(() => customInput.current?.focus());
+                    }}
+                  >
+                    <OptionRadio checked={customSelected} />
+                    Свой ответ
+                  </button>
+                  {customSelected ? (
+                    <textarea
+                      aria-label="Свой ответ"
+                      ref={customInput}
+                      disabled={responseDisabled}
+                      rows={2}
+                      dir="auto"
+                      className="ms-8 mt-1 mb-1 w-[calc(100%-2rem)] resize-y rounded-md border border-border bg-background px-2 py-1.5 text-sm"
+                      value={progress.customAnswer}
+                      onPaste={onPasteCustomAnswer}
+                      onChange={(event) =>
+                        onChangeCustomAnswer?.(
+                          event.currentTarget.value,
+                          event.currentTarget.selectionStart,
+                        )
+                      }
+                      onKeyDown={(event) => {
+                        if (
+                          event.key !== "Enter" ||
+                          event.shiftKey ||
+                          event.nativeEvent.isComposing
+                        )
+                          return;
+                        if (event.currentTarget.value.trim().length === 0) return;
+                        event.preventDefault();
+                        event.stopPropagation();
+                        if (progress.canAdvance) onAdvance();
+                      }}
+                    />
+                  ) : null}
+                </div>
+              ) : null}
             </div>
           </ComposerBanner.Body>
         </ComposerBanner.Scroll>

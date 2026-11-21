@@ -246,12 +246,12 @@ it("keeps a docked picker open after a pick and hands focus to that model's effo
   await expect.element(search).not.toBeInTheDocument();
 });
 
-it("opens on the active provider when every favorite belongs to a disabled provider", async () => {
+it("opens on the selected model even with a favorite in another enabled provider", async () => {
   const entries = deriveProviderInstanceEntries(
     ["Codex", "Claude"].map((name) => ({
       instanceId: ProviderInstanceId.make(name.toLowerCase()),
       driver: ProviderDriverKind.make(name.toLowerCase()),
-      enabled: name === "Codex",
+      enabled: true,
       installed: true,
       version: null,
       status: "ready" as const,
@@ -286,7 +286,49 @@ it("opens on the active provider when every favorite belongs to a disabled provi
     />,
   );
   await screen.getByRole("button", { name: "Choose model" }).click();
-  await expect.element(page.getByRole("option", { name: /Codex model/ })).toBeVisible();
+  const selected = page.getByRole("option", { name: /Codex model/ });
+  await expect.element(selected).toBeVisible();
+  await expect.element(selected).toHaveAttribute("aria-selected", "true");
+});
+
+it("groups Claude, Gemini, and Qwen within the same provider", async () => {
+  const id = ProviderInstanceId.make("multi-model");
+  const entries = deriveProviderInstanceEntries([
+    {
+      instanceId: id,
+      driver: ProviderDriverKind.make("opencode"),
+      enabled: true,
+      installed: true,
+      version: null,
+      status: "ready",
+      auth: { status: "authenticated" },
+      checkedAt: "2026-11-21T00:00:00.000Z",
+      models: ["claude-sonnet", "gemini-flash", "qwen3"].map((slug) => ({
+        slug,
+        name: slug,
+        isCustom: false,
+        capabilities: null,
+      })),
+      slashCommands: [],
+      skills: [],
+    },
+  ]);
+  await using screen = await render(
+    <ProviderModelPicker
+      environmentId={null}
+      activeInstanceId={id}
+      model="gemini-flash"
+      lockedProvider={null}
+      instanceEntries={entries}
+      modelOptionsByInstance={new Map(entries.map((entry) => [entry.instanceId, entry.models]))}
+      triggerAriaLabel="Choose model"
+      onInstanceModelChange={() => {}}
+    />,
+  );
+  await screen.getByRole("button", { name: "Choose model" }).click();
+  for (const family of ["Claude", "Gemini", "Qwen"]) {
+    await expect.element(page.getByText(family, { exact: true })).toBeVisible();
+  }
 });
 
 it("keeps the touch keyboard down while choosing a provider", async () => {

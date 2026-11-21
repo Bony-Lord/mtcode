@@ -1,5 +1,6 @@
 import {
   defaultInstanceIdForDriver,
+  providerGroupId,
   ProviderDriverKind,
   ProviderInstanceId,
   providerInstanceConfigEnabledFlag,
@@ -83,6 +84,25 @@ export const deriveProviderInstanceConfigMap = (
     }
   }
 
+  for (const [id, instance] of Object.entries(merged)) {
+    const group = providerGroupId(instance);
+    const runtime = Object.hasOwn(settings.providerRuntimePreferences, group)
+      ? settings.providerRuntimePreferences[group]
+      : undefined;
+    if (!runtime || instance.driver === "acpRegistry") continue;
+    const own = instance.config;
+    if (own !== undefined && (typeof own !== "object" || own === null || Array.isArray(own)))
+      continue;
+    const config = (own ?? {}) as Record<string, unknown>;
+    if (
+      typeof config.binaryPath === "string" &&
+      config.binaryPath !== "" &&
+      !(instance.driver === "codex" && config.binaryPath === "codex")
+    )
+      continue;
+    if (instance.driver === "codex" && config.setupMode === "managed") continue;
+    merged[id] = { ...instance, config: { ...config, binaryPath: runtime.binaryPath } };
+  }
   return merged as ProviderInstanceConfigMap;
 };
 

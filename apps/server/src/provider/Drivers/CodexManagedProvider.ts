@@ -7,13 +7,14 @@ import {
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
+import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as Option from "effect/Option";
 import { ChildProcessSpawner } from "effect/process";
 import { makeCodexTextGeneration } from "../../textGeneration/CodexTextGeneration.ts";
 import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
 import { chatGptModels } from "../CodexChatGptModels.ts";
-import { makeCodexManagedRuntime } from "../CodexManagedRuntime.ts";
+import { makeCodexManagedRuntime, MANAGED_CODEX_MODEL_PROVIDER } from "../CodexManagedRuntime.ts";
 import { ProviderDriverError } from "../Errors.ts";
 import { createCodexAdapterV2 } from "../../orchestration-v2/Adapters/CodexAdapterV2.ts";
 import {
@@ -61,7 +62,10 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
     config,
     environment: yield* mergeProviderInstanceEnvironment(input.environment),
   });
-  const continuationIdentity = codexContinuationIdentity(runtime.homeLayout);
+  const continuationIdentity = codexContinuationIdentity(
+    runtime.homeLayout,
+    MANAGED_CODEX_MODEL_PROVIDER,
+  );
   const stamp = withInstanceIdentity({
     instanceId,
     driverKind: DRIVER,
@@ -259,10 +263,23 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
   // Launch settings bind the refresh command to the signed-in profile. The registry
   // already wraps openSession in withAccess, so resolve without re-entering it.
   const models = snapshot.getSnapshot.pipe(Effect.map((value) => value.models));
+  const scope = yield* Scope.Scope;
+  const refreshAuthentication = snapshot.refresh.pipe(
+    Effect.ignore,
+    Effect.forkIn(scope),
+    Effect.asVoid,
+  );
   const orchestrationAdapter = yield* createCodexAdapterV2(input, {
     onUsageLimits: (update) => snapshot.applyUsageLimits(update),
+    onAuthenticationFailure: refreshAuthentication,
     models,
-    resolveRuntime: runtime.resolve,
+    resolveRuntime: runtime.resolve.pipe(
+      Effect.tapError((error) =>
+        ["access", "refresh", "sharing"].includes(error.operation)
+          ? refreshAuthentication
+          : Effect.void,
+      ),
+    ),
   }).pipe(
     Effect.mapError(
       (cause) =>

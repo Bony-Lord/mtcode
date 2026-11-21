@@ -7,6 +7,7 @@ import {
   type ProviderInstanceId,
   ProviderSetupError,
   type ProviderSetupInput,
+  type ProviderInstallStartInput,
 } from "@t3tools/contracts";
 import { resolveCommandPath } from "@t3tools/shared/shell";
 import * as Context from "effect/Context";
@@ -35,7 +36,7 @@ export class ProviderInstallation extends Context.Service<
   ProviderInstallation,
   {
     readonly start: (
-      input: ProviderSetupInput,
+      input: ProviderInstallStartInput,
     ) => Effect.Effect<ProviderInstallState, ProviderSetupError>;
     readonly cancel: (
       input: ProviderInstallCancelInput,
@@ -133,9 +134,15 @@ const make = Effect.fn("makeProviderInstallation")(function* () {
     ) =>
       new ProviderSetupError({ instanceId, operation: error.operation, detail: error.detail });
 
-  const start = Effect.fn("ProviderInstallation.start")(function* (input: ProviderSetupInput) {
+  const start = Effect.fn("ProviderInstallation.start")(function* (
+    input: ProviderInstallStartInput,
+  ) {
     const { installation, driver } = yield* requireInstance(input.instanceId, "install", true);
-    const started = yield* installation.start.pipe(Effect.mapError(failure(input.instanceId)));
+    const command =
+      input.reuseInstalled && "ensureInstalled" in installation
+        ? installation.ensureInstalled
+        : installation.start;
+    const started = yield* command.pipe(Effect.mapError(failure(input.instanceId)));
     if (
       driver === ANTIGRAVITY &&
       started.operationId !== null &&

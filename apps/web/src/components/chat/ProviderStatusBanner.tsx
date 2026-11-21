@@ -16,7 +16,7 @@ import { RefreshIcon } from "../ui/refresh-icon";
 
 function getIncompatibleVersion(status: ServerProvider) {
   const compatibility = status.compatibilityAdvisory;
-  if (status.status === "error" && status.auth.status === "unauthenticated") return null;
+  if (status.auth.status === "unauthenticated") return null;
   return compatibility?.status === "broken" ||
     (status.status === "ready" && compatibility?.status === "unsupported")
     ? compatibility
@@ -34,7 +34,7 @@ export function getProviderStatusBannerKey(status: ServerProvider | null): strin
       incompatible.message ?? "",
     ].join("\u0000");
   }
-  if (status.status === "ready") return null;
+  if (status.status === "ready" && status.auth.status !== "unauthenticated") return null;
   // Antigravity validates credentials at session start; unknown restart auth is not failure.
   if (
     status.driver === "antigravity" &&
@@ -161,7 +161,7 @@ export const ProviderStatusBanner = memo(function ProviderStatusBanner({
   }
 
   const providerName = status.displayName?.trim() || formatProviderDriverKindLabel(status.driver);
-  const isUnauthenticated = status.status === "error" && status.auth.status === "unauthenticated";
+  const isUnauthenticated = status.installed && status.auth.status === "unauthenticated";
   const incompatible = getIncompatibleVersion(status);
   const title = isUnauthenticated
     ? `${providerName} is unauthenticated`
@@ -191,9 +191,9 @@ export const ProviderStatusBanner = memo(function ProviderStatusBanner({
               </TooltipPopup>
             </Tooltip>
             <div className="flex flex-wrap items-center justify-end gap-3">
-              {onOpenProviderSetup && hasProviderSetup(status) ? (
+              {onOpenProviderSetup && (hasProviderSetup(status) || status.accountLogin) ? (
                 <InlineButton onClick={() => onOpenProviderSetup(status.instanceId)}>
-                  Open provider setup
+                  {isUnauthenticated ? "Reauth" : "Open provider setup"}
                 </InlineButton>
               ) : null}
               <Button

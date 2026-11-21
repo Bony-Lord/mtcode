@@ -56,6 +56,7 @@ import {
   ProviderInstallState,
   ProviderSetupError,
   ProviderSetupInput,
+  ProviderInstallStartInput,
 } from "./providerSetup.ts";
 
 import {
@@ -187,6 +188,7 @@ import {
   ProviderUploadFeedbackResult,
 } from "./provider.ts";
 import { ProviderInstanceId, ProviderInstanceMutation } from "./providerInstance.ts";
+import { GatewayConnectInput } from "./gatewayPresets.ts";
 import {
   GuestShareCreateError,
   GuestShareCreateInput,
@@ -870,7 +872,7 @@ const WsProviderAuthSubscribeRpc = Rpc.make(WS_METHODS.providerAuthSubscribe, {
 });
 
 const WsProviderInstallStartRpc = Rpc.make(WS_METHODS.providerInstallStart, {
-  payload: ProviderSetupInput,
+  payload: ProviderInstallStartInput,
   success: ProviderInstallState,
   error: ProviderSetupRpcError,
 });
@@ -978,6 +980,7 @@ const WsServerUpdateSettingsRpc = Rpc.make(WS_METHODS.serverUpdateSettings, {
     patch: ClientServerSettingsPatch,
     providerInstanceMutation: Schema.optionalKey(ProviderInstanceMutation),
     refreshFreeModels: Schema.optionalKey(Schema.Boolean),
+    gatewayConnection: Schema.optionalKey(GatewayConnectInput),
   }),
   success: ServerSettings,
   error: Schema.Union([ServerSettingsError, EnvironmentAuthorizationError]),

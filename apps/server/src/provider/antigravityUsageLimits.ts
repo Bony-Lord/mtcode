@@ -30,6 +30,7 @@ const ENDPOINTS = {
 const SUMMARY_WINDOW_MINS = new Map([
   ["5h", 5 * 60],
   ["weekly", 7 * 24 * 60],
+  ["monthly", 30 * 24 * 60],
 ]);
 const MANUAL_REDIRECT: RequestInit = { redirect: "manual" };
 const TokenFile = Schema.Struct({
@@ -160,15 +161,30 @@ function summaryWindows(summary: typeof Summary.Type, requestedAt: number) {
               : group.displayName?.trim() || bucket.bucketId;
       const weekly = bucket.window === "weekly";
       const session = bucket.window === "5h";
+      const monthly = bucket.window === "monthly";
       const windowDurationMins = SUMMARY_WINDOW_MINS.get(bucket.window ?? "");
       const window = quotaWindow(
         bucket.bucketId,
-        `${family} · ${weekly ? "Weekly" : session ? "5-hour" : bucket.displayName?.trim() || "Quota"}`,
+        `${family} · ${weekly ? "Weekly" : session ? "5-hour" : monthly ? "Monthly" : bucket.displayName?.trim() || "Quota"}`,
         { ...bucket, resetTime: summaryResetTime(bucket, windowDurationMins, requestedAt) },
-        weekly ? "weekly" : session ? "session" : "other",
+        weekly ? "weekly" : session ? "session" : monthly ? "monthly" : "other",
         windowDurationMins,
       );
-      if (window) windows.set(window.id, window);
+      const modelFamilies = bucket.bucketId.startsWith("3p-")
+        ? ["Claude", "GPT"]
+        : bucket.bucketId.startsWith("claude-")
+          ? ["Claude"]
+          : bucket.bucketId.startsWith("gpt-")
+            ? ["GPT"]
+            : bucket.bucketId.startsWith("gemini-argon-")
+              ? ["Gemini Argon"]
+              : bucket.bucketId.startsWith("gemini-carbon-")
+                ? ["Gemini Carbon"]
+                : bucket.bucketId.startsWith("gemini-")
+                  ? ["Gemini"]
+                  : undefined;
+      if (window)
+        windows.set(window.id, { ...window, ...(modelFamilies ? { modelFamilies } : {}) });
     }
   }
   return [...windows.values()];
@@ -193,15 +209,14 @@ function modelWindows(models: typeof Models.Type) {
     ] as const) {
       if (!quota) continue;
       const window = quotaWindow(
-        `${family.toLowerCase()}-${suffix}`,
-        `${family} · ${suffix === "weekly" ? "Weekly" : "Reported quota"}`,
+        `${modelId}-${suffix}`,
+        `${modelId} · ${suffix === "weekly" ? "Weekly" : "Reported quota"}`,
         quota,
         suffix === "weekly" ? "weekly" : "other",
         suffix === "weekly" ? 7 * 24 * 60 : undefined,
       );
       if (!window) continue;
-      const previous = windows.get(window.id);
-      if (!previous || window.usedPercent > previous.usedPercent) windows.set(window.id, window);
+      windows.set(window.id, { ...window, modelIds: [modelId] });
     }
   }
   return [...windows.values()];

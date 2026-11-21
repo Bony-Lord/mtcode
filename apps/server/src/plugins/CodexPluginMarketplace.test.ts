@@ -1,4 +1,7 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- Windows test junctions do not require Developer Mode.
+import * as NodeFileSystem from "node:fs/promises";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import { assert, expect, it, live } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -110,7 +113,12 @@ testLayer("CodexPluginMarketplace", (it) => {
         path.join(outside, "SKILL.md"),
         "---\nname: escaped\ndescription: Must not be returned.\n---",
       );
-      yield* fs.symlink(outside, path.join(root, "skills", "escaped"));
+      const escaped = path.join(root, "skills", "escaped");
+      if ((yield* HostProcess.Platform) === "win32") {
+        yield* Effect.promise(() => NodeFileSystem.symlink(outside, escaped, "junction"));
+      } else {
+        yield* fs.symlink(outside, escaped);
+      }
       yield* fs.writeFileString(
         path.join(root, ".codex-plugin", "plugin.json"),
         // @effect-diagnostics-next-line preferSchemaOverJson:off

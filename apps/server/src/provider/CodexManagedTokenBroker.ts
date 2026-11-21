@@ -152,6 +152,7 @@ const acquireListener = Effect.gen(function* () {
               const auth = yield* makeCodexChatGptAuth({
                 instanceId: request.instanceId,
                 expectedProfileKey: request.profileKey,
+                requireConfiguredAccount: request.instanceId !== "codex",
               });
               // Retire abandoned permit waits; access saves a started rotation before honoring interruption.
               const credentials = yield* auth.access.pipe(

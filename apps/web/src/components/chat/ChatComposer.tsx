@@ -1177,6 +1177,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const activePendingUserInput = pendingUserInputs[0] ?? null;
   const isChoiceOnlyPendingQuestion =
     activePendingProgress?.activeQuestion?.allowCustomAnswer === false;
+  const questionHasOptions = (activePendingProgress?.activeQuestion?.options.length ?? 0) > 0;
   const showComposerTopDrawer = pendingUserInputs.length > 0;
   const showCollapsedMobilePromptRow = isComposerCollapsedMobile;
   const showComposerAttachAction =
@@ -3394,6 +3395,19 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     answers={activePendingDraftAnswers}
                     questionIndex={activePendingQuestionIndex}
                     onToggleOption={onSelectActivePendingUserInputOption}
+                    onChangeCustomAnswer={(value, cursor) => {
+                      const question = activePendingProgress?.activeQuestion;
+                      if (question) {
+                        onChangeActivePendingUserInputCustomAnswer(
+                          question.id,
+                          value,
+                          cursor,
+                          cursor,
+                          false,
+                        );
+                      }
+                    }}
+                    onPasteCustomAnswer={onComposerPasteStable}
                     onAdvance={onAdvanceActivePendingUserInput}
                     onDismiss={onDismissActivePendingUserInput}
                   />
@@ -3586,71 +3600,73 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     onPreviewFileIdChange={setPreviewFileId}
                   />
                 ) : null}
-                <ComposerContextActionsContext value={composerContextActions}>
-                  <ComposerPromptEditor
-                    draftKey={composerDraftTargetKey}
-                    // Switching threads lands focus here, so the label names the thread.
-                    ariaLabel={activeThread ? `Message ${activeThread.title}` : "Message"}
-                    suggestionListId={composerSuggestionListId}
-                    activeSuggestionId={
-                      composerSuggestionListVisible && activeComposerMenuItem
-                        ? composerSuggestionOptionId(
-                            composerSuggestionListId,
-                            activeComposerMenuItem.id,
-                          )
-                        : undefined
-                    }
-                    editorRef={composerEditorRef}
-                    richTextEnabled={settings.composerRichTextEnabled}
-                    literalText={isLiteralPendingAnswer}
-                    isPathQueryActive={isPathQueryActiveStable}
-                    value={activePendingProgress ? activePendingProgress.customAnswer : prompt}
-                    cursor={composerCursor}
-                    contextRecords={composerContextRecords}
-                    buildContextClipboardFragment={buildContextClipboardFragmentStable}
-                    importContextFragment={importContextFragmentStable}
-                    skills={selectedProviderSkills}
-                    className={cn(showMobilePendingAnswerActions && "max-sm:pb-12")}
-                    onChange={onPromptChangeStable}
-                    onCommandKeyDown={onComposerCommandKeyStable}
-                    onPageScrollKeyDown={onPageScrollKeyDown}
-                    onPageScrollKeyUp={onPageScrollKeyUp}
-                    onPageScrollRelease={onPageScrollRelease}
-                    onCitationSubmitAndSend={submitCitationAndSendStable}
-                    onCitationDraftSave={saveCitationDraftToPromptStable}
-                    onPaste={onComposerPasteStable}
-                    placeholder={
-                      isComposerApprovalState
-                        ? activePendingApproval?.supportsFeedback
-                          ? "Send feedback to decline this request"
-                          : "Send a message to decline and redirect the agent"
-                        : activePendingProgress
-                          ? isChoiceOnlyPendingQuestion
-                            ? "Choose an option above"
-                            : activePendingProgress.activeQuestion?.options.length === 0
-                              ? "Type your answer"
-                              : "Type your own answer, or leave this blank to use the selected option"
-                          : projectSelectionRequired
-                            ? "Choose a project above to start a thread"
-                            : showProviderUnavailable
-                              ? "Enable a provider in Settings to send a message"
-                              : (offeredPromptSuggestion ?? DEFAULT_COMPOSER_PLACEHOLDER)
-                    }
-                    placeholderSuffix={
-                      offeredPromptSuggestion !== null ? (
-                        <span className="ml-2 inline-flex align-[1px]">
-                          <Kbd variant="outline">⇥ Tab</Kbd>
-                        </span>
-                      ) : undefined
-                    }
-                    disabled={
-                      projectSelectionRequired ||
-                      isChoiceOnlyPendingQuestion ||
-                      activePendingIsResponding ||
-                      speechInput.freezesEditor
-                    }
-                  />
-                </ComposerContextActionsContext>
+                {!questionHasOptions ? (
+                  <ComposerContextActionsContext value={composerContextActions}>
+                    <ComposerPromptEditor
+                      draftKey={composerDraftTargetKey}
+                      // Switching threads lands focus here, so the label names the thread.
+                      ariaLabel={activeThread ? `Message ${activeThread.title}` : "Message"}
+                      suggestionListId={composerSuggestionListId}
+                      activeSuggestionId={
+                        composerSuggestionListVisible && activeComposerMenuItem
+                          ? composerSuggestionOptionId(
+                              composerSuggestionListId,
+                              activeComposerMenuItem.id,
+                            )
+                          : undefined
+                      }
+                      editorRef={composerEditorRef}
+                      richTextEnabled={settings.composerRichTextEnabled}
+                      literalText={isLiteralPendingAnswer}
+                      isPathQueryActive={isPathQueryActiveStable}
+                      value={activePendingProgress ? activePendingProgress.customAnswer : prompt}
+                      cursor={composerCursor}
+                      contextRecords={composerContextRecords}
+                      buildContextClipboardFragment={buildContextClipboardFragmentStable}
+                      importContextFragment={importContextFragmentStable}
+                      skills={selectedProviderSkills}
+                      className={cn(showMobilePendingAnswerActions && "max-sm:pb-12")}
+                      onChange={onPromptChangeStable}
+                      onCommandKeyDown={onComposerCommandKeyStable}
+                      onPageScrollKeyDown={onPageScrollKeyDown}
+                      onPageScrollKeyUp={onPageScrollKeyUp}
+                      onPageScrollRelease={onPageScrollRelease}
+                      onCitationSubmitAndSend={submitCitationAndSendStable}
+                      onCitationDraftSave={saveCitationDraftToPromptStable}
+                      onPaste={onComposerPasteStable}
+                      placeholder={
+                        isComposerApprovalState
+                          ? activePendingApproval?.supportsFeedback
+                            ? "Send feedback to decline this request"
+                            : "Send a message to decline and redirect the agent"
+                          : activePendingProgress
+                            ? isChoiceOnlyPendingQuestion
+                              ? "Choose an option above"
+                              : activePendingProgress.activeQuestion?.options.length === 0
+                                ? "Type your answer"
+                                : "Type your own answer, or leave this blank to use the selected option"
+                            : projectSelectionRequired
+                              ? "Choose a project above to start a thread"
+                              : showProviderUnavailable
+                                ? "Enable a provider in Settings to send a message"
+                                : (offeredPromptSuggestion ?? DEFAULT_COMPOSER_PLACEHOLDER)
+                      }
+                      placeholderSuffix={
+                        offeredPromptSuggestion !== null ? (
+                          <span className="ml-2 inline-flex align-[1px]">
+                            <Kbd variant="outline">⇥ Tab</Kbd>
+                          </span>
+                        ) : undefined
+                      }
+                      disabled={
+                        projectSelectionRequired ||
+                        isChoiceOnlyPendingQuestion ||
+                        activePendingIsResponding ||
+                        speechInput.freezesEditor
+                      }
+                    />
+                  </ComposerContextActionsContext>
+                ) : null}
                 {showMobilePendingAnswerActions ? (
                   <div
                     data-chat-composer-mobile-pending-actions="true"

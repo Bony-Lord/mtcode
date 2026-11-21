@@ -1087,6 +1087,18 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["allow disable enable open drive preview tools sessions project override"],
   },
   {
+    id: "external-browser",
+    title: "External browser",
+    to: "/settings/browser",
+    searchTerms: ["default browser chrome edge firefox brave link login sign in"],
+  },
+  {
+    id: "external-browser-private",
+    title: "Private external links",
+    to: "/settings/browser",
+    searchTerms: ["incognito private inprivate browser sign in"],
+  },
+  {
     id: "device-sources",
     title: "Device sources",
     to: "/settings/devices",

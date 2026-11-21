@@ -44,6 +44,7 @@ import * as PreviewPasskeys from "../preview/Passkeys.ts";
 import * as DesktopAppSettings from "../settings/DesktopAppSettings.ts";
 import * as DesktopClientSettings from "../settings/DesktopClientSettings.ts";
 import * as ElectronApp from "../electron/ElectronApp.ts";
+import { openExternalBrowser } from "../electron/externalBrowser.ts";
 import * as DesktopRendererHistory from "../telemetry/DesktopRendererHistory.ts";
 import { makeQuitShortcutHandler } from "./QuitHold.ts";
 import { copyContextMenuImage } from "./ContextMenuImage.ts";
@@ -842,9 +843,23 @@ export const make = Effect.gen(function* () {
       void runPromise(previewManager.prepareWebview(contents));
     });
 
+    // Website links and provider sign-in pages opened from the renderer follow
+    // the external-browser preference; a private request never falls back.
+    const openExternalLink = (url: string) =>
+      Effect.gen(function* () {
+        const settings = Option.getOrElse(yield* clientSettings.get, () => DEFAULT_CLIENT_SETTINGS);
+        return yield* Effect.promise(() =>
+          openExternalBrowser(
+            url,
+            { browser: settings.externalBrowser, private: settings.externalBrowserPrivate },
+            (target) => runPromise(electronShell.openExternal(target)),
+          ),
+        );
+      });
+
     window.webContents.setWindowOpenHandler(({ url }) => {
       if (Option.isSome(ElectronShell.parseSafeExternalUrl(url))) {
-        void runPromise(electronShell.openExternal(url));
+        void runPromise(openExternalLink(url));
       }
       return { action: "deny" };
     });
@@ -860,7 +875,7 @@ export const make = Effect.gen(function* () {
 
       event.preventDefault();
       if (Option.isSome(ElectronShell.parseSafeExternalUrl(url))) {
-        void runPromise(electronShell.openExternal(url));
+        void runPromise(openExternalLink(url));
       }
     });
 

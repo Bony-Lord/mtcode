@@ -5,7 +5,7 @@ import {
   type ServerProvider,
   type ServerSettings,
 } from "@t3tools/contracts";
-import { exhaustedUsageWindow, accountUsageBudgetBlock } from "@t3tools/shared/usageLimits";
+import { exhaustedAccountUsageWindow, accountUsageBudgetBlock } from "@t3tools/shared/usageLimits";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { modelBenchmark } from "@t3tools/shared/modelBenchmarks";
 import { isTrivialRoutingTask } from "@t3tools/shared/smartModelRouting";
@@ -32,6 +32,8 @@ export type AutoRoutingAdvice = typeof Advice.Type;
 const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 const decodeAdvice = Schema.decodeEffect(Schema.fromJsonString(Advice));
 const replies = new Map<string, AutoRoutingAdvice>();
+const ADVISOR_MODEL = "omniroute/cfp/zai-org/glm-5.2";
+let advisorRetryAt = 0;
 export const cachedRoutingAdvice = (threadId: string) => replies.get(threadId);
 export function routingAdviceSelection(advice: AutoRoutingAdvice): ModelSelection | undefined {
   const split = advice.preferredModel.indexOf("::");
@@ -62,9 +64,13 @@ export const adviseAutoRouting = Effect.fn("AutoRoutingAdvisor.advise")(
     if (!gateway?.enabled || gateway.accountTier !== "free" || gateway.freeAccountPaused)
       return undefined;
     const advisor = input.providers.find((provider) => provider.instanceId === "omniroute-free");
+    const nowMs = DateTime.toEpochMillis(yield* DateTime.now);
     if (
       advisor?.status !== "ready" ||
-      !advisor.models.some((model) => model.slug === "omniroute/cfp/zai-org/glm-5.2")
+      nowMs < advisorRetryAt ||
+      !advisor.models.some((model) => model.slug === ADVISOR_MODEL) ||
+      exhaustedAccountUsageWindow(advisor, input.providers, nowMs, ADVISOR_MODEL) ||
+      accountUsageBudgetBlock(advisor, input.providers, input.settings, nowMs, ADVISOR_MODEL)
     )
       return undefined;
     const fs = yield* FileSystem.FileSystem;
@@ -77,7 +83,6 @@ export const adviseAutoRouting = Effect.fn("AutoRoutingAdvisor.advise")(
           Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Struct({ key: Schema.String }))),
         ),
       );
-    const nowMs = DateTime.toEpochMillis(yield* DateTime.now);
     const models = input.providers
       .filter((p) => p.enabled && p.installed && p.status === "ready")
       .flatMap((p) => {
@@ -99,7 +104,7 @@ export const adviseAutoRouting = Effect.fn("AutoRoutingAdvisor.advise")(
           .filter(
             (m) =>
               !m.isLegacy &&
-              !exhaustedUsageWindow(p, nowMs, m.slug) &&
+              !exhaustedAccountUsageWindow(p, input.providers, nowMs, m.slug) &&
               !accountUsageBudgetBlock(p, input.providers, input.settings, nowMs, m.slug),
           )
           .map((m) => {
@@ -143,6 +148,13 @@ export const adviseAutoRouting = Effect.fn("AutoRoutingAdvisor.advise")(
         body: HttpBody.text(json, "application/json"),
       })
       .pipe(
+        Effect.tap((response) =>
+          response.status === 429
+            ? Effect.sync(() => {
+                advisorRetryAt = nowMs + 5 * 60_000;
+              })
+            : Effect.void,
+        ),
         Effect.flatMap(HttpClientResponse.filterStatusOk),
         Effect.flatMap((r) => r.json),
         Effect.flatMap(

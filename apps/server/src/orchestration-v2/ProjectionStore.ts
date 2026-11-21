@@ -1033,6 +1033,7 @@ export function applyToProjection(
         ...base,
         thread:
           event.payload.appThreadId === base.thread.id &&
+          event.preserveActiveProviderThread !== true &&
           !isQueuedProviderThreadPlaceholder(event.payload)
             ? {
                 ...base.thread,
@@ -2721,6 +2722,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             `;
               if (
                 event.payload.appThreadId !== null &&
+                event.preserveActiveProviderThread !== true &&
                 !isQueuedProviderThreadPlaceholder(event.payload)
               ) {
                 const threadRows = yield* sql<PayloadRow>`

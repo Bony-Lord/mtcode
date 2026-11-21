@@ -95,14 +95,7 @@ export function setPendingUserInputCustomAnswer(
     return draft ?? {};
   }
 
-  const selectedOptionValues =
-    question.initialAnswer !== undefined || customAnswer.trim().length > 0
-      ? undefined
-      : normalizeSelectedOptionValues(question, draft?.selectedOptionValues);
-  return {
-    customAnswer,
-    ...(selectedOptionValues && selectedOptionValues.length > 0 ? { selectedOptionValues } : {}),
-  };
+  return { customAnswer };
 }
 
 export function isPendingUserInputOptionSelected(

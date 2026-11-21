@@ -777,3 +777,16 @@ export function applyClaudePromptEffortPrefix(
   }
   return `Ultrathink:\n${trimmed}`;
 }
+export function modelFamily(slug: string): string | undefined {
+  const name = slug.split("/").findLast((part) => part !== "free" && part !== "latest") ?? slug;
+  const family =
+    /^(gpt|o[134](?=-|$)|chatgpt|claude|gemini|gemma|qwen|deepseek|glm|grok|mistral|mixtral|llama|kimi|minimax|ernie|nemotron|mimo|lfm|granite|command)(?=[\d._:-]|$)/i
+      .exec(name)?.[1]
+      ?.toLowerCase();
+  if (!family) return undefined;
+  if (family === "chatgpt" || /^o[134]$/.test(family)) return "GPT";
+  if (["gpt", "glm", "lfm"].includes(family)) return family.toUpperCase();
+  if (family === "deepseek") return "DeepSeek";
+  if (family === "minimax") return "MiniMax";
+  return family[0]!.toUpperCase() + family.slice(1);
+}

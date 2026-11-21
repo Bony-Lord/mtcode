@@ -289,6 +289,8 @@ contextBridge.exposeInMainWorld("desktopBridge", {
   openExternal: (url: string) => ipcRenderer.invoke(IpcChannels.OPEN_EXTERNAL_CHANNEL, url),
   openPrivateExternal: (url: string) =>
     ipcRenderer.invoke(IpcChannels.OPEN_PRIVATE_EXTERNAL_CHANNEL, url),
+  listExternalBrowsers: () =>
+    ipcRenderer.invoke(IpcChannels.LIST_EXTERNAL_BROWSERS_CHANNEL, undefined),
   computerUsePause: (resume = false) =>
     ipcRenderer.invoke(IpcChannels.COMPUTER_USE_PAUSE_CHANNEL, resume),
   onComputerUsePauseChange: (listener) => {

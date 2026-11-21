@@ -26,6 +26,30 @@ const prompt: PendingUserInput = {
   ],
 };
 
+it("opens a custom answer inside the choices and leaves its text editable", async () => {
+  const change = vi.fn();
+  await using screen = await render(
+    <ComposerPendingUserInputPanel
+      pendingUserInputs={[prompt]}
+      cwd={undefined}
+      threadRef={threadRef}
+      respondingRequestIds={[]}
+      answers={{}}
+      questionIndex={0}
+      onToggleOption={vi.fn()}
+      onChangeCustomAnswer={change}
+      onAdvance={vi.fn()}
+      onDismiss={vi.fn()}
+    />,
+  );
+  const custom = screen.getByRole("button", { name: "Свой ответ" });
+  await expect.element(screen.getByRole("textbox", { name: "Свой ответ" })).not.toBeInTheDocument();
+  await custom.click();
+  await expect.element(custom).toHaveAttribute("aria-pressed", "true");
+  await expect.element(screen.getByRole("textbox", { name: "Свой ответ" })).toHaveFocus();
+  expect(change).toHaveBeenCalledWith("", 0);
+});
+
 it.each<{ focus: string; control: ReactNode; toggles: boolean }>([
   { focus: "a page button", control: <button type="button" aria-label="Focused" />, toggles: true },
   {

@@ -43,6 +43,7 @@ import { MobileAppSettingsRow } from "./MobileAppSettingsRow";
 import {
   canCheckForUpdate,
   getDesktopUpdateButtonTooltip,
+  getDesktopUpdateOfferedVersion,
   getDesktopUpdateDisabledReason,
   getDesktopUpdateInstallConfirmationMessage,
   isDesktopUpdateButtonDisabled,
@@ -129,6 +130,7 @@ import { environmentSessionStatesAtom } from "~/state/session";
 import { useCheckProviderUpdates } from "../ProviderUpdatesAction";
 import { canUpdateServer } from "../ServerUpdateAction";
 import { downloadLocalUpdate } from "../sidebar/SidebarUpdatePill";
+import { SidebarUpdateReleaseNotes } from "../sidebar/SidebarUpdateReleaseNotes";
 import { useUpdateEverythingRun } from "../sidebar/updateEverythingRun";
 import { awaitsTrackSwitch, channelSwitchLabel } from "../sidebar/updateEverything.logic";
 import { isHostedByThisApp } from "../sidebar/useUpdateEverything";
@@ -310,11 +312,11 @@ function AboutVersionSection() {
   };
   const buttonLabel =
     actionLabel[action] ?? statusLabel[updateState?.status ?? ""] ?? "Check for Updates";
-  const description =
-    action === "download" || action === "install"
-      ? "Update available."
-      : (getDesktopUpdateDisabledReason(updateState, updatesDenial) ??
-        "Current version of the application.");
+  const offeredVersion = updateState ? getDesktopUpdateOfferedVersion(updateState) : null;
+  const description = offeredVersion
+    ? `Version ${offeredVersion} available.`
+    : (getDesktopUpdateDisabledReason(updateState, updatesDenial) ??
+      "Current version of the application.");
 
   return (
     <>
@@ -340,7 +342,11 @@ function AboutVersionSection() {
             {buttonTooltip ? <TooltipPopup>{buttonTooltip}</TooltipPopup> : null}
           </Tooltip>
         }
-      />
+      >
+        {hasDesktopBridge && updateState && offeredVersion ? (
+          <SidebarUpdateReleaseNotes inline shell={window.desktopBridge} state={updateState} />
+        ) : null}
+      </SettingsRow>
       {APP_HAS_UPDATE_TRACKS && hasDesktopBridge ? (
         <SettingsRow
           {...searchableSetting("update-track")}
@@ -763,6 +769,8 @@ export function useSettingsRestore(onRestored?: () => void) {
       browserRecordingShowKeyPresses: DEFAULT_UNIFIED_SETTINGS.browserRecordingShowKeyPresses,
       browserRecordingShowMousePresses: DEFAULT_UNIFIED_SETTINGS.browserRecordingShowMousePresses,
       browserLinkTarget: DEFAULT_UNIFIED_SETTINGS.browserLinkTarget,
+      externalBrowser: DEFAULT_UNIFIED_SETTINGS.externalBrowser,
+      externalBrowserPrivate: DEFAULT_UNIFIED_SETTINGS.externalBrowserPrivate,
       browserSearchEngine: DEFAULT_UNIFIED_SETTINGS.browserSearchEngine,
       browserCustomSearchUrl: DEFAULT_UNIFIED_SETTINGS.browserCustomSearchUrl,
       browserAutoShowFloatingPreview: DEFAULT_UNIFIED_SETTINGS.browserAutoShowFloatingPreview,

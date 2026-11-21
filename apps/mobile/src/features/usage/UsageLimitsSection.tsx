@@ -64,6 +64,17 @@ function WindowRow(props: {
     timeLeft === null || barWidth < 6
       ? null
       : Math.min(Math.max((barWidth * timeLeft) / 100, 3), barWidth - 3);
+  if (window.observedUntil !== undefined) {
+    if (Date.parse(window.observedUntil) <= now) return null;
+    return (
+      <View className="flex-row items-baseline justify-between gap-3">
+        <Text className="text-sm text-foreground">{window.label}</Text>
+        <Text className="text-sm text-foreground-muted">
+          Limit reached{resetsIn ? ` · ${resetsIn}` : ""}
+        </Text>
+      </View>
+    );
+  }
   const bar = (
     <View
       className="h-1.5 flex-row overflow-hidden rounded-full bg-subtle"
