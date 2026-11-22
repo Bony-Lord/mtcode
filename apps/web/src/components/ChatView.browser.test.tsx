@@ -380,6 +380,45 @@ it("retains each thread's diff selection when returning from another thread or S
   });
 });
 
+it("returns from Settings to an existing chat and then a draft", async () => {
+  const thread = threadWithHistory("settings-chat-draft", 1);
+  using _environment = installFakeEnvironment([thread]);
+  __setClientSettingsForTests({
+    ...DEFAULT_CLIENT_SETTINGS,
+    onboardingCompletedAt: "2026-01-01T00:00:00.000Z",
+  });
+  const draftId = DraftId.make("draft-settings-chat-draft");
+  useComposerDraftStore
+    .getState()
+    .setProjectDraftThreadId(scopeProjectRef(ENVIRONMENT_ID, PROJECT_ID), draftId, {
+      threadId: ThreadId.make("thread-settings-chat-draft"),
+    });
+  const router = getRouter(
+    createMemoryHistory({
+      initialEntries: ["/" + ENVIRONMENT_ID + "/" + thread.id],
+    }),
+  );
+  await router.load();
+  await using _app = await render(<AppRoot router={router} />, { router: false });
+  await expect.element(page.getByText("Answer 0 for " + thread.id + ".")).toBeVisible();
+
+  await act(() => router.navigate({ to: "/settings/general" }));
+  await expect
+    .element(page.getByRole("heading", { name: "Time format", exact: true }))
+    .toBeVisible();
+
+  await act(() =>
+    router.navigate({
+      to: "/$environmentId/$threadId",
+      params: { environmentId: ENVIRONMENT_ID, threadId: thread.id },
+    }),
+  );
+  await expect.element(page.getByText("Answer 0 for " + thread.id + ".")).toBeVisible();
+
+  await act(() => router.navigate({ to: "/draft/" + draftId }));
+  await expect.element(page.getByTestId("composer-editor")).toBeVisible();
+});
+
 it("a stashed prompt ending in a file chip restores with the chip", async () => {
   using _environment = installFakeEnvironment([]);
   __setClientSettingsForTests({

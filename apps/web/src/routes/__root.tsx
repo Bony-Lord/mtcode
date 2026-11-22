@@ -1,4 +1,3 @@
-import { DesktopUpdateReview } from "../components/sidebar/DesktopUpdateReview";
 import { type ServerLifecycleWelcomePayload } from "@t3tools/contracts";
 import { scopedProjectKey, scopeProjectRef } from "@t3tools/client-runtime/environment";
 import {
@@ -12,7 +11,7 @@ import {
   useRouter,
 } from "@tanstack/react-router";
 import { CheckIcon, CopyIcon } from "lucide-react";
-import { useEffect, useEffectEvent, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useEffectEvent, useRef, useState } from "react";
 
 import { APP_DISPLAY_NAME, APP_VERSION } from "../branding";
 import { AppSidebarLayout } from "../components/AppSidebarLayout";
@@ -53,6 +52,11 @@ import {
 import { useUiStateStore } from "../uiStateStore";
 import { configureClientTracing } from "../observability/clientTracing";
 import { resolveInitialServerAuthGateState } from "../environments/primary";
+
+const DesktopUpdateReview = lazy(async () => {
+  const module = await import("../components/sidebar/DesktopUpdateReview");
+  return { default: module.DesktopUpdateReview };
+});
 import { GUEST_PAGE_PATH } from "../guestPage";
 import { hasHostedPairingRequest, isHostedStaticApp } from "../hostedPairing";
 import { useHostedPromptLinkLanding } from "../components/promptLinks/HostedPromptLinkLanding";
@@ -192,7 +196,9 @@ function RootRouteBranch() {
       {isElectron ? (
         <>
           <RunningThreadKeepAlive />
-          <DesktopUpdateReview />
+          <Suspense fallback={null}>
+            <DesktopUpdateReview />
+          </Suspense>
         </>
       ) : null}
       <RelayClientInstallDialog />

@@ -156,4 +156,10 @@ describe("branding logic", () => {
       }),
     ).toBe("Alpha");
   });
+
+  it("uses the personal fork for release links", async () => {
+    const { APP_GITHUB_REPOSITORY, DESKTOP_DOWNLOAD_URL } = await import("./branding");
+    expect(APP_GITHUB_REPOSITORY).toBe("Bony-Lord/mtcode");
+    expect(DESKTOP_DOWNLOAD_URL).toBe("https://github.com/Bony-Lord/mtcode/releases/latest");
+  });
 });

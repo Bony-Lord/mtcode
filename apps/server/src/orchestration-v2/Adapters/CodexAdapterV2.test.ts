@@ -8932,6 +8932,76 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       ),
   );
 
+  it.effect("keeps a root warning separate from a successful terminal turn", () =>
+    Effect.gen(function* () {
+      const nativeThreadId = "native-codex-root-warning";
+      const nativeTurnId = "native-codex-root-warning-turn";
+      const rootWarning: CodexReplay.CodexAppServerReplayEntry = {
+        type: "emit_inbound",
+        label: "warning/root",
+        frame: {
+          method: "warning",
+          params: {
+            threadId: nativeThreadId,
+            message: "The optional workspace setting was ignored.",
+          },
+        },
+      };
+      const harness = yield* makeCodexReplayHarness(
+        makeCodexReplayTranscript({
+          scenario: "codex-root-warning",
+          entries: [
+            ...codexReplayPreamble({
+              nativeThreadId,
+              nativeTurnId,
+              prompt: "warning test",
+            }),
+            rootWarning,
+            {
+              type: "emit_inbound",
+              label: "turn/completed/root",
+              frame: {
+                method: "turn/completed",
+                params: {
+                  threadId: nativeThreadId,
+                  turn: makeCodexReplayTurn({ id: nativeTurnId, status: "completed" }),
+                },
+              },
+            },
+          ],
+        }),
+      );
+      yield* harness.runtime.startTurn(
+        makeCodexTestTurnInput({
+          threadId: harness.threadId,
+          providerThread: harness.providerThread,
+          now: yield* DateTime.now,
+          attemptId: RunAttemptId.make("attempt-codex-root-warning"),
+          text: "warning test",
+        }),
+      );
+      yield* harness.awaitTerminal(1);
+      assert.equal(harness.terminalEvents()[0]?.status, "completed");
+      assert.deepEqual(
+        harness.events.flatMap((event) =>
+          event.type === "turn_item.updated" && event.turnItem.type === "system_notice"
+            ? [[event.turnItem.threadId, event.turnItem.level, event.turnItem.status]]
+            : [],
+        ),
+        [[harness.threadId, "warning", "completed"]],
+      );
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          IdAllocator.layer,
+          McpProviderSessions.layer,
+          NodeServices.layer,
+          NodeCrypto.layer,
+        ),
+      ),
+    ),
+  );
+
   it.effect.each(["completed", "failed", "interrupted", "starting", "replied-last"] as const)(
     "handles a late native child after the capacity retry %s",
     (parentStatus) =>
