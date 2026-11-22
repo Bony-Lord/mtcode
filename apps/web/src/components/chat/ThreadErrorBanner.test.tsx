@@ -34,6 +34,22 @@ describe("getThreadErrorBannerMessage", () => {
 });
 
 describe("ThreadErrorBanner", () => {
+  it("keeps the rejection reason and offers the model picker in the same chat", () => {
+    const error = "ChatGPT sharing rejected an input item in the Codex session.";
+    const markup = renderToStaticMarkup(
+      <ThreadErrorBanner
+        error={error}
+        errorCode="subscription_sharing_unsupported_capability"
+        onChooseProvider={() => {}}
+      />,
+    );
+    expect(markup).toContain(error);
+    expect(markup).toContain("Choose regular Codex");
+    expect(markup).toContain("continue in this chat");
+    expect(markup).toContain("Choose provider");
+    expect(markup).not.toContain("ChatGPT usage limit reached");
+  });
+
   it("reappears for different diagnostics with the same headline on the same thread", () => {
     const firstError = JSON.stringify({ error: { message: "Turn failed", code: "first" } });
     const secondError = JSON.stringify({ error: { message: "Turn failed", code: "second" } });

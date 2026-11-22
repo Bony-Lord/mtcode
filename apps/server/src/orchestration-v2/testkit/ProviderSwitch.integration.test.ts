@@ -465,12 +465,15 @@ function makeTestAdapter(input: {
 
 const waitForIdle = Effect.fn("ProviderSwitchTest.waitForIdle")(function* (
   targetThreadId: ThreadId,
+  { allowHeldQueue = false } = {},
 ) {
   const orchestrator = yield* Orchestrator.OrchestratorV2;
   const eventSink = yield* EventSink.EventSinkV2;
   const isIdle = (projection: OrchestrationV2ThreadProjection) =>
     projection.runs.every(
-      (run) => !["queued", "starting", "running", "waiting"].includes(run.status),
+      (run) =>
+        !["queued", "starting", "running", "waiting"].includes(run.status) ||
+        (allowHeldQueue && run.status === "queued" && run.queueHeld === true),
     );
   const afterSequence = yield* eventSink.latestSequence();
   const current = yield* orchestrator.getThreadProjection(targetThreadId);
@@ -4507,6 +4510,125 @@ describe("orchestration v2 provider switching", () => {
       assert.deepEqual(
         (yield* Ref.get(capturedTurns)).map((turn) => turn.driver),
         [CODEX_DRIVER, CODEX_DRIVER],
+      );
+    }),
+  );
+
+  it.live("holds rejected sharing input and continues the same chat on regular Codex", () =>
+    Effect.gen(function* () {
+      const cwd = yield* checkpointWorkspace("sharing-rejected-input");
+      const capturedTurns = yield* Ref.make<ReadonlyArray<CapturedTurn>>([]);
+      const injectedHistory = yield* Ref.make<ReadonlyArray<unknown>>([]);
+      const started = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const sharingSelection = {
+        ...CODEX_MODEL_SELECTION,
+        instanceId: ProviderInstanceId.make("codex-sharing"),
+      };
+      const registry = ProviderAdapterRegistry.layerFromAdapters([
+        makeTestAdapter({
+          instanceId: sharingSelection.instanceId,
+          driver: CODEX_DRIVER,
+          capabilities: CodexProviderCapabilitiesV2,
+          modelSelection: sharingSelection,
+          responseByRunOrdinal: {},
+          capturedTurns,
+          holdFirstTurn: started,
+          releaseFirstTurn: release,
+          failedRunOrdinals: new Set([1]),
+          failure: makeProviderFailure({
+            code: "subscription_sharing_unsupported_capability",
+            class: "provider_error",
+            message: "ChatGPT sharing rejected an input item.",
+          }),
+        }),
+        makeTestAdapter({
+          instanceId: CODEX_MODEL_SELECTION.instanceId,
+          driver: CODEX_DRIVER,
+          capabilities: CodexProviderCapabilitiesV2,
+          modelSelection: CODEX_MODEL_SELECTION,
+          responseByRunOrdinal: {},
+          capturedTurns,
+          injectedHistory,
+          nativeThreadGeneration: yield* Ref.make(1),
+        }),
+      ]);
+      yield* Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+        const send = (label: string, selection: ModelSelection, text: string) =>
+          orchestrator.dispatch({
+            type: "message.dispatch",
+            commandId: CommandId.make(`sharing-rejected:${label}`),
+            messageId: MessageId.make(`sharing-rejected:${label}`),
+            threadId,
+            createdBy: "user",
+            creationSource: "web",
+            modelSelection: selection,
+            text,
+            attachments: [],
+            dispatchMode: { type: "queue_after_active" },
+          });
+        yield* orchestrator.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make("sharing-rejected:create"),
+          threadId,
+          projectId,
+          title: "Sharing rejected input",
+          createdBy: "user",
+          creationSource: "web",
+          modelSelection: sharingSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: cwd,
+        });
+        yield* send("first", sharingSelection, "Remember this context marker: canyon.");
+        yield* Deferred.await(started);
+        yield* send("queued", sharingSelection, "Queued while sharing runs.");
+        yield* Deferred.succeed(release, undefined);
+        yield* worker.drain();
+        yield* waitForIdle(threadId, { allowHeldQueue: true });
+
+        const failed = yield* Effect.result(send("retry", sharingSelection, "Retry unchanged."));
+        assert.equal(failed._tag, "Failure");
+        if (failed._tag === "Failure")
+          assert.include(String(failed.failure.cause), "continue in this chat");
+
+        yield* send("recovery", CODEX_MODEL_SELECTION, "Continue with the saved context.");
+        yield* worker.drain();
+        yield* waitForIdle(threadId, { allowHeldQueue: true });
+        yield* worker.drain();
+        const projection = yield* orchestrator.getThreadProjection(threadId);
+        const turns = yield* Ref.get(capturedTurns);
+        const switchBack = yield* Effect.result(
+          send("switch-back", sharingSelection, "Reconnect to the rejected session."),
+        );
+        assert.equal(switchBack._tag, "Failure");
+        assert.deepEqual(
+          turns.map((turn) => turn.modelSelection.instanceId),
+          [sharingSelection.instanceId, CODEX_MODEL_SELECTION.instanceId],
+        );
+        assert.notEqual(turns[0]?.nativeThreadId, turns[1]?.nativeThreadId);
+        assert.include(JSON.stringify(yield* Ref.get(injectedHistory)), "context marker: canyon");
+        assert.equal(projection.runs.find((run) => run.ordinal === 1)?.status, "failed");
+        assert.isTrue(
+          projection.runs.some((run) => run.status === "queued" && run.queueHeld === true),
+        );
+        assert.isTrue(
+          projection.runs.some(
+            (run) =>
+              run.status === "completed" &&
+              run.providerInstanceId === CODEX_MODEL_SELECTION.instanceId,
+          ),
+        );
+      }).pipe(
+        Effect.provide(
+          ProviderReplayHarness.layerWithRegistry(
+            { name: "sharing-rejected-input", runtimePolicyOverride: { cwd } },
+            registry,
+          ),
+        ),
       );
     }),
   );

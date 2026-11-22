@@ -1,3 +1,8 @@
+import {
+  CODEX_SHARING_CONTINUATION_HINT,
+  CODEX_SHARING_UNSUPPORTED_CAPABILITY_CODE,
+} from "@t3tools/shared/orchestrationV2ThreadError";
+
 const legacyFailures = {
   subscription_sharing_v2_user_not_eligible: {
     message:
@@ -14,9 +19,8 @@ const legacyFailures = {
   subscription_sharing_usage_unavailable: {
     message: "ChatGPT usage is temporarily unavailable. Try again shortly.",
   },
-  subscription_sharing_unsupported_capability: {
-    message:
-      "Codex used a feature that ChatGPT sharing does not support. Use another provider for this request.",
+  [CODEX_SHARING_UNSUPPORTED_CAPABILITY_CODE]: {
+    message: `Codex used a feature that ChatGPT sharing does not support. ${CODEX_SHARING_CONTINUATION_HINT}`,
   },
   subscription_sharing_v2_client_not_enabled: {
     message:
@@ -98,18 +102,23 @@ export function classifyCodexManagedError(value: unknown) {
   if (code === undefined) return undefined;
   const failure = { ...failures[code], code, usageLimit: usageLimitCodes.has(code) };
   const text = messages.join(" ");
-  if (code === "subscription_sharing_unsupported_capability") {
+  if (code === CODEX_SHARING_UNSUPPORTED_CAPABILITY_CODE) {
+    const rejectedInput = [error, ...messages.map(unwrapError)].some(
+      (detail) =>
+        typeof detail === "object" &&
+        detail !== null &&
+        "param" in detail &&
+        detail.param === "input",
+    );
     if (text.includes("tool 'namespace'"))
       return {
         ...failure,
-        message:
-          "Codex sent a tool namespace that ChatGPT sharing does not support. Use another provider for this request.",
+        message: `Codex sent a tool namespace that ChatGPT sharing does not support. ${CODEX_SHARING_CONTINUATION_HINT}`,
       };
-    if (text.includes("additional_tools"))
+    if (rejectedInput || text.includes("additional_tools"))
       return {
         ...failure,
-        message:
-          "Codex sent an input item that ChatGPT sharing does not support. Use another provider for this request.",
+        message: `ChatGPT sharing rejected an input item in the Codex session. ${CODEX_SHARING_CONTINUATION_HINT}`,
       };
   }
   return failure;

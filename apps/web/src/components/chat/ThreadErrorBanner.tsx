@@ -1,5 +1,9 @@
 import type { OrchestrationV2ProviderFailureClass } from "@t3tools/contracts";
 import {
+  CODEX_SHARING_CONTINUATION_HINT,
+  CODEX_SHARING_UNSUPPORTED_CAPABILITY_CODE,
+} from "@t3tools/shared/orchestrationV2ThreadError";
+import {
   CHATGPT_USAGE_LIMIT_CODE,
   CHATGPT_WORKSPACE_ADMIN_REQUEST,
   CHATGPT_WORKSPACE_USAGE_LIMIT_CODE,
@@ -138,6 +142,7 @@ export const ThreadErrorBanner = memo(function ThreadErrorBanner({
   onDismiss,
   errorClass,
   errorCode,
+  onChooseProvider,
 }: {
   error: string | null;
   copyContext?: {
@@ -147,11 +152,14 @@ export const ThreadErrorBanner = memo(function ThreadErrorBanner({
   };
   errorClass?: OrchestrationV2ProviderFailureClass | null;
   errorCode?: string | null;
+  onChooseProvider?: () => void;
   onDismiss?: () => void;
 }) {
   if (!error) return null;
   const workspaceLimit = errorCode === CHATGPT_WORKSPACE_USAGE_LIMIT_CODE;
   const chatGptLimit = workspaceLimit || errorCode === CHATGPT_USAGE_LIMIT_CODE;
+  const sharingRejectedInput = errorCode === CODEX_SHARING_UNSUPPORTED_CAPABILITY_CODE;
+  const message = getThreadErrorBannerMessage(error);
   const variant = errorClass === "usage_limit" || chatGptLimit ? "warning" : "error";
   const clipboardText = formatThreadErrorClipboardText({ error, ...copyContext });
   return (
@@ -174,8 +182,16 @@ export const ThreadErrorBanner = memo(function ThreadErrorBanner({
                 </p>
               ) : null}
             </div>
+          ) : sharingRejectedInput ? (
+            <div className="space-y-1">
+              <p className="font-medium">ChatGPT sharing could not continue this session</p>
+              <ExpandableText text={error} collapsedText={message} />
+              {message.includes(CODEX_SHARING_CONTINUATION_HINT) ? null : (
+                <p>{CODEX_SHARING_CONTINUATION_HINT}</p>
+              )}
+            </div>
           ) : (
-            <ExpandableText text={error} collapsedText={getThreadErrorBannerMessage(error)} />
+            <ExpandableText text={error} collapsedText={message} />
           )}
         </AlertDescription>
         <AlertAction>
@@ -185,6 +201,10 @@ export const ThreadErrorBanner = memo(function ThreadErrorBanner({
             </Button>
           ) : chatGptLimit ? (
             <ChatGptUsageButton variant="default" size="sm" />
+          ) : sharingRejectedInput && onChooseProvider ? (
+            <Button variant="default" size="sm" onClick={onChooseProvider}>
+              Choose provider
+            </Button>
           ) : null}
           <ThreadErrorCopyButton clipboardText={clipboardText} />
           {onDismiss ? (

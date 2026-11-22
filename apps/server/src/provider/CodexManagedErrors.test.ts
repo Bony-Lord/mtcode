@@ -47,6 +47,18 @@ it("distinguishes unsupported tools from input items without exposing the raw re
   }
 });
 
+it("reports the rejected input field from the nested Codex terminal error", () => {
+  const code = "subscription_sharing_unsupported_capability";
+  const response = { error: { code, param: "input", message: "opaque provider diagnostic" } };
+  for (const value of [response, { message: JSON.stringify(response), codexErrorInfo: "other" }]) {
+    const failure = classifyCodexManagedError(value);
+    assert.deepInclude(failure, { code, usageLimit: false });
+    assert.include(failure!.message, "rejected an input item");
+    assert.include(failure!.message, "continue in this chat");
+    assert.notInclude(failure!.message, "opaque provider diagnostic");
+  }
+});
+
 it("preserves credentials for the current subscriber and permission error codes", () => {
   for (const code of [
     "subscription_sharing_invalid_user",

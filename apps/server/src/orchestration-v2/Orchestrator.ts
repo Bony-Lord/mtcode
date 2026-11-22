@@ -8,6 +8,8 @@ import type {
   ProjectId,
 } from "@t3tools/contracts";
 import {
+  CODEX_SHARING_CONTINUATION_HINT,
+  CODEX_SHARING_UNSUPPORTED_CAPABILITY_CODE,
   latestExecutedRun,
   latestRootProviderFailure,
   orchestrationV2WorktreePending,
@@ -1474,6 +1476,21 @@ function providerThreadPredatesBoundary(
   );
 }
 
+function providerThreadHasRejectedSharingInput(
+  projection: Pick<OrchestrationV2ThreadProjection, "runs" | "turnItems">,
+  providerThreadId: OrchestrationV2ProviderThread["id"],
+): boolean {
+  const run = latestExecutedRun(
+    projection.runs.filter((candidate) => candidate.providerThreadId === providerThreadId),
+  );
+  return (
+    latestRootProviderFailure(run, projection.turnItems)?.code ===
+    CODEX_SHARING_UNSUPPORTED_CAPABILITY_CODE
+  );
+}
+
+const REJECTED_SHARING_INPUT_DETAIL = `ChatGPT sharing rejected this session's input. ${CODEX_SHARING_CONTINUATION_HINT}`;
+
 /** A provider that hosts one native thread per session keeps the old conversation alive otherwise. */
 function sessionsReleasedByFreshContext(
   projection: Pick<OrchestrationV2ThreadProjection, "providerSessions">,
@@ -2642,6 +2659,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       }
       // Failed worktree creation would run queued work in the project checkout; wait for the user.
       const failedRun = latestExecutedRun(projection.runs);
+      const failure = latestRootProviderFailure(failedRun, projection.turnItems);
       const endedRunId = options?.latestRunEnded === true ? failedRun?.id : options?.endedRunId;
       const failedRunId =
         options?.latestRunEnded === true && failedRun?.status === "failed"
@@ -2649,8 +2667,20 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           : options?.failedRunId;
       const failureClass =
         failedRun && failedRunId !== undefined && failedRun.id === failedRunId
-          ? latestRootProviderFailure(failedRun, projection.turnItems)?.class
+          ? failure?.class
           : undefined;
+      const lastRunOnQueuedProvider =
+        failedRun?.providerInstanceId === queuedRun.providerInstanceId
+          ? failedRun
+          : latestExecutedRun(
+              projection.runs.filter(
+                (run) => run.providerInstanceId === queuedRun.providerInstanceId,
+              ),
+            );
+      const sharingFailureHoldsQueue =
+        queuedRun.freshContext !== true &&
+        latestRootProviderFailure(lastRunOnQueuedProvider, projection.turnItems)?.code ===
+          CODEX_SHARING_UNSUPPORTED_CAPABILITY_CODE;
       const worktreeMissing =
         endedRunId !== undefined &&
         failedRun?.id === endedRunId &&
@@ -2673,6 +2703,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       if (
         worktreeMissing ||
         instanceDisabledForProject ||
+        sharingFailureHoldsQueue ||
         (failureClass !== undefined &&
           failureClass !== "validation_error" &&
           failedRun?.providerInstanceId === queuedRun.providerInstanceId)
@@ -2893,7 +2924,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         switchPlan?.instanceChanged === true &&
         switchPlan.transition.type === "restart_and_resume" &&
         activeProviderThread !== undefined &&
-        activeProviderThread.nativeThreadRef !== null;
+        activeProviderThread.nativeThreadRef !== null &&
+        !providerThreadHasRejectedSharingInput(projection, activeProviderThread.id);
       const deliveryProviderThread = canResumeAcrossInstances
         ? {
             ...queuedProviderThread,
@@ -7637,6 +7669,19 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     // Messages after failed or stopped worktree setup must wait for a worktree,
     // rather than start in the project checkout.
     const latestRun = latestExecutedRun(projection.runs);
+    if (
+      !freshContext &&
+      goalCommand === null &&
+      activeProviderThread !== undefined &&
+      activeProviderThread.providerInstanceId === modelSelection.instanceId &&
+      providerThreadHasRejectedSharingInput(projection, activeProviderThread.id)
+    ) {
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause: REJECTED_SHARING_INPUT_DETAIL,
+      });
+    }
     const worktreeMissingRun =
       activeRun === undefined &&
       (dispatchMode.type === "queue_after_active" || dispatchMode.type === "start_immediately") &&
@@ -8136,6 +8181,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       !freshContext &&
       isProviderSwitch &&
       activeProviderThread.nativeThreadRef !== null &&
+      !providerThreadHasRejectedSharingInput(projection, activeProviderThread.id) &&
       providerSwitchPlan?.transition.type === "restart_and_resume";
     const releasableSessions = uniqueSessions([
       ...projection.providerSessions.filter(
@@ -8644,6 +8690,18 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       isProviderSwitch && !canResumeAcrossInstances
         ? rootProviderThreadsForProvider(projection, modelSelection.instanceId)[0]
         : activeProviderThread;
+    if (
+      !freshContext &&
+      goalCommand === null &&
+      targetProviderThread !== undefined &&
+      providerThreadHasRejectedSharingInput(projection, targetProviderThread.id)
+    ) {
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause: REJECTED_SHARING_INPUT_DETAIL,
+      });
+    }
     const providerSessionId =
       (canResumeAcrossInstances ? undefined : targetProviderThread?.providerSessionId) ??
       (yield* mapDispatchError(command)(

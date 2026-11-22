@@ -21,6 +21,7 @@ export function ChatBannerLane(props: {
   providerStatus: ServerProvider | null;
   providerStatusDismissalKey: string | null;
   onOpenProviderSetup: (instanceId: ProviderInstanceId) => void;
+  onChooseProvider?: () => void;
   threadId: ThreadId;
   /** Copied with the error so a pasted report names its thread and provider. */
   threadTitle: string | null;
@@ -60,6 +61,7 @@ export function ChatBannerLane(props: {
         copyContext={{ title: threadTitle, provider: threadProviderName, threadId }}
         errorClass={threadErrorClass}
         errorCode={threadErrorCode}
+        {...(props.onChooseProvider ? { onChooseProvider: props.onChooseProvider } : {})}
         onDismiss={() => {
           setThreadError(threadId, null);
           dismissThreadErrorBannerForSession(threadErrorBannerKey);

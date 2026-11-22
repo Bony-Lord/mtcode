@@ -1,5 +1,4 @@
 import { buildCodexInitializeParams } from "../../provider/CodexProvider.ts";
-import * as NodeOS from "node:os";
 
 import { historyResponseItems } from "@t3tools/provider-core/server/handoffBudget";
 import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
@@ -68,7 +67,6 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import * as Scope from "effect/Scope";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 
-import packageJson from "../../../package.json" with { type: "json" };
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
@@ -2908,11 +2906,22 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           }),
         );
         yield* harness.firstTerminal;
-        const surfaced = harness.events.filter((event) => {
-          const serialized = JSON.stringify(event);
-          return serialized.includes("example_mcp") && serialized.includes("failed to start");
-        });
-        assert.isNotEmpty(surfaced);
+        assert.equal(harness.terminalEvents()[0]?.status, "completed");
+        assert.deepInclude(
+          harness.events
+            .flatMap((event) =>
+              event.type === "turn_item.updated" && event.turnItem.type === "system_notice"
+                ? [event.turnItem]
+                : [],
+            )
+            .map(({ title, message, level, status }) => ({ title, message, level, status })),
+          {
+            title: "MCP server example_mcp failed to start",
+            message: startupError,
+            level: "warning",
+            status: "completed",
+          },
+        );
       }).pipe(
         Effect.provide(
           Layer.mergeAll(
@@ -8783,6 +8792,145 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       rootFinished: entries.slice(rootCompleted - 1, rootCompleted + 1),
     };
   };
+
+  it.effect.each(["completed", "failed", "sharing failed"] as const)(
+    "projects Codex warnings separately from a native child that ends %s",
+    (outcome) =>
+      Effect.gen(function* () {
+        const status = outcome === "completed" ? "completed" : "failed";
+        const { spawned, rootFinished } = lateChildPrefix();
+        const startupWarning = "The optional workspace setting was ignored.";
+        const runningWarning = "The optional resource was unavailable.";
+        const terminalDetails = "The selected model is unavailable for this child.";
+        const privateDetail = "private replay detail";
+        const error = {
+          codexErrorInfo: "other",
+          message: "The provider stopped this request.",
+          additionalDetails:
+            outcome === "sharing failed"
+              ? JSON.stringify({
+                  error: {
+                    code: "subscription_sharing_unsupported_capability",
+                    param: "input",
+                    message: privateDetail,
+                  },
+                })
+              : terminalDetails,
+        };
+        const result = "Child work completed.";
+        const warning = (message: string): CodexReplay.CodexAppServerReplayEntry => ({
+          type: "emit_inbound",
+          frame: { method: "warning", params: { threadId: RESUME_CHILD_THREAD, message } },
+        });
+        const completion: ReadonlyArray<CodexReplay.CodexAppServerReplayEntry> =
+          status === "failed"
+            ? [
+                ...(outcome === "failed"
+                  ? [
+                      {
+                        type: "emit_inbound" as const,
+                        frame: {
+                          method: "error",
+                          params: {
+                            threadId: RESUME_CHILD_THREAD,
+                            turnId: RESUME_CHILD_TURN_1,
+                            willRetry: false,
+                            error,
+                          },
+                        },
+                      },
+                    ]
+                  : []),
+                {
+                  type: "emit_inbound",
+                  frame: {
+                    method: "turn/completed",
+                    params: {
+                      threadId: RESUME_CHILD_THREAD,
+                      turn: {
+                        ...makeCodexReplayTurn({ id: RESUME_CHILD_TURN_1, status }),
+                        error,
+                      },
+                    },
+                  },
+                },
+              ]
+            : [
+                childAgentMessage({
+                  id: "child-warning-result",
+                  text: result,
+                  turnId: RESUME_CHILD_TURN_1,
+                  completedAtMs: 1782622442000,
+                }),
+                childTurnCompleted(RESUME_CHILD_TURN_1),
+              ];
+        const harness = yield* makeCodexReplayHarness(
+          makeCodexReplayTranscript({
+            scenario: `codex-child-warning-${status}`,
+            entries: [
+              ...spawned.slice(0, -1),
+              warning(startupWarning),
+              ...spawned.slice(-1),
+              warning(runningWarning),
+              ...rootFinished,
+              ...completion,
+            ],
+          }),
+        );
+        yield* harness.runtime.startTurn(
+          makeCodexTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now: yield* DateTime.now,
+            attemptId: RunAttemptId.make(`attempt-codex-child-warning-${status}`),
+            text: RESUME_PROMPT,
+          }),
+        );
+        yield* harness.awaitTerminal(1);
+        yield* harness.until(
+          () =>
+            harness.continuationRequests.length === 1 &&
+            harness.subagentUpdates().at(-1)?.subagent.status === status,
+        );
+        const task = harness.subagentUpdates().at(-1)?.subagent;
+        const expectedResult =
+          outcome === "sharing failed"
+            ? "ChatGPT sharing rejected an input item in the Codex session."
+            : status === "failed"
+              ? terminalDetails
+              : result;
+        assert.equal(harness.terminalEvents()[0]?.status, "completed");
+        assert.equal(task?.status, status);
+        if (outcome === "sharing failed") {
+          assert.include(task?.result, expectedResult);
+        } else {
+          assert.equal(task?.result, expectedResult);
+        }
+        assert.include(harness.continuationRequests[0]?.detail, expectedResult);
+        assert.notInclude(harness.continuationRequests[0]?.detail, privateDetail);
+        const notices = harness.events.flatMap((event) =>
+          event.type === "turn_item.updated" && event.turnItem.type === "system_notice"
+            ? [event.turnItem]
+            : [],
+        );
+        assert.deepEqual(
+          notices.map((notice) => [notice.threadId, notice.level, notice.message, notice.status]),
+          [
+            [task?.childThreadId, "warning", startupWarning, "completed"],
+            [task?.childThreadId, "warning", runningWarning, "completed"],
+          ],
+        );
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            NodeCrypto.layer,
+          ),
+        ),
+      ),
+  );
 
   it.effect.each(["completed", "failed", "interrupted", "starting", "replied-last"] as const)(
     "handles a late native child after the capacity retry %s",

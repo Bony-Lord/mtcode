@@ -554,6 +554,7 @@ export default function ChatView(props: ChatViewProps) {
   const promptRef = useRef("");
   const localComposerRef = useRef<ChatComposerHandle | null>(null);
   const composerRef = useComposerHandleContext() ?? localComposerRef;
+  const openComposerModelPicker = useStableCallback(() => composerRef.current?.openModelPicker());
   const queuedRunEdit = useQueuedRunEdit({
     environmentId,
     routeThreadRef,
@@ -3732,6 +3733,9 @@ export default function ChatView(props: ChatViewProps) {
               providerStatus={visibleProviderStatus}
               providerStatusDismissalKey={providerStatusDismissalKey}
               onOpenProviderSetup={openProviderSetupStable}
+              {...(canOperateThread && supportsProviderSwitchingViaHandoff
+                ? { onChooseProvider: openComposerModelPicker }
+                : {})}
               threadId={activeThread.id}
               threadTitle={activeThread.title ?? null}
               threadProviderName={activeThread.runtime?.providerName ?? null}

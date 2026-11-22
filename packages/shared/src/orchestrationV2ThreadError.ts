@@ -5,6 +5,11 @@ import type {
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 
+export const CODEX_SHARING_UNSUPPORTED_CAPABILITY_CODE =
+  "subscription_sharing_unsupported_capability";
+export const CODEX_SHARING_CONTINUATION_HINT =
+  "Choose regular Codex or another supported provider, then send a message to continue in this chat.";
+
 type ErrorTurnItem = Extract<OrchestrationV2TurnItem, { type: "error" }>;
 /** Only error items are read, so callers may pass items stripped of other fields. */
 type FailureScanTurnItem =

@@ -2276,8 +2276,12 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           new Map<ProviderThreadId, Extract<OrchestrationV2TurnItem, { type: "error" }>>(),
         );
         const activeTurns = yield* Ref.make(new Map<string, ActiveCodexTurnContext>());
-        // Codex reports MCP startup on thread start, usually before the turn context exists.
-        const mcpStartupFailures = new Map<string, Map<string, string>>();
+        // Codex can report thread warnings before the turn context exists.
+        const pendingThreadWarnings = new Map<
+          string,
+          Map<string, { readonly title: string; readonly message: string }>
+        >();
+        let nextWarningOrdinal = 0;
         const turnTokenUsageByThread = new Map<string, CodexTurnTokenUsageState>();
         const usageStateForThread = (nativeThreadId: string) => {
           let state = turnTokenUsageByThread.get(nativeThreadId);
@@ -2551,44 +2555,45 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           yield* emitGoalUpdate(nativeThreadId);
         });
 
-        const emitMcpStartupFailures = Effect.fn("CodexAdapterV2.emitMcpStartupFailures")(
-          function* (context: ActiveCodexTurnContext) {
-            const nativeThreadId = context.providerThread.nativeThreadRef?.nativeId;
-            if (nativeThreadId == null) return;
-            const failures = mcpStartupFailures.get(nativeThreadId);
-            if (failures === undefined) return;
-            mcpStartupFailures.delete(nativeThreadId);
-            for (const [name, message] of failures) {
-              const nativeItemId = `mcp-startup-failed:${context.providerTurnId}:${name}`;
-              const { ordinal, startedAt } = yield* resolveItemPosition(context, nativeItemId);
-              yield* emitProviderEvent({
-                type: "turn_item.updated",
-                driver: CODEX_PROVIDER,
-                turnItem: {
-                  id: idAllocator.derive.turnItemFromProviderItem({
-                    driver: CODEX_PROVIDER,
-                    nativeItemId,
-                  }),
-                  threadId: context.projectionThreadId,
-                  runId: context.projectionRunId,
-                  nodeId: context.providerNodeId,
-                  providerThreadId: context.providerThread.id,
-                  providerTurnId: context.providerTurnId,
-                  nativeItemRef: { ...codexNativeItemRef(nativeItemId), strength: "weak" },
-                  parentItemId: null,
-                  ordinal,
-                  type: "system_notice",
-                  status: "completed",
-                  title: `MCP server ${name} failed to start`,
-                  message,
-                  startedAt,
-                  completedAt: startedAt,
-                  updatedAt: startedAt,
-                },
-              });
-            }
-          },
-        );
+        const emitThreadWarnings = Effect.fn("CodexAdapterV2.emitThreadWarnings")(function* (
+          context: ActiveCodexTurnContext,
+        ) {
+          const nativeThreadId = context.providerThread.nativeThreadRef?.nativeId;
+          if (nativeThreadId == null) return;
+          const warnings = pendingThreadWarnings.get(nativeThreadId);
+          if (warnings === undefined) return;
+          pendingThreadWarnings.delete(nativeThreadId);
+          for (const [key, { title, message }] of warnings) {
+            const nativeItemId = `${context.providerTurnId}:${key}`;
+            const { ordinal, startedAt } = yield* resolveItemPosition(context, nativeItemId);
+            yield* emitProviderEvent({
+              type: "turn_item.updated",
+              driver: CODEX_PROVIDER,
+              turnItem: {
+                id: idAllocator.derive.turnItemFromProviderItem({
+                  driver: CODEX_PROVIDER,
+                  nativeItemId,
+                }),
+                threadId: context.projectionThreadId,
+                runId: context.projectionRunId,
+                nodeId: context.providerNodeId,
+                providerThreadId: context.providerThread.id,
+                providerTurnId: context.providerTurnId,
+                nativeItemRef: { ...codexNativeItemRef(nativeItemId), strength: "weak" },
+                parentItemId: null,
+                ordinal,
+                type: "system_notice",
+                status: "completed",
+                title,
+                message,
+                level: "warning",
+                startedAt,
+                completedAt: startedAt,
+                updatedAt: startedAt,
+              },
+            });
+          }
+        });
 
         const releaseGoalUpdates = (nativeThreadId: string) =>
           Effect.suspend(() => {
@@ -2711,7 +2716,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             },
           });
           yield* rememberRootProviderThread(input.turnInput.providerThread);
-          yield* emitMcpStartupFailures(context);
+          yield* emitThreadWarnings(context);
           return context;
         });
 
@@ -2723,6 +2728,18 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               (context) => context.providerThread.nativeThreadRef?.nativeId === nativeThreadId,
             );
           });
+
+        const queueThreadWarning = Effect.fn("CodexAdapterV2.queueThreadWarning")(function* (
+          nativeThreadId: string,
+          key: string,
+          warning: { readonly title: string; readonly message: string },
+        ) {
+          const warnings = pendingThreadWarnings.get(nativeThreadId) ?? new Map();
+          warnings.set(key, warning);
+          pendingThreadWarnings.set(nativeThreadId, warnings);
+          const context = yield* findActiveTurnByNativeThreadId(nativeThreadId);
+          if (context !== undefined) yield* emitThreadWarnings(context);
+        });
 
         // Streaming updates repeatedly await this context, including retries before registration.
         const awaitActiveTurn = Effect.fnUntraced(function* (
@@ -3351,6 +3368,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 completedAt: null,
               },
             });
+            yield* emitThreadWarnings(activeContext);
           });
 
         const rememberSubagentTurnStarted =
@@ -5232,23 +5250,31 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           }).pipe(Effect.andThen(updateSubagentSelection(payload.threadId, payload.toModel))),
         );
 
+        yield* client.handleServerNotification("warning", (payload) =>
+          payload.threadId == null
+            ? Effect.void
+            : queueThreadWarning(payload.threadId, `warning:${nextWarningOrdinal++}`, {
+                title: "Codex warning",
+                message: payload.message,
+              }),
+        );
+
         yield* client.handleServerNotification("mcpServer/startupStatus/updated", (payload) =>
           Effect.gen(function* () {
-            if (payload.threadId == null) return;
-            const failures = mcpStartupFailures.get(payload.threadId) ?? new Map<string, string>();
+            const threadId = payload.threadId;
+            if (threadId == null) return;
+            const key = `mcp-startup-failed:${payload.name}`;
             if (payload.status === "failed") {
-              failures.set(
-                payload.name,
-                payload.error?.trim() || `MCP server ${payload.name} failed to start.`,
-              );
-              mcpStartupFailures.set(payload.threadId, failures);
-            } else {
-              failures.delete(payload.name);
-              if (failures.size === 0) mcpStartupFailures.delete(payload.threadId);
+              const title = `MCP server ${payload.name} failed to start`;
+              yield* queueThreadWarning(threadId, key, {
+                title,
+                message: payload.error?.trim() || `${title}.`,
+              });
               return;
             }
-            const context = yield* findActiveTurnByNativeThreadId(payload.threadId);
-            if (context !== undefined) yield* emitMcpStartupFailures(context);
+            const warnings = pendingThreadWarnings.get(threadId);
+            if (warnings?.delete(key) && warnings.size === 0)
+              pendingThreadWarnings.delete(threadId);
           }),
         );
 
@@ -5517,6 +5543,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
         // their command items, while the shared provider session stays alive.
         yield* client.handleServerNotification("thread/closed", (payload) =>
           Effect.gen(function* () {
+            pendingThreadWarnings.delete(payload.threadId);
             const closing = threadClosings.get(payload.threadId);
             threadClosings.delete(payload.threadId);
             if (closing !== undefined) yield* Deferred.succeed(closing, undefined);
@@ -7031,6 +7058,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           readonly status: OrchestrationV2ProviderTurn["status"];
           readonly completedAt: DateTime.Utc;
           readonly failureMessage?: string;
+          readonly failureDetails?: string;
           readonly failureErrorInfo?: CodexErrorInfo;
           readonly continueRun?: boolean;
           readonly stalledRetry?: {
@@ -7217,10 +7245,29 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                     completedAt: input.completedAt,
                   },
                 });
+                const previousFailure = input.context.latestProviderFailure ?? providerRetry;
+                const matchingPreviousFailure =
+                  input.failureMessage === undefined ||
+                  input.failureMessage === previousFailure?.nativeMessage
+                    ? previousFailure?.failure
+                    : undefined;
+                const failureResult =
+                  input.status === "failed"
+                    ? (classifyCodexManagedError({
+                        message: input.failureMessage,
+                        additionalDetails: input.failureDetails,
+                      })?.message ??
+                      matchingPreviousFailure?.message ??
+                      input.failureDetails ??
+                      input.failureMessage)
+                    : undefined;
                 yield* emitSubagentTaskUpdate({
                   subagent: input.context.subagent,
                   status: input.status,
                   completedAt: input.completedAt,
+                  ...(failureResult
+                    ? { result: makeProviderFailure({ message: failureResult }).message }
+                    : {}),
                 });
                 // Codex does not wake a completed parent turn, leaving child results unread.
                 // Only direct children wake an idle root turn; grandchildren report to their
@@ -7601,6 +7648,9 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 ? {}
                 : {
                     failureMessage: payload.turn.error.message,
+                    ...(payload.turn.error.additionalDetails?.trim()
+                      ? { failureDetails: payload.turn.error.additionalDetails.trim() }
+                      : {}),
                     ...(payload.turn.error.codexErrorInfo == null
                       ? {}
                       : { failureErrorInfo: payload.turn.error.codexErrorInfo }),
