@@ -84,7 +84,8 @@ case "$(gh repo view "$RELEASE_REPO" --json viewerPermission --jq .viewerPermiss
   *) fail "GitHub access must allow releases in $RELEASE_REPO." ;;
 esac
 git tag -a "$TAG" -m "MT Code $VERSION"
-git push "$REMOTE" "refs/tags/$TAG"
+GIT_TERMINAL_PROMPT=0 git -c credential.helper= -c 'credential.helper=!gh auth git-credential' \
+  push "$REMOTE" "refs/tags/$TAG"
 gh release create "$TAG" "$EXE" "$BLOCKMAP" "$FEED" "$CHECKSUMS" \
   --repo "$RELEASE_REPO" --verify-tag --draft --title "MT Code $VERSION" --notes-file "$NOTES_FILE"
 
