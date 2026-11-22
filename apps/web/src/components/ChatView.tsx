@@ -422,7 +422,9 @@ import { draftFanoutSelectionsAtom, draftSendState } from "./chat/chatViewSend";
 import {
   isCompactCommandMessage,
   type LocalThreadErrorEntry,
+  currentLocalThreadError,
   makeThreadErrorSetter,
+  threadErrorServerContext,
 } from "./ChatView.logic";
 
 const EMPTY_PROVIDERS: ServerProvider[] = [];
@@ -857,7 +859,6 @@ export default function ChatView(props: ChatViewProps) {
   const localDraftError = serverThread
     ? null
     : ((draftId ? localDraftErrorsByDraftId[draftId]?.message : null) ?? null);
-  const localServerError = localServerErrorsByThreadKey[routeThreadKey]?.message ?? null;
   const promotedDraftError =
     serverThread && draftId ? localDraftErrorsByDraftId[draftId] : undefined;
   if (promotedDraftError !== undefined && draftId) {
@@ -917,6 +918,21 @@ export default function ChatView(props: ChatViewProps) {
     serverProjection === null ? null : deriveThreadActivityRun(serverProjection);
   const serverRuntime =
     serverProjection === null ? null : deriveThreadStructureRuntime(serverProjection);
+  const serverErrorContext = threadErrorServerContext(
+    serverProjection,
+    serverRuntime?.lastError ?? null,
+  );
+  const localServerErrorEntry = localServerErrorsByThreadKey[routeThreadKey];
+  const localServerError = currentLocalThreadError(localServerErrorEntry, serverErrorContext);
+  if (
+    promotedDraftError === undefined &&
+    localServerErrorEntry?.message &&
+    localServerError === null
+  ) {
+    const remainingErrors = { ...localServerErrorsByThreadKey };
+    delete remainingErrors[routeThreadKey];
+    setLocalServerErrorsByThreadKey(remainingErrors);
+  }
   const runlessWorkStartedAt =
     serverProjection === null ? null : deriveRunlessWorkStartedAt(serverProjection);
   const providerSubagentStatus =
@@ -1463,6 +1479,7 @@ export default function ChatView(props: ChatViewProps) {
     routeThreadRef,
     routeThreadKey,
     draftId,
+    serverErrorContext,
     serverThreadRef:
       serverThreadId !== undefined && serverThreadEnvironmentId !== undefined
         ? { threadId: serverThreadId, environmentId: serverThreadEnvironmentId }

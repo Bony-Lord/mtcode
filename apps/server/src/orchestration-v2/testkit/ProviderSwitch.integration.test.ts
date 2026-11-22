@@ -4611,7 +4611,16 @@ describe("orchestration v2 provider switching", () => {
         );
         assert.notEqual(turns[0]?.nativeThreadId, turns[1]?.nativeThreadId);
         assert.include(JSON.stringify(yield* Ref.get(injectedHistory)), "context marker: canyon");
-        assert.equal(projection.runs.find((run) => run.ordinal === 1)?.status, "failed");
+        const sharingRun = projection.runs.find((run) => run.ordinal === 1);
+        assert.equal(sharingRun?.status, "failed");
+        assert.isTrue(
+          projection.visibleTurnItems.some(
+            ({ item }) =>
+              item.type === "error" &&
+              item.runId === sharingRun?.id &&
+              item.failure.code === "subscription_sharing_unsupported_capability",
+          ),
+        );
         assert.isTrue(
           projection.runs.some((run) => run.status === "queued" && run.queueHeld === true),
         );

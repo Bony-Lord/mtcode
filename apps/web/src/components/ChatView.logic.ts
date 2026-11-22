@@ -8,6 +8,7 @@ import { checkpointFileTotals } from "@t3tools/client-runtime/state/thread-check
 import { COMPACT_COMMAND_PATTERN } from "@t3tools/client-runtime/state/context-window";
 import { derivePendingBackgroundWork } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import {
+  latestExecutedRun,
   latestUnheldRun,
   usageLimitRunPresentedAsLatest,
 } from "@t3tools/shared/orchestrationV2ThreadError";
@@ -1257,7 +1258,30 @@ export function isCompactCommandMessage(message: ChatMessage): boolean {
 export type LocalThreadErrorEntry = {
   readonly message: string | null;
   readonly at: number;
+  readonly serverContext?: string | undefined;
 };
+
+export function threadErrorServerContext(
+  projection: Pick<ThreadStructure, "runs"> | null,
+  serverError: string | null,
+): string | undefined {
+  if (projection === null) return undefined;
+  return JSON.stringify([latestExecutedRun(projection.runs)?.id ?? null, serverError]);
+}
+
+export function currentLocalThreadError(
+  entry: LocalThreadErrorEntry | undefined,
+  serverContext: string | undefined,
+): string | null {
+  if (
+    entry?.serverContext !== undefined &&
+    serverContext !== undefined &&
+    entry.serverContext !== serverContext
+  ) {
+    return null;
+  }
+  return entry?.message ?? null;
+}
 
 export function chatActionErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "An error occurred.";
@@ -1280,6 +1304,7 @@ export function makeThreadErrorSetter(input: {
   readonly routeThreadKey: string;
   readonly draftId: DraftId | null;
   readonly serverThreadRef: ScopedThreadRef | null;
+  readonly serverErrorContext: string | undefined;
   readonly setLocalServerErrorsByThreadKey: (
     update: SetStateAction<Record<string, LocalThreadErrorEntry>>,
   ) => void;
@@ -1299,10 +1324,17 @@ export function makeThreadErrorSetter(input: {
       serverThreadRef.threadId === targetThreadId
     ) {
       input.setLocalServerErrorsByThreadKey((existing) => {
-        if ((existing[input.routeThreadKey]?.message ?? null) === nextError) {
+        const current = existing[input.routeThreadKey];
+        if (
+          (current?.message ?? null) === nextError &&
+          current?.serverContext === input.serverErrorContext
+        ) {
           return existing;
         }
-        return { ...existing, [input.routeThreadKey]: nextEntry };
+        return {
+          ...existing,
+          [input.routeThreadKey]: { ...nextEntry, serverContext: input.serverErrorContext },
+        };
       });
       return;
     }

@@ -2,6 +2,8 @@ import {
   boundAttachmentIds,
   buildExpiredTerminalContextToastCopy,
   collectUserMessageBlobPreviewUrls,
+  currentLocalThreadError,
+  threadErrorServerContext,
   createTakeoverRetryIdentity,
   isPiNativeCommandRejected,
   isTakeoverDeliveryIndeterminate,
@@ -33,6 +35,7 @@ import {
   CommandId,
   EnvironmentId,
   MessageId,
+  NodeId,
   ProjectId,
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
   ProviderInstanceId,
@@ -48,6 +51,7 @@ import * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { Atom } from "effect/reactivity";
+import { deriveThreadStructureRuntime } from "@t3tools/client-runtime/state/thread-execution";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { environmentThreadDetails } from "../state/threads";
 
@@ -120,6 +124,126 @@ const readySession = {
   lastError: null,
   updatedAt: "2026-03-29T00:00:10.000Z",
 };
+
+describe("current local thread error", () => {
+  const sharingError = "ChatGPT sharing rejected this session's input.";
+  const usageError = "Usage limit reached";
+  const base = makeThreadProjectionFixture();
+  const timestamp = DateTime.makeUnsafe(now);
+  const sharingRun = {
+    id: RunId.make("sharing-run"),
+    threadId: base.thread.id,
+    ordinal: 35,
+    providerInstanceId: ProviderInstanceId.make("codex-sharing"),
+    modelSelection: {
+      ...base.thread.modelSelection,
+      instanceId: ProviderInstanceId.make("codex-sharing"),
+    },
+    providerThreadId: null,
+    userMessageId: MessageId.make("sharing-message"),
+    rootNodeId: NodeId.make("sharing-root"),
+    activeAttemptId: null,
+    status: "failed" as const,
+    requestedAt: timestamp,
+    startedAt: timestamp,
+    completedAt: timestamp,
+    checkpointId: null,
+    contextHandoffId: null,
+  };
+  const sharingFailure = {
+    id: TurnItemId.make("sharing-error"),
+    threadId: base.thread.id,
+    runId: sharingRun.id,
+    nodeId: sharingRun.rootNodeId,
+    providerThreadId: null,
+    providerTurnId: null,
+    nativeItemRef: null,
+    parentItemId: null,
+    ordinal: 1,
+    type: "error" as const,
+    status: "failed" as const,
+    title: sharingError,
+    startedAt: timestamp,
+    completedAt: timestamp,
+    updatedAt: timestamp,
+    failure: {
+      class: "provider_error" as const,
+      code: "subscription_sharing_unsupported_capability",
+      message: "Codex used a feature that ChatGPT sharing does not support.",
+      retryable: null,
+    },
+  };
+  const regularRun = {
+    ...sharingRun,
+    id: RunId.make("regular-run"),
+    ordinal: 36,
+    rootNodeId: NodeId.make("regular-root"),
+    providerInstanceId: base.thread.providerInstanceId,
+    modelSelection: base.thread.modelSelection,
+  };
+  const beforeDispatch = { ...base, runs: [sharingRun], turnItems: [sharingFailure] };
+  const entry = {
+    message: sharingError,
+    at: 0,
+    serverContext: threadErrorServerContext(beforeDispatch, sharingFailure.failure.message),
+  };
+  function visibleError(projection: typeof base) {
+    const serverError = deriveThreadStructureRuntime(projection)?.lastError ?? null;
+    return (
+      currentLocalThreadError(entry, threadErrorServerContext(projection, serverError)) ??
+      serverError
+    );
+  }
+
+  it("keeps a dispatch rejection until another route advances the conversation", () => {
+    expect(visibleError(beforeDispatch)).toBe(sharingError);
+    expect(
+      visibleError({
+        ...beforeDispatch,
+        runs: [
+          sharingRun,
+          { ...regularRun, status: "queued", startedAt: null, completedAt: null, queueHeld: true },
+        ],
+      }),
+    ).toBe(sharingError);
+    expect(
+      visibleError({
+        ...beforeDispatch,
+        runs: [sharingRun, { ...regularRun, status: "running", completedAt: null }],
+      }),
+    ).toBeNull();
+    expect(
+      visibleError({
+        ...beforeDispatch,
+        runs: [sharingRun, { ...regularRun, status: "completed" }],
+      }),
+    ).toBeNull();
+  });
+
+  it("lets a later server failure replace the dispatch rejection", () => {
+    const limitedRun = { ...regularRun, id: RunId.make("limited-run"), ordinal: 40 };
+    const usageFailure = {
+      ...sharingFailure,
+      id: TurnItemId.make("usage-error"),
+      runId: limitedRun.id,
+      nodeId: limitedRun.rootNodeId,
+      ordinal: 2,
+      failure: {
+        class: "usage_limit" as const,
+        code: "usageLimitExceeded",
+        message: usageError,
+        retryable: null,
+      },
+    };
+    expect(
+      visibleError({
+        ...beforeDispatch,
+        runs: [sharingRun, { ...regularRun, status: "completed" }, limitedRun],
+        turnItems: [sharingFailure, usageFailure],
+      }),
+    ).toBe(usageError);
+  });
+});
 
 describe("deriveComposerSendState", () => {
   it("keeps text sendable while excluding expired terminal pills", () => {

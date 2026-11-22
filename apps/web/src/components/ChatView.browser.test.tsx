@@ -4,6 +4,7 @@ import {
   EnvironmentId,
   ORCHESTRATION_V2_WS_METHODS,
   RunId,
+  ServerSettingsError,
   ThreadId,
   WS_METHODS,
 } from "@t3tools/contracts";
@@ -42,6 +43,7 @@ import {
   hasPendingAssetUrl,
   installFakeEnvironment,
   rejectPendingCommand,
+  runningRun,
   threadWithHistory,
   threadWithQuestion,
   type FakeDriver,
@@ -419,6 +421,37 @@ it("returns from Settings to an existing chat and then a draft", async () => {
   await expect.element(page.getByTestId("composer-editor")).toBeVisible();
 });
 
+it("restores the Keep Awake toggle after its environment setting fails to save", async () => {
+  const thread = threadWithHistory("keep-awake-settings", 1);
+  using _environment = installFakeEnvironment([thread], { acceptCommands: true });
+  __setClientSettingsForTests({
+    ...DEFAULT_CLIENT_SETTINGS,
+    onboardingCompletedAt: "2026-01-01T00:00:00.000Z",
+  });
+  const router = getRouter(
+    createMemoryHistory({ initialEntries: [`/${ENVIRONMENT_ID}/${thread.id}`] }),
+  );
+  await router.load();
+  await using _app = await render(<AppRoot router={router} />, { router: false });
+  await userEvent.click(page.getByTestId("composer-editor"));
+  const keepAwake = page.getByRole("button", { name: "Не спать", exact: true });
+  await vi.waitFor(() => expect(keepAwake.element().getAttribute("aria-pressed")).toBe("true"));
+  const save = vi.fn(() =>
+    Effect.fail(
+      new ServerSettingsError({
+        operation: "write-file",
+        settingsPath: "/workspace/settings.json",
+      }),
+    ),
+  );
+  using _response = answerRpc(WS_METHODS.serverUpdateSettings, save);
+  await userEvent.click(keepAwake);
+  await vi.waitFor(() => {
+    expect(save).toHaveBeenCalledWith({ patch: { keepAwakeWhileAgentsWork: false } });
+  });
+  await vi.waitFor(() => expect(keepAwake.element().getAttribute("aria-pressed")).toBe("true"));
+});
+
 it("a stashed prompt ending in a file chip restores with the chip", async () => {
   using _environment = installFakeEnvironment([]);
   __setClientSettingsForTests({
@@ -486,6 +519,15 @@ it("a rejected send leaves the timeline when a new draft was typed meanwhile", a
 
   await expect.element(page.getByText("Attachment 'sample.png' cannot be sent.")).toBeVisible();
   await expect.element(page.getByText("Failed prompt")).not.toBeInTheDocument();
+  expect(editor.element().textContent).toContain("Next draft");
+
+  await emitThreadEvent(thread.id, {
+    type: "run.updated",
+    payload: runningRun(thread.id, "continued-in-another-client", 2, "next-message"),
+  });
+  await expect
+    .element(page.getByText("Attachment 'sample.png' cannot be sent."))
+    .not.toBeInTheDocument();
   expect(editor.element().textContent).toContain("Next draft");
 });
 
