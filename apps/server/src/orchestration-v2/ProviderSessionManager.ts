@@ -292,6 +292,7 @@ export class ProviderSessionManagerV2 extends Context.Service<
 
 interface LiveSessionEntry {
   readonly attachedThreadIds: ReadonlySet<ThreadId>;
+  readonly runtimeIdentity: object | undefined;
   readonly loadedProviderThreadKeyByThread: ReadonlyMap<
     ThreadId,
     { readonly key: string; readonly providerThread: OrchestrationV2ProviderThread }
@@ -2211,6 +2212,16 @@ export const layerWithOptions = (
         ) {
           return;
         }
+        yield* releaseIdleForConfigurationChange(
+          entry,
+          "Linked environments changed; reopening the provider session.",
+        );
+      });
+
+      const releaseIdleForConfigurationChange = Effect.fn(
+        "ProviderSessionManager.releaseIdleForConfigurationChange",
+      )(function* (entry: LiveSessionEntry, detail: string, openingThreadId?: ThreadId) {
+        if (entry.busyTurns.size > 0 || entry.runtime.canResumeAfterRestart === false) return;
         const providerSessionId = entry.runtime.providerSessionId;
         // Any activity during these reads bumps the generation and keeps the runtime.
         const generation = entry.idleGeneration;
@@ -2223,13 +2234,18 @@ export const layerWithOptions = (
         if (hasPendingWork) return;
         // Checked under the request permit so a runless request mid-persist is not cancelled.
         const hasUnfinishedRecords = Effect.forEach(entry.attachedThreadIds, (threadId) =>
-          projectionStore.getThreadRecords(threadId, ["runtimeRequests", "providerThreads"], {
-            runtimeRequestStatuses: ["pending"],
-          }),
+          projectionStore.getThreadRecords(
+            threadId,
+            openingThreadId !== undefined && openingThreadId !== threadId
+              ? ["runtimeRequests", "providerThreads", "runs"]
+              : ["runtimeRequests", "providerThreads"],
+            { runtimeRequestStatuses: ["pending"] },
+          ),
         ).pipe(
           Effect.map((projections) =>
             projections.some(
               (projection) =>
+                projection.runs?.some((run) => WORKING_RUN_STATUSES.has(run.status)) ||
                 projection.runtimeRequests.some(
                   (request) =>
                     request.responseCapability.type === "live" &&
@@ -2247,7 +2263,7 @@ export const layerWithOptions = (
         yield* releaseEntry({
           providerSessionId,
           reason: "idle_timeout",
-          detail: "Linked environments changed; reopening the provider session.",
+          detail,
           onlyIfIdleGeneration: generation,
           keepIf: hasUnfinishedRecords,
         }).pipe(logReleaseFailure(providerSessionId));
@@ -2986,10 +3002,43 @@ export const layerWithOptions = (
                 }
               }
               const key = sessionKey(input.providerSessionId);
+              const providerAdapter = registry.get(input.modelSelection.instanceId).pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new ProviderSessionOpenError({
+                      instanceId: input.modelSelection.instanceId,
+                      providerSessionId: input.providerSessionId,
+                      cause,
+                    }),
+                ),
+              );
               const live = (yield* Ref.get(sessions)).get(key);
-              if (live !== undefined) yield* releaseForLinkedEnvironments(live);
+              const currentAdapter =
+                live?.runtimeIdentity === undefined ? undefined : yield* providerAdapter;
+              const configurationChanged =
+                currentAdapter !== undefined &&
+                currentAdapter.runtimeIdentity !== live?.runtimeIdentity;
+              if (live !== undefined) {
+                if (configurationChanged) {
+                  yield* releaseIdleForConfigurationChange(
+                    live,
+                    "Codex configuration changed; reopening the provider session.",
+                    input.threadId,
+                  );
+                } else {
+                  yield* releaseForLinkedEnvironments(live);
+                }
+              }
               const existing = (yield* Ref.get(sessions)).get(key);
               if (existing !== undefined) {
+                if (configurationChanged) {
+                  return yield* new ProviderSessionOpenError({
+                    instanceId: input.modelSelection.instanceId,
+                    providerSessionId: input.providerSessionId,
+                    cause:
+                      "Codex configuration changed. Wait for the previous session's work to finish before sending.",
+                  });
+                }
                 const attached = existing.attachedThreadIds.has(input.threadId);
                 if (!attached && !existing.supportsMultipleProviderThreads) {
                   return yield* new ProviderSessionOpenError({
@@ -3008,16 +3057,7 @@ export const layerWithOptions = (
                 return existing.exposedRuntime;
               }
 
-              const adapter = yield* registry.get(input.modelSelection.instanceId).pipe(
-                Effect.mapError(
-                  (cause) =>
-                    new ProviderSessionOpenError({
-                      instanceId: input.modelSelection.instanceId,
-                      providerSessionId: input.providerSessionId,
-                      cause,
-                    }),
-                ),
-              );
+              const adapter = currentAdapter ?? (yield* providerAdapter);
               const openedWithLinkedEnvironments = yield* readLinkedEnvironments;
               const prepared = yield* prepareMcpSession(
                 input.threadId,
@@ -3093,6 +3133,7 @@ export const layerWithOptions = (
               const exposedRuntime = decorateRuntime(runtime, eventSubscribers);
               const entry: LiveSessionEntry = {
                 attachedThreadIds: new Set([input.threadId]),
+                runtimeIdentity: adapter.runtimeIdentity,
                 loadedProviderThreadKeyByThread: new Map(),
                 openedWithLinkedEnvironments,
                 linkedEnvironmentsByThread: new Map(),

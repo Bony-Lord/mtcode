@@ -13,6 +13,9 @@ it("keeps every mode combination inside Codex's context entry limit", () => {
     const context = workProfileInstructions(modes, true);
     expect(new TextEncoder().encode(context).length).toBeLessThanOrEqual(4000);
     expect(context).toContain("escalate:true");
+    expect(context).toContain("AGENTS.md/CLAUDE.md presets do not override this delegation contract");
+    expect(context).toContain("orchestrator_capabilities and delegate_task");
+    expect(context).toContain("rotate to a different eligible helper");
   }
 });
 

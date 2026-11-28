@@ -2989,6 +2989,35 @@ it.layer(McpProviderSessions.layer)("OpenCode2 adapter", (it) => {
     }),
   );
 
+  it.effect("answers a native permission request automatically in Full access", () =>
+    Effect.gen(function* () {
+      const { runtime, thread } = yield* resumed([
+        out("session.prompt", { sessionID: SESSION, text: "<any>" }),
+        promptAccepted,
+        event("session.execution.started", { sessionID: SESSION }),
+        shellAskEvent,
+        out("permission.reply", {
+          sessionID: SESSION,
+          requestID: shellAsk.data.id,
+          decision: "once",
+        }),
+        reply("permission.reply", null),
+        event("session.execution.succeeded", { sessionID: SESSION }),
+      ]);
+      const outcome = yield* runtime.events.pipe(
+        Stream.filter(
+          (event) => event.type === "runtime_request.updated" || event.type === "turn.terminal",
+        ),
+        Stream.runHead,
+        Effect.forkScoped,
+      );
+      yield* runtime.startTurn(turnInput(thread));
+      const first = Option.getOrUndefined(yield* Fiber.join(outcome));
+      assert.equal(first?.type, "turn.terminal");
+      assert.equal(first?.type === "turn.terminal" && first.status, "completed");
+    }),
+  );
+
   it.effect("counts an answer to a request OpenCode already dropped as delivered", () =>
     Effect.gen(function* () {
       const { runtime, thread } = yield* resumed(

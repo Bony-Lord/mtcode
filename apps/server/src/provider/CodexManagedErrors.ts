@@ -1,6 +1,8 @@
 import {
   CODEX_SHARING_CONTINUATION_HINT,
   CODEX_SHARING_UNSUPPORTED_CAPABILITY_CODE,
+  CODEX_SHARING_USER_NOT_ELIGIBLE_CODE,
+  isCodexSharingEligibilityFailure,
 } from "@t3tools/shared/orchestrationV2ThreadError";
 
 const legacyFailures = {
@@ -39,7 +41,7 @@ const legacyFailures = {
 } as const;
 const failures = {
   ...legacyFailures,
-  subscription_sharing_user_not_eligible: legacyFailures.subscription_sharing_v2_user_not_eligible,
+  [CODEX_SHARING_USER_NOT_ELIGIBLE_CODE]: legacyFailures.subscription_sharing_v2_user_not_eligible,
   subscription_sharing_route_not_supported:
     legacyFailures.subscription_sharing_v2_route_not_supported,
   subscription_sharing_invalid_user: legacyFailures.subscription_sharing_v2_invalid_user,
@@ -98,6 +100,9 @@ export function classifyCodexManagedError(value: unknown) {
       message.includes("has reached their Subscription Sharing usage limit"),
     )
       ? "subscription_sharing_usage_limit_exceeded"
+      : undefined) ??
+    (messages.some((message) => isCodexSharingEligibilityFailure(undefined, message))
+      ? CODEX_SHARING_USER_NOT_ELIGIBLE_CODE
       : undefined);
   if (code === undefined) return undefined;
   const failure = { ...failures[code], code, usageLimit: usageLimitCodes.has(code) };

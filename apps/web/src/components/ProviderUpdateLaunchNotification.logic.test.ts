@@ -10,6 +10,7 @@ import { AsyncResult } from "effect/reactivity";
 
 import {
   canOneClickUpdateProviderCandidate,
+  collectProviderUpdateCandidates,
   getProviderUpdateRunToastView,
   getProviderUpdateSidebarPillView,
   hasOneClickUpdateProviderCandidate,
@@ -33,6 +34,7 @@ function provider(input: {
   readonly latestVersion?: string | null;
   readonly canUpdate?: boolean;
   readonly updateCommand?: string | null;
+  readonly managedUpdate?: boolean;
   readonly updateState?: ServerProvider["updateState"];
   readonly advisoryStatus?: NonNullable<ServerProvider["versionAdvisory"]>["status"];
 }): ServerProvider {
@@ -54,6 +56,7 @@ function provider(input: {
       latestVersion: "latestVersion" in input ? input.latestVersion : "1.1.0",
       updateCommand: "updateCommand" in input ? input.updateCommand : "npm install -g provider",
       canUpdate: input.canUpdate ?? true,
+      ...(input.managedUpdate ? { managedUpdate: true } : {}),
       checkedAt,
       message: "Update available.",
     },
@@ -71,6 +74,22 @@ function updateCandidate(input: Parameters<typeof provider>[0]): ProviderUpdateC
 }
 
 describe("provider update launch notification logic", () => {
+  it("offers a single managed Codex update for all accounts on the same environment", () => {
+    const providers = ["codex", "codex_axis", "codex_pogo"].map((id) =>
+      provider({
+        driver: driver("codex"),
+        instanceId: instanceId(id),
+        updateCommand: null,
+        managedUpdate: true,
+      }),
+    );
+    const candidates = collectProviderUpdateCandidates(providers).filter((candidate) =>
+      canOneClickUpdateProviderCandidate(candidate, providers),
+    );
+    expect(candidates.map((candidate) => candidate.instanceId)).toEqual(["codex"]);
+    expect(isProviderSettingsUpdateCandidate(providers[0]!)).toBe(true);
+  });
+
   it("disables one-click updates when provider instances disagree on the update command", () => {
     const candidate = updateCandidate({
       driver: driver("claudeAgent"),

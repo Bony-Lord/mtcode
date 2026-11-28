@@ -391,10 +391,7 @@ type TurnTerminal =
   | { readonly status: "failed"; readonly failure: ReturnType<typeof makeProviderFailure> };
 
 type Rule = Permission.Rule;
-type RulesPolicy = Pick<
-  ProviderAdapter.ProviderAdapterV2RuntimePolicy,
-  "runtimeMode" | "interactionMode"
->;
+type RulesPolicy = Omit<ProviderAdapter.ProviderAdapterV2RuntimePolicy, "cwd">;
 type NativeForm = EventOf<"form.created">["data"]["form"];
 
 interface PendingRequest {
@@ -2606,6 +2603,23 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
     });
 
     const onPermissionAsked = Effect.fnUntraced(function* (data: Permission.Request) {
+      const target = requestTurn(data.sessionID);
+      const asker = threads.get(data.sessionID) ?? target?.state;
+      if (
+        target !== undefined &&
+        asker !== undefined &&
+        ProviderAdapter.autoApprovesProviderRequests(asker.policy)
+      ) {
+        const delivered = yield* deliver(
+          client.permission
+            .reply({ sessionID: data.sessionID, requestID: data.id, decision: "once" })
+            .pipe(Effect.catchTags(permissionGone)),
+        );
+        if (!delivered) {
+          yield* abandonRequest(asker, "permission reply failed");
+        }
+        return;
+      }
       const turn = threads.get(data.sessionID)?.active;
       const toolName =
         data.source === undefined ? undefined : turn?.tools.get(data.source.id)?.name;

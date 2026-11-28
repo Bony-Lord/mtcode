@@ -264,6 +264,50 @@ function WordWrapRow() {
   );
 }
 
+function FilePreviewRows() {
+  const settings = useScopedSettings();
+  const updateSettings = useUpdateScopedSettings();
+  return (
+    <>
+      <SettingsRow
+        {...searchableSetting("file-preview-on-demand")}
+        description="Файлы загружаются и отрисовываются после нажатия «Показать предпросмотр»."
+        control={
+          <Switch
+            checked={settings.filePreviewOnDemand}
+            onCheckedChange={(checked) => updateSettings({ filePreviewOnDemand: Boolean(checked) })}
+            aria-label="Файловый предпросмотр по нажатию"
+          />
+        }
+      />
+      <SettingsRow
+        {...searchableSetting("file-preview-max-active")}
+        description="Остальные файловые предпросмотры ждут, пока освободится место."
+        control={
+          <Select
+            value={settings.filePreviewMaxActive}
+            onValueChange={(value) => {
+              if (value === 1 || value === 2 || value === 3 || value === 4)
+                updateSettings({ filePreviewMaxActive: value });
+            }}
+          >
+            <SelectTrigger size="sm" aria-label="Число одновременных предпросмотров">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectPopup>
+              {([1, 2, 3, 4] as const).map((value) => (
+                <SelectItem key={value} value={value}>
+                  {value}
+                </SelectItem>
+              ))}
+            </SelectPopup>
+          </Select>
+        }
+      />
+    </>
+  );
+}
+
 function FontSettingsGroup() {
   return (
     <>
@@ -347,6 +391,7 @@ export function TypographySection() {
     <SettingsSection id="typography" title="Typography">
       {showAdvanced ? <FontSettingsGroup /> : <SimpleFontRows />}
       <WordWrapRow />
+      <FilePreviewRows />
       <AdvancedSettings
         targetIds={[searchableSetting("separate-fonts").id, searchableSetting("font-smoothing").id]}
       >

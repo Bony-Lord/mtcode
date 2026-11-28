@@ -1314,7 +1314,7 @@ function deriveVersionAdvisory(input: {
     return {
       status: "behind_latest",
       message:
-        input.capabilities.update === null
+        input.capabilities.update === null && input.capabilities.managedUpdate === undefined
           ? manualUpdateMessage(input.latestVersion, input.capabilities.installPath)
           : PROVIDER_UPDATE_ACTION_TOAST_MESSAGE,
     };
@@ -1346,7 +1346,8 @@ export function createProviderVersionAdvisory(input: {
       resolveLatestProviderUpdateAction(capabilities, latestVersion)?.command ??
       capabilities.manualCommand ??
       null,
-    canUpdate: capabilities.update !== null,
+    canUpdate: capabilities.update !== null || capabilities.managedUpdate !== undefined,
+    ...(capabilities.managedUpdate ? { managedUpdate: true } : {}),
     canInstallVersion: makeTargetedProviderUpdateAction(capabilities, "0.0.0") !== null,
     checkedAt: input.checkedAt ?? null,
     message: advisory.message,

@@ -1,13 +1,4 @@
-/**
- * In-app Codex sign-in.
- *
- * Runs the same `account/login/*` app-server routes the Codex desktop app
- * uses: `account/login/start` returns a browser URL (or device code) and the
- * app-server child owns the OAuth callback server, writing `auth.json` into
- * this instance's effective `CODEX_HOME` on completion. The child process
- * lives for the duration of the flow's scope, so cancelling the stream
- * aborts the login cleanly.
- */
+// The scoped app-server owns the login callback and writes auth.json into the account's CODEX_HOME.
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -47,6 +38,7 @@ interface CodexAccountLoginInput {
   readonly instanceId: ProviderInstanceId;
   /** Effective config: `homePath` already points at the account's home. */
   readonly config: CodexSettings;
+  readonly resolveExecutable?: Effect.Effect<string, never, Scope.Scope>;
   readonly environment: NodeJS.ProcessEnv;
   readonly spawner: ChildProcessSpawner.ChildProcessSpawner["Service"];
 }
@@ -70,7 +62,7 @@ const acquireLoginClient = Effect.fn("acquireLoginClient")(function* (
   };
   const launchArgs = resolveCodexLaunchArgs(input.config.launchArgs, environment);
   const spawnCommand = yield* resolveSpawnCommand(
-    input.config.binaryPath,
+    yield* input.resolveExecutable ?? Effect.succeed(input.config.binaryPath),
     codexAppServerArgs(launchArgs),
     { env: environment, extendEnv: true },
   );

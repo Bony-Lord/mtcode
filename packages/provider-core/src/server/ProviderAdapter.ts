@@ -59,6 +59,23 @@ export const ProviderAdapterV2RuntimePolicy = Schema.Struct({
 });
 export type ProviderAdapterV2RuntimePolicy = typeof ProviderAdapterV2RuntimePolicy.Type;
 
+export function autoApprovesProviderRequests(
+  policy: Omit<ProviderAdapterV2RuntimePolicy, "cwd">,
+): boolean {
+  const sandbox = policy.sandboxPolicy;
+  return (
+    policy.runtimeMode === "full-access" &&
+    (policy.maxRuntimeMode === undefined || policy.maxRuntimeMode === "full-access") &&
+    policy.interactionMode === "default" &&
+    (policy.approvalPolicy === undefined || policy.approvalPolicy === "never") &&
+    (sandbox === undefined ||
+      (typeof sandbox === "object" &&
+        sandbox !== null &&
+        "type" in sandbox &&
+        sandbox.type === "dangerFullAccess"))
+  );
+}
+
 export const ProviderAdapterV2TurnMessage = Schema.Struct({
   messageId: MessageId,
   text: Schema.String,

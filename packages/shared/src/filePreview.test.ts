@@ -195,6 +195,14 @@ describe("attachment preview classification", () => {
     expect(() => decodeFilePreviewText(new Uint8Array([65, 0, 66]))).toThrow("binary");
     expect(() => decodeFilePreviewText(new Uint8Array([255]))).toThrow("UTF-8");
   });
+  it("reads BOM-tagged UTF-16 files and recognizes Windows scripts as text", () => {
+    expect(decodeFilePreviewText(new Uint8Array([255, 254, 31, 4, 64, 4])).text).toBe("Пр");
+    expect(decodeFilePreviewText(new Uint8Array([254, 255, 4, 31, 4, 64])).text).toBe("Пр");
+    expect(filePreviewKind({ name: "script.ps1", mimeType: "application/octet-stream" })).toBe(
+      "text",
+    );
+    expect(filePreviewKind({ name: "movie.srt" })).toBe("text");
+  });
   it.each(["doc", "xls", "ppt", "7z", "rar"])(
     "retains the binary fallback for %s, which opencode does not render",
     (extension) => {

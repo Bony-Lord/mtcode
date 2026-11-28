@@ -1,5 +1,6 @@
 import { vi } from "vite-plus/test";
 import { historyResponseItems } from "@t3tools/provider-core/server/handoffBudget";
+import { workProfileInstructions } from "@t3tools/shared/agentWorkProfiles";
 import { NodeCrypto, NodeServices } from "@effect/platform-node";
 import { assert, describe, it } from "@effect/vitest";
 import {
@@ -70,6 +71,12 @@ import { checkpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 
 const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
+
+function profiledPrompt(text: string) {
+  return text.trimStart().startsWith("/")
+    ? text
+    : `${workProfileInstructions([], false)}\n\n${text}`;
+}
 
 const threadId = ThreadId.make("thread:provider-switch");
 const projectId = ProjectId.make("project:provider-switch");
@@ -963,7 +970,7 @@ describe("orchestration v2 provider switching", () => {
           assert.equal(yield* Ref.get(generation), 2);
           assert.equal(
             (yield* Ref.get(capturedTurns)).at(-1)!.text,
-            "Continue after automatic recovery",
+            profiledPrompt("Continue after automatic recovery"),
           );
           assert.deepEqual(yield* Ref.get(injectedHistory), historyBeforeFollowup);
           if (scenario.includes("target-estimate")) {
@@ -1074,7 +1081,7 @@ describe("orchestration v2 provider switching", () => {
           );
         } else {
           assert.equal(handoff.delivery?.status, "injected");
-          assert.equal((yield* Ref.get(capturedTurns)).at(-1)!.text, current);
+          assert.equal((yield* Ref.get(capturedTurns)).at(-1)!.text, profiledPrompt(current));
           assert.include(
             yield* encodeJson(yield* Ref.get(injectedHistory)),
             "Original request with constraints",
@@ -1221,7 +1228,7 @@ describe("orchestration v2 provider switching", () => {
           yield* wait(3, "completed");
           const retried = yield* orchestrator.getThreadProjection(threadId);
           const lastTurn = (yield* Ref.get(capturedTurns)).at(-1)!;
-          assert.equal(lastTurn.text, retryText);
+          assert.equal(lastTurn.text, profiledPrompt(retryText));
           if (failure !== "injection" && failure !== "exhausted-target-retry") {
             const delta = yield* encodeJson(
               (yield* Ref.get(injectedHistory)).slice(historyBeforeRetry),
@@ -1255,7 +1262,7 @@ describe("orchestration v2 provider switching", () => {
           const followup = "z".repeat(6_000);
           yield* dispatch(4, followup, CLAUDE_MODEL_SELECTION);
           yield* wait(4, "completed");
-          assert.equal((yield* Ref.get(capturedTurns)).at(-1)!.text, followup);
+          assert.equal((yield* Ref.get(capturedTurns)).at(-1)!.text, profiledPrompt(followup));
           assert.deepEqual(yield* Ref.get(injectedHistory), beforeFollowup);
           assert.equal(
             (yield* orchestrator.getThreadProjection(threadId)).contextHandoffs.length,
@@ -1896,13 +1903,13 @@ describe("orchestration v2 provider switching", () => {
         assert.include(deliveredHistory, partialResponse);
         assert.include(deliveredHistory, `run-status=${status}`);
         if (native) {
-          assert.equal(delivered.text, "Continue");
+          assert.equal(delivered.text, profiledPrompt("Continue"));
           assert.notInclude(deliveredHistory, '"text":"Continue"');
           assert.include(deliveredHistory, '"role":"assistant"');
           assert.include(deliveredHistory, '"role":"user"');
           assert.equal(handoff?.delivery?.status, "injected");
         } else {
-          assert.include(delivered.text, "User message:\nContinue");
+          assert.isTrue(delivered.text.endsWith(`User message:\n${profiledPrompt("Continue")}`));
           assert.equal(handoff?.delivery?.status, "inline");
         }
         assert.notInclude(deliveredHistory, "Earlier successful request.");
@@ -4514,132 +4521,167 @@ describe("orchestration v2 provider switching", () => {
     }),
   );
 
-  it.live("holds rejected sharing input and continues the same chat on regular Codex", () =>
-    Effect.gen(function* () {
-      const cwd = yield* checkpointWorkspace("sharing-rejected-input");
-      const capturedTurns = yield* Ref.make<ReadonlyArray<CapturedTurn>>([]);
-      const injectedHistory = yield* Ref.make<ReadonlyArray<unknown>>([]);
-      const started = yield* Deferred.make<void>();
-      const release = yield* Deferred.make<void>();
-      const sharingSelection = {
-        ...CODEX_MODEL_SELECTION,
-        instanceId: ProviderInstanceId.make("codex-sharing"),
-      };
-      const registry = ProviderAdapterRegistry.layerFromAdapters([
-        makeTestAdapter({
-          instanceId: sharingSelection.instanceId,
-          driver: CODEX_DRIVER,
-          capabilities: CodexProviderCapabilitiesV2,
-          modelSelection: sharingSelection,
-          responseByRunOrdinal: {},
-          capturedTurns,
-          holdFirstTurn: started,
-          releaseFirstTurn: release,
-          failedRunOrdinals: new Set([1]),
-          failure: makeProviderFailure({
-            code: "subscription_sharing_unsupported_capability",
-            class: "provider_error",
-            message: "ChatGPT sharing rejected an input item.",
+  it.live.each([
+    {
+      code: "subscription_sharing_unsupported_capability",
+      message: "ChatGPT sharing rejected an input item.",
+      blocksSession: true,
+    },
+    {
+      code: "subscription_sharing_user_not_eligible",
+      message: "The ChatGPT user is not eligible for subscription sharing.",
+      blocksSession: false,
+    },
+  ])(
+    "drains supported queued messages and recovers held user messages on regular Codex after $code",
+    ({ code, message, blocksSession }) =>
+      Effect.gen(function* () {
+        const cwd = yield* checkpointWorkspace("sharing-rejected-input");
+        const capturedTurns = yield* Ref.make<ReadonlyArray<CapturedTurn>>([]);
+        const injectedHistory = yield* Ref.make<ReadonlyArray<unknown>>([]);
+        const started = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        const sharingSelection = {
+          ...CODEX_MODEL_SELECTION,
+          instanceId: ProviderInstanceId.make("codex-sharing"),
+        };
+        const registry = ProviderAdapterRegistry.layerFromAdapters([
+          makeTestAdapter({
+            instanceId: sharingSelection.instanceId,
+            driver: CODEX_DRIVER,
+            capabilities: CodexProviderCapabilitiesV2,
+            modelSelection: sharingSelection,
+            responseByRunOrdinal: {},
+            capturedTurns,
+            holdFirstTurn: started,
+            releaseFirstTurn: release,
+            failedRunOrdinals: new Set([1]),
+            failure: makeProviderFailure({
+              code,
+              class: "provider_error",
+              message,
+            }),
           }),
-        }),
-        makeTestAdapter({
-          instanceId: CODEX_MODEL_SELECTION.instanceId,
-          driver: CODEX_DRIVER,
-          capabilities: CodexProviderCapabilitiesV2,
-          modelSelection: CODEX_MODEL_SELECTION,
-          responseByRunOrdinal: {},
-          capturedTurns,
-          injectedHistory,
-          nativeThreadGeneration: yield* Ref.make(1),
-        }),
-      ]);
-      yield* Effect.gen(function* () {
-        const orchestrator = yield* Orchestrator.OrchestratorV2;
-        const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
-        const send = (label: string, selection: ModelSelection, text: string) =>
-          orchestrator.dispatch({
-            type: "message.dispatch",
-            commandId: CommandId.make(`sharing-rejected:${label}`),
-            messageId: MessageId.make(`sharing-rejected:${label}`),
+          makeTestAdapter({
+            instanceId: CODEX_MODEL_SELECTION.instanceId,
+            driver: CODEX_DRIVER,
+            capabilities: CodexProviderCapabilitiesV2,
+            modelSelection: CODEX_MODEL_SELECTION,
+            responseByRunOrdinal: {},
+            capturedTurns,
+            injectedHistory,
+            nativeThreadGeneration: yield* Ref.make(1),
+          }),
+        ]);
+        yield* Effect.gen(function* () {
+          const orchestrator = yield* Orchestrator.OrchestratorV2;
+          const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+          const send = (label: string, selection: ModelSelection, text: string) =>
+            orchestrator.dispatch({
+              type: "message.dispatch",
+              commandId: CommandId.make(`sharing-rejected:${label}`),
+              messageId: MessageId.make(`sharing-rejected:${label}`),
+              threadId,
+              createdBy: "user",
+              creationSource: "web",
+              modelSelection: selection,
+              text,
+              attachments: [],
+              dispatchMode: { type: "queue_after_active" },
+            });
+          yield* orchestrator.dispatch({
+            type: "thread.create",
+            commandId: CommandId.make("sharing-rejected:create"),
             threadId,
+            projectId,
+            title: "Sharing rejected input",
             createdBy: "user",
             creationSource: "web",
-            modelSelection: selection,
-            text,
-            attachments: [],
-            dispatchMode: { type: "queue_after_active" },
+            modelSelection: sharingSelection,
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            branch: null,
+            worktreePath: cwd,
           });
-        yield* orchestrator.dispatch({
-          type: "thread.create",
-          commandId: CommandId.make("sharing-rejected:create"),
-          threadId,
-          projectId,
-          title: "Sharing rejected input",
-          createdBy: "user",
-          creationSource: "web",
-          modelSelection: sharingSelection,
-          runtimeMode: "full-access",
-          interactionMode: "default",
-          branch: null,
-          worktreePath: cwd,
-        });
-        yield* send("first", sharingSelection, "Remember this context marker: canyon.");
-        yield* Deferred.await(started);
-        yield* send("queued", sharingSelection, "Queued while sharing runs.");
-        yield* Deferred.succeed(release, undefined);
-        yield* worker.drain();
-        yield* waitForIdle(threadId, { allowHeldQueue: true });
+          yield* send("first", sharingSelection, "Remember this context marker: canyon.");
+          yield* Deferred.await(started);
+          yield* send("queued", sharingSelection, "Queued while sharing runs.");
+          yield* send("supported", CODEX_MODEL_SELECTION, "Already selected regular Codex.");
+          yield* Deferred.succeed(release, undefined);
+          yield* worker.drain();
+          yield* waitForIdle(threadId, { allowHeldQueue: true });
 
-        const failed = yield* Effect.result(send("retry", sharingSelection, "Retry unchanged."));
-        assert.equal(failed._tag, "Failure");
-        if (failed._tag === "Failure")
-          assert.include(String(failed.failure.cause), "continue in this chat");
+          const beforeRecovery = yield* orchestrator.getThreadProjection(threadId);
+          assert.equal(
+            beforeRecovery.runs.find((run) => run.userMessageId === "sharing-rejected:supported")
+              ?.status,
+            "completed",
+          );
+          assert.isTrue(
+            beforeRecovery.runs.find((run) => run.userMessageId === "sharing-rejected:queued")
+              ?.queueHeld,
+          );
+          if (blocksSession) {
+            const failed = yield* Effect.result(
+              send("retry", sharingSelection, "Retry unchanged."),
+            );
+            assert.equal(failed._tag, "Failure");
+            if (failed._tag === "Failure")
+              assert.include(String(failed.failure.cause), "continue in this chat");
+          }
 
-        yield* send("recovery", CODEX_MODEL_SELECTION, "Continue with the saved context.");
-        yield* worker.drain();
-        yield* waitForIdle(threadId, { allowHeldQueue: true });
-        yield* worker.drain();
-        const projection = yield* orchestrator.getThreadProjection(threadId);
-        const turns = yield* Ref.get(capturedTurns);
-        const switchBack = yield* Effect.result(
-          send("switch-back", sharingSelection, "Reconnect to the rejected session."),
-        );
-        assert.equal(switchBack._tag, "Failure");
-        assert.deepEqual(
-          turns.map((turn) => turn.modelSelection.instanceId),
-          [sharingSelection.instanceId, CODEX_MODEL_SELECTION.instanceId],
-        );
-        assert.notEqual(turns[0]?.nativeThreadId, turns[1]?.nativeThreadId);
-        assert.include(JSON.stringify(yield* Ref.get(injectedHistory)), "context marker: canyon");
-        const sharingRun = projection.runs.find((run) => run.ordinal === 1);
-        assert.equal(sharingRun?.status, "failed");
-        assert.isTrue(
-          projection.visibleTurnItems.some(
-            ({ item }) =>
-              item.type === "error" &&
-              item.runId === sharingRun?.id &&
-              item.failure.code === "subscription_sharing_unsupported_capability",
+          yield* send("recovery", CODEX_MODEL_SELECTION, "Continue with the saved context.");
+          yield* worker.drain();
+          yield* waitForIdle(threadId, { allowHeldQueue: true });
+          yield* worker.drain();
+          const projection = yield* orchestrator.getThreadProjection(threadId);
+          const turns = yield* Ref.get(capturedTurns);
+          if (blocksSession) {
+            const switchBack = yield* Effect.result(
+              send("switch-back", sharingSelection, "Reconnect to the rejected session."),
+            );
+            assert.equal(switchBack._tag, "Failure");
+          }
+          assert.deepEqual(
+            turns.map((turn) => turn.modelSelection.instanceId),
+            [
+              sharingSelection.instanceId,
+              CODEX_MODEL_SELECTION.instanceId,
+              CODEX_MODEL_SELECTION.instanceId,
+              CODEX_MODEL_SELECTION.instanceId,
+            ],
+          );
+          assert.notEqual(turns[0]?.nativeThreadId, turns[1]?.nativeThreadId);
+          assert.include(JSON.stringify(yield* Ref.get(injectedHistory)), "context marker: canyon");
+          const sharingRun = projection.runs.find((run) => run.ordinal === 1);
+          assert.equal(sharingRun?.status, "failed");
+          assert.isTrue(
+            projection.visibleTurnItems.some(
+              ({ item }) =>
+                item.type === "error" &&
+                item.runId === sharingRun?.id &&
+                item.failure.code === code,
+            ),
+          );
+          assert.isFalse(projection.runs.some((run) => run.status === "queued"));
+          assert.isTrue(turns.at(-1)?.text.endsWith("Queued while sharing runs."));
+          assert.equal(turns.at(-1)?.nativeThreadId, turns[1]?.nativeThreadId);
+          assert.isTrue(
+            projection.runs.some(
+              (run) =>
+                run.status === "completed" &&
+                run.providerInstanceId === CODEX_MODEL_SELECTION.instanceId,
+            ),
+          );
+        }).pipe(
+          Effect.provide(
+            ProviderReplayHarness.layerWithRegistry(
+              { name: "sharing-rejected-input", runtimePolicyOverride: { cwd } },
+              registry,
+            ),
           ),
         );
-        assert.isTrue(
-          projection.runs.some((run) => run.status === "queued" && run.queueHeld === true),
-        );
-        assert.isTrue(
-          projection.runs.some(
-            (run) =>
-              run.status === "completed" &&
-              run.providerInstanceId === CODEX_MODEL_SELECTION.instanceId,
-          ),
-        );
-      }).pipe(
-        Effect.provide(
-          ProviderReplayHarness.layerWithRegistry(
-            { name: "sharing-rejected-input", runtimePolicyOverride: { cwd } },
-            registry,
-          ),
-        ),
-      );
-    }),
+      }),
   );
 
   const importedFailureScenario = (queueBeforeFailure: boolean) =>

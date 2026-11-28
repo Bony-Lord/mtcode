@@ -67,6 +67,10 @@ export const adviseAutoRouting = Effect.fn("AutoRoutingAdvisor.advise")(
     const nowMs = DateTime.toEpochMillis(yield* DateTime.now);
     if (
       advisor?.status !== "ready" ||
+      !advisor.enabled ||
+      !advisor.installed ||
+      advisor.auth.status !== "authenticated" ||
+      !resolveProjectProviderInstanceEnabled(input.settings, input.projectId, advisor.instanceId) ||
       nowMs < advisorRetryAt ||
       !advisor.models.some((model) => model.slug === ADVISOR_MODEL) ||
       exhaustedAccountUsageWindow(advisor, input.providers, nowMs, ADVISOR_MODEL) ||
@@ -93,11 +97,7 @@ export const adviseAutoRouting = Effect.fn("AutoRoutingAdvisor.advise")(
           config?.accountTier === "paid-api" ||
           config?.freeAccountPaused ||
           !resolveProjectProviderInstanceEnabled(input.settings, input.projectId, p.instanceId) ||
-          (p.auth.status !== "authenticated" &&
-            !(
-              p.auth.status === "unknown" &&
-              (config?.accountTier === "free" || config?.accountTier === "local")
-            ))
+          p.auth.status !== "authenticated"
         )
           return [];
         return p.models
@@ -179,6 +179,6 @@ export const adviseAutoRouting = Effect.fn("AutoRoutingAdvisor.advise")(
     return advice;
   },
   Effect.provide(FetchHttpClient.layer),
-  Effect.timeout("16 seconds"),
+  Effect.timeout("2 seconds"),
   Effect.catchCause(() => Effect.undefined),
 );

@@ -23,6 +23,9 @@ import {
   probeCodexSkillsForCwd,
 } from "../CodexProvider.ts";
 import { makeManagedServerProvider } from "@t3tools/provider-core/server/managedProvider";
+import { enrichProviderSnapshotWithVersionAdvisory } from "@t3tools/provider-core/server/maintenanceResolver";
+import * as ProviderLatestVersions from "@t3tools/provider-core/server/ProviderLatestVersions";
+import { codexManagedMaintenance } from "../CodexInstallation.ts";
 import { mergeProviderInstanceEnvironment } from "@t3tools/provider-core/server/instanceEnvironment";
 import {
   type ProviderDriverCreateInput,
@@ -272,13 +275,34 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
     Effect.provideService(FileSystem.FileSystem, fileSystem),
     Effect.provideService(Path.Path, path),
   );
+  const latestVersions = yield* ProviderLatestVersions.ProviderLatestVersions;
+  const resolveMaintenance = () =>
+    runtime.installation.resolve().pipe(
+      Effect.option,
+      Effect.map((executable) =>
+        Option.isSome(executable) && executable.value.source === "managed"
+          ? codexManagedMaintenance(runtime.installation)
+          : { provider: DRIVER, packageName: null, update: null },
+      ),
+    );
   const snapshot = yield* makeManagedServerProvider({
-    resolveMaintenance: () => Effect.succeed({ provider: DRIVER, packageName: null, update: null }),
+    resolveMaintenance,
     getSettings: host.settings.get,
     streamSettings: host.settings.changes,
     haveSettingsChanged: () => false,
     initialSnapshot: () => pending,
     checkProvider: check,
+    enrichSnapshot: ({ settings, snapshot, publishSnapshot }) =>
+      resolveMaintenance().pipe(
+        Effect.flatMap((maintenance) =>
+          enrichProviderSnapshotWithVersionAdvisory(snapshot, maintenance, {
+            enableProviderUpdateChecks: settings.enableProviderUpdateChecks,
+          }),
+        ),
+        Effect.provideService(HttpClient.HttpClient, http),
+        Effect.provideService(ProviderLatestVersions.ProviderLatestVersions, latestVersions),
+        Effect.flatMap(publishSnapshot),
+      ),
   }).pipe(
     Effect.mapError(
       (cause) =>

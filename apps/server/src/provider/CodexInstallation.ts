@@ -31,6 +31,7 @@ import * as NodeCrypto from "node:crypto";
 import * as ServerConfig from "../config.ts";
 import { selectManagedRelease } from "./managedRelease.ts";
 import * as ModelManifest from "./ModelManifest.ts";
+import type { ProviderMaintenanceCapabilities } from "@t3tools/provider-core/server/maintenance";
 import { resolveProviderCompatibility } from "./providerCompatibility.ts";
 
 const DRIVER = ProviderDriverKind.make("codex");
@@ -185,6 +186,46 @@ export class CodexInstallation extends Context.Service<
     }),
   );
 }
+export function codexManagedMaintenance(
+  installation: CodexInstallationService,
+): ProviderMaintenanceCapabilities {
+  return {
+    provider: DRIVER,
+    packageName: null,
+    update: null,
+    managedUpdate: {
+      lockKey: "codex-managed-installation",
+      run: Effect.gen(function* () {
+        yield* installation.checkForUpdate;
+        const started = yield* installation.start;
+        const result = isRunning(started)
+          ? yield* installation.changes.pipe(
+              Stream.filter(
+                (state) => state.operationId !== started.operationId || !isRunning(state),
+              ),
+              Stream.runHead,
+              Effect.map(Option.getOrNull),
+            )
+          : started;
+        if (
+          result === null ||
+          result.operationId !== started.operationId ||
+          result.phase !== "succeeded" ||
+          result.source !== "managed"
+        ) {
+          return yield* installationError("update", result?.message ?? "Codex update did not finish.");
+        }
+      }),
+    },
+    latestVersionCacheKey: "codex-managed-installation",
+    latestVersion: null,
+    lookupLatestVersion: installation.checkForUpdate.pipe(
+      Effect.andThen(installation.state),
+      Effect.map((state) => state.version ?? null),
+    ),
+  };
+}
+
 export interface CodexInstallationOptions {
   readonly baseDir: string;
   readonly releaseAsset?: CodexReleaseAsset | null;

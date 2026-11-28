@@ -573,7 +573,7 @@ export const ClientSettingsSchema = Schema.Struct({
   ),
 
   /** Opens external links and sign-in pages in a private window; never falls back to a normal one. */
-  externalBrowserPrivate: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  externalBrowserPrivate: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
 
   browserSearchEngine: BrowserSearchEngine.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_BROWSER_SEARCH_ENGINE)),
@@ -741,6 +741,10 @@ export const ClientSettingsSchema = Schema.Struct({
   snapShotFlash: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   snapShotAnimations: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   wordWrap: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  filePreviewOnDemand: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  filePreviewMaxActive: Schema.Literals([1, 2, 3, 4]).pipe(
+    Schema.withDecodingDefault(Effect.succeed(2)),
+  ),
   // Opt-in TeX typesetting in rendered Markdown. Off keeps math parsing and
   // KaTeX out of the render path entirely.
   mathRenderingEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
@@ -2504,6 +2508,8 @@ export const ClientSettingsPatch = Schema.Struct({
   snapShotFlash: Schema.optionalKey(Schema.Boolean),
   snapShotAnimations: Schema.optionalKey(Schema.Boolean),
   wordWrap: Schema.optionalKey(Schema.Boolean),
+  filePreviewOnDemand: Schema.optionalKey(Schema.Boolean),
+  filePreviewMaxActive: Schema.optionalKey(Schema.Literals([1, 2, 3, 4])),
   mathRenderingEnabled: Schema.optionalKey(Schema.Boolean),
 });
 export type ClientSettingsPatch = typeof ClientSettingsPatch.Type;

@@ -352,7 +352,9 @@ export const make = Effect.fn("ProviderMaintenanceRunner.make")(function* () {
           .getProviderMaintenanceCapabilitiesForInstance(candidate.instanceId, candidate.driver)
           .pipe(
             Effect.map((capabilities) =>
-              capabilities.update?.lockKey === lockKey ? [candidate.instanceId] : [],
+              (capabilities.managedUpdate ?? capabilities.update)?.lockKey === lockKey
+                ? [candidate.instanceId]
+                : [],
             ),
           ),
       { concurrency: "unbounded" },
@@ -436,7 +438,7 @@ export const make = Effect.fn("ProviderMaintenanceRunner.make")(function* () {
       instanceId,
       provider,
     );
-    const update = capabilities.update;
+    const update = capabilities.managedUpdate ?? capabilities.update;
     if (!update) {
       return yield* new ServerProviderUpdateError({
         provider,
@@ -493,7 +495,8 @@ export const make = Effect.fn("ProviderMaintenanceRunner.make")(function* () {
               provider,
               { fresh: true },
             );
-            if (!fresh.update || fresh.update.lockKey !== update.lockKey) {
+            const freshUpdate = fresh.managedUpdate ?? fresh.update;
+            if (!freshUpdate || freshUpdate.lockKey !== update.lockKey) {
               return yield* finish(
                 makeUpdateState({
                   status: "failed",
@@ -527,13 +530,23 @@ export const make = Effect.fn("ProviderMaintenanceRunner.make")(function* () {
               targetVersion !== undefined
                 ? makeTargetedProviderUpdateAction(fresh, targetVersion)
                 : resolveLatestProviderUpdateAction(fresh, candidateVersion);
+            const managedUpdate = targetVersion === undefined ? fresh.managedUpdate : undefined;
             const rejected =
               targetVersion !== undefined
                 ? !command ||
                   advisory?.recommendedVersion !== targetVersion ||
                   advisory.status !== "supported"
                 : advisory?.status === "broken" || advisory?.status === "unsupported";
-            if (rejected || !command) {
+            const runUpdate = command
+              ? setRunningMessage(`Running ${describeCommand(command)}`).pipe(
+                  Effect.andThen(runMaintenanceCommand(command, setRunningMessage)),
+                )
+              : managedUpdate &&
+                setRunningMessage("Installing the provider update").pipe(
+                  Effect.andThen(managedUpdate.run),
+                  Effect.as(undefined),
+                );
+            if (rejected || !runUpdate) {
               return yield* finish(
                 makeUpdateState({
                   status: "failed",
@@ -589,14 +602,9 @@ export const make = Effect.fn("ProviderMaintenanceRunner.make")(function* () {
               update.lockKey,
             );
             yield* setRunningMessage("Waiting for running provider work to finish.");
-            const result = yield* installationGate.update(
-              sharingInstances,
-              setRunningMessage(`Running ${describeCommand(command)}`).pipe(
-                Effect.andThen(runMaintenanceCommand(command, setRunningMessage)),
-              ),
-            );
+            const result = yield* installationGate.update(sharingInstances, runUpdate);
             const finishedAt = yield* nowIso;
-            if (result.timedOut || result.exitCode !== 0) {
+            if (result && command && (result.timedOut || result.exitCode !== 0)) {
               yield* Effect.logWarning("Provider update command failed", {
                 provider,
                 command: describeCommand(command),
@@ -663,7 +671,7 @@ export const make = Effect.fn("ProviderMaintenanceRunner.make")(function* () {
                     : needsOpenCodeServerRestart(verifiedProviders)
                       ? OPENCODE_SERVER_RESTART_MESSAGE
                       : "Provider updated.",
-                output: commandOutput(result),
+                output: result ? commandOutput(result) : null,
               }),
             );
           },

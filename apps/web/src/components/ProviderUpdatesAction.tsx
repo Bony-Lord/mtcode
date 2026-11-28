@@ -120,16 +120,28 @@ export function useProviderUpdates() {
   return { machines, updateAll };
 }
 
-export function ProviderUpdatesAction() {
+export function ProviderUpdatesAction({
+  label = "Update all",
+  pendingLabel = "Updating…",
+  emptyTooltip = null,
+  showWhenEmpty = false,
+}: {
+  /** The provider settings header keeps its short English label; About uses the Russian one. */
+  readonly label?: string;
+  readonly pendingLabel?: string;
+  readonly showWhenEmpty?: boolean;
+  readonly emptyTooltip?: string | null;
+} = {}) {
   const { machines, updateAll } = useProviderUpdates();
   const pending = useRef(false);
   const [isPending, setIsPending] = useState(false);
-  if (machines.length === 0 && !isPending) {
+  const hasUpdates = machines.length > 0;
+  if (!hasUpdates && !isPending && !showWhenEmpty) {
     return null;
   }
 
   const handleUpdate = async () => {
-    if (pending.current) return;
+    if (pending.current || !hasUpdates) return;
     pending.current = true;
     setIsPending(true);
     await settlePromise(() => updateAll());
@@ -144,22 +156,24 @@ export function ProviderUpdatesAction() {
           <Button
             size="xs"
             variant="ghost-muted"
-            disabled={isPending}
+            disabled={isPending || !hasUpdates}
             onClick={() => void handleUpdate()}
           >
-            {isPending ? "Updating…" : "Update all"}
+            {isPending ? pendingLabel : label}
           </Button>
         }
       />
       <TooltipPopup side="top">
-        {machines.map((machine) => (
-          <div key={machine.environmentId}>
-            {machine.label}:{" "}
-            {machine.candidates
-              .map((candidate) => PROVIDER_DISPLAY_NAMES[candidate.driver] ?? candidate.driver)
-              .join(", ")}
-          </div>
-        ))}
+        {hasUpdates
+          ? machines.map((machine) => (
+              <div key={machine.environmentId}>
+                {machine.label}:{" "}
+                {machine.candidates
+                  .map((candidate) => PROVIDER_DISPLAY_NAMES[candidate.driver] ?? candidate.driver)
+                  .join(", ")}
+              </div>
+            ))
+          : emptyTooltip}
       </TooltipPopup>
     </Tooltip>
   );

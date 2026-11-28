@@ -141,8 +141,8 @@ export const connectGatewayPreset = Effect.fn("FreeModelCatalog.connectGatewayPr
       const previous = yield* fs.exists(configPath).pipe(
         Effect.flatMap((exists) =>
           exists
-            ? fs.readFileString(configPath).pipe(Effect.map(Option.some))
-            : Effect.succeed(Option.none()),
+            ? fs.readFileString(configPath).pipe(Effect.asSome)
+            : Effect.succeedNone,
         ),
         Effect.mapError(() => failure("Could not read the existing local gateway configuration.")),
       );

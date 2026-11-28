@@ -392,9 +392,9 @@ it.layer(layerTest)("CodexDriver", (it) => {
     checkManagedAccount,
   );
 
-  it.effect(
-    "uses the current shared Codex version for native accounts with older managed paths",
-    () =>
+  it.effect.each(["older-managed-path", "external-path", "default-path"] as const)(
+    "uses the current shared Codex version for native accounts with %s",
+    (pathKind) =>
       Effect.gen(function* () {
         const serverConfig = yield* ServerConfig.ServerConfig;
         const platform = yield* HostProcess.Platform;
@@ -418,7 +418,12 @@ it.layer(layerTest)("CodexDriver", (it) => {
             config: {
               ...CodexDriver.defaultConfig(),
               homePath: serverConfig.stateDir,
-              binaryPath: executable("0.169.0").executablePath,
+              binaryPath:
+                pathKind === "older-managed-path"
+                  ? executable("0.169.0").executablePath
+                  : pathKind === "external-path"
+                    ? NodePath.join(serverConfig.stateDir, executableName)
+                    : "",
             },
           });
           selectedVersion = "0.171.0";

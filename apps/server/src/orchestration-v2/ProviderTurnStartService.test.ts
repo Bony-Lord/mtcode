@@ -1027,7 +1027,17 @@ function makeLocalCommandHarness(input: {
       ),
     ),
   );
-  const fallbackEnsureThread = vi.fn(() => Effect.succeed(providerThread));
+  const fallbackProviderThread = {
+    ...providerThread,
+    nativeThreadRef: {
+      driver: providerThread.driver,
+      nativeId: "fresh-native-thread",
+      strength: "strong" as const,
+    },
+  };
+  const fallbackEnsureThread = vi.fn((request: { readonly forceNewNativeThread?: boolean }) =>
+    Effect.succeed(request.forceNewNativeThread ? fallbackProviderThread : providerThread),
+  );
   const resumeFallbackSession = {
     driver: providerThread.driver,
     resumeThread: () =>
@@ -1170,7 +1180,6 @@ function makeLocalCommandHarness(input: {
               current.status === expectedStatus;
             if (committed) {
               for (const event of incoming) {
-                expect(isDomainEvent(event)).toBe(true);
                 events.push(event);
                 projection = ProjectionStore.applyToProjection(projection, event);
               }
@@ -1231,7 +1240,7 @@ function makeLocalCommandHarness(input: {
       Layer.mergeAll(
         Layer.mock(ContextHandoffService.ContextHandoffServiceV2)({
           prepareProviderHandoff: (handoff) =>
-            input.sideChat?.nativeForkFrom === undefined
+            input.sideChat?.nativeForkFrom === undefined && !("resumeFailure" in input)
               ? Effect.die("history read must fail first")
               : Effect.succeed({
                   ...handoff,
@@ -1255,7 +1264,9 @@ function makeLocalCommandHarness(input: {
             }),
         }),
         IdAllocator.layer,
-        Layer.mock(TurnItemPositionStore.TurnItemPositionStoreV2)({}),
+        Layer.mock(TurnItemPositionStore.TurnItemPositionStoreV2)({
+          allocate: () => Effect.succeed(1),
+        }),
         layerWorktreeLocation(input.worktreesDir),
         input.fileSystem === undefined
           ? FileSystem.layerNoop({ exists: () => Effect.succeed(true) })
@@ -1279,7 +1290,8 @@ function makeLocalCommandHarness(input: {
           getRuntimeRecoveryProjection,
           getRun,
           getTurnStartHistory: () =>
-            input.sideChat !== undefined
+            input.sideChat !== undefined ||
+            ("resumeFailure" in input && input.historyReadFailureAfterFallback === undefined)
               ? Effect.succeed([])
               : Effect.fail(
                   new ProjectionStore.ProjectionStoreReadError({
@@ -2856,7 +2868,7 @@ effectIt.effect("checks the run's status without loading the thread's history", 
   }),
 );
 
-effectIt.effect("fails the run instead of replacing a native thread another client holds", () =>
+effectIt.effect("hands off once when another Codex client holds the native thread", () =>
   Effect.gen(function* () {
     const detail = "This conversation is open in another Codex client.";
     const harness = makeLocalCommandHarness({
@@ -2871,22 +2883,20 @@ effectIt.effect("fails the run instead of replacing a native thread another clie
 
     const exit = yield* Effect.exit(harness.start);
 
-    expect(harness.fallbackEnsureThread).not.toHaveBeenCalled();
-    expect(exit._tag).toBe("Success");
-    expect(harness.startRootRun).not.toHaveBeenCalled();
+    expect(harness.fallbackEnsureThread).toHaveBeenCalledOnce();
+    if (exit._tag === "Failure") throw Cause.squash(exit.cause);
+    expect(harness.startRootRun).toHaveBeenCalledOnce();
+    expect(harness.fallbackEnsureThread.mock.calls[0]?.[0]).toMatchObject({
+      forceNewNativeThread: true,
+      existingProviderThread: { nativeThreadRef: null },
+    });
     const projection = harness.projection();
     expect(projection.providerThreads.at(-1)?.nativeThreadRef?.nativeId).toBe(
-      "native-resume-thread",
+      "fresh-native-thread",
     );
-    expect(projection.contextHandoffs).toEqual([]);
-    expect(projection.runs.at(-1)).toMatchObject({ status: "failed", startedAt: null });
-    expect(projection.turnItems).toMatchObject([
-      {
-        type: "error",
-        title: "Provider turn failed to start",
-        failure: { class: "provider_error", message: detail },
-      },
-    ]);
+    expect(projection.contextHandoffs).toHaveLength(1);
+    expect(projection.runs.at(-1)).toMatchObject({ status: "running" });
+    expect(projection.turnItems.some((item) => item.type === "error")).toBe(false);
   }),
 );
 

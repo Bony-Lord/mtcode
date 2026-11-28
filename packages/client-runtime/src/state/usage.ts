@@ -1,4 +1,10 @@
-import type { EnvironmentId, UsageModelFilter, UsageSummaryInput } from "@t3tools/contracts";
+import type {
+  EnvironmentId,
+  ProviderInstanceId,
+  ServerProvider,
+  UsageModelFilter,
+  UsageSummaryInput,
+} from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import type { AtomRegistry } from "effect/reactivity";
 
@@ -17,29 +23,53 @@ export function usageSummaryInput(
   return modelFilter === undefined ? input : { ...input, modelFilter };
 }
 
-const limitsRefreshAfter = new Map<EnvironmentId, number>();
-const limitsRefreshes = new Map<EnvironmentId, Promise<unknown>>();
+export const CODEX_LIMITS_REFRESH_INTERVAL_MS = 60_000;
+
+export function canRefreshCodexLimits(provider: ServerProvider | undefined): boolean {
+  return (
+    provider?.driver === "codex" &&
+    provider.enabled &&
+    provider.installed &&
+    provider.auth.status === "authenticated" &&
+    provider.auth.type === "chatgpt" &&
+    provider.auth.subscriptionSharing !== true
+  );
+}
+
+const ALL_LIMITS_REFRESH_INTERVAL_MS = 5 * 60_000;
+const limitsRefreshAfter = new Map<string, number>();
+const limitsRefreshes = new Map<string, Promise<unknown>>();
 
 export async function refreshUsageLimits<A>(
   environmentId: EnvironmentId,
   refresh: () => Promise<A>,
   automatic = false,
+  instanceId?: ProviderInstanceId,
 ): Promise<A | undefined> {
-  const pending = limitsRefreshes.get(environmentId);
+  const environmentKey = JSON.stringify([environmentId]);
+  const key =
+    instanceId === undefined ? environmentKey : JSON.stringify([environmentId, instanceId]);
+  const pending = limitsRefreshes.get(key);
   if (pending !== undefined) {
     return automatic ? undefined : ((await pending) as A);
   }
-  const refreshAfter = limitsRefreshAfter.get(environmentId) ?? 0;
+  if (automatic && instanceId !== undefined && limitsRefreshes.has(environmentKey)) return;
   // @effect-diagnostics-next-line globalDate:off
-  if (automatic && Date.now() < refreshAfter) return;
+  const now = Date.now();
+  if (automatic && now < (limitsRefreshAfter.get(key) ?? 0)) return;
+  limitsRefreshAfter.set(
+    key,
+    now +
+      (instanceId === undefined
+        ? ALL_LIMITS_REFRESH_INTERVAL_MS
+        : CODEX_LIMITS_REFRESH_INTERVAL_MS),
+  );
   const current = Promise.resolve()
     .then(refresh)
     .finally(() => {
-      limitsRefreshes.delete(environmentId);
-      // @effect-diagnostics-next-line globalDate:off
-      limitsRefreshAfter.set(environmentId, Date.now() + 5 * 60_000);
+      limitsRefreshes.delete(key);
     });
-  limitsRefreshes.set(environmentId, current);
+  limitsRefreshes.set(key, current);
   return await current;
 }
 

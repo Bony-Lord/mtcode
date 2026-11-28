@@ -616,6 +616,7 @@ const makeProviderAdapter = Effect.fnUntraced(function* (
 function layerTest(input: {
   readonly state: Ref.Ref<TestProviderRuntimeState>;
   readonly idleTimeoutMs: number;
+  readonly runtimeIdentity?: Ref.Ref<object>;
   readonly maxIdlePinMs?: number;
   readonly failEventStream?: boolean;
   readonly normalizeThreadLoadModelSelection?: (selection: ModelSelection) => ModelSelection;
@@ -698,7 +699,19 @@ function layerTest(input: {
       ...(input.scopeCloseReached === undefined
         ? {}
         : { scopeCloseReached: input.scopeCloseReached }),
-    }).pipe(Effect.map(ProviderAdapterRegistry.layerSingle)),
+    }).pipe(
+      Effect.map((adapter) => {
+        const identity = input.runtimeIdentity;
+        if (identity === undefined) return ProviderAdapterRegistry.layerSingle(adapter);
+        return Layer.succeed(ProviderAdapterRegistry.ProviderAdapterRegistryV2, {
+          get: () =>
+            Ref.get(identity).pipe(
+              Effect.map((runtimeIdentity) => ({ ...adapter, runtimeIdentity })),
+            ),
+          list: () => Effect.succeed([adapter.instanceId]),
+        });
+      }),
+    ),
   );
   const layerConfiguredMcpRegistry =
     input.pauseResolve === undefined
@@ -1254,6 +1267,53 @@ it.effect("ProviderSessionManagerV2 opens a duplicate session only once", () =>
           state,
           idleTimeoutMs: 60_000,
           beforeOpen,
+        }),
+      ),
+    );
+  }),
+);
+
+it.effect("reopens Codex on the updated adapter without interrupting pending work", () =>
+  Effect.gen(function* () {
+    const state = yield* Ref.make(emptyState);
+    const runtimeIdentity = yield* Ref.make<object>({});
+    const pendingWork = yield* Ref.make(false);
+
+    yield* Effect.gen(function* () {
+      const eventSink = yield* EventSink.EventSinkV2;
+      const idAllocator = yield* IdAllocator.IdAllocatorV2;
+      const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+      const threadId = ThreadId.make("thread-provider-session-manager-codex-route-change");
+      const providerSessionId = yield* idAllocator.allocate.providerSession({
+        providerInstanceId: modelSelection.instanceId,
+        threadId,
+      });
+      yield* eventSink.write({
+        events: [
+          yield* makeThreadCreatedEvent({ idAllocator, threadId, now: yield* DateTime.now }),
+        ],
+      });
+      const open = manager.open({ threadId, providerSessionId, modelSelection, runtimePolicy });
+      const original = yield* open;
+      assert.strictEqual(yield* open, original);
+      yield* Ref.set(pendingWork, true);
+      yield* Ref.set(runtimeIdentity, {});
+      const blocked = yield* Effect.result(open);
+      assert.equal(blocked._tag, "Failure");
+      assert.equal((yield* Ref.get(state)).openCount, 1);
+
+      yield* Ref.set(pendingWork, false);
+      const replacement = yield* open;
+      assert.notStrictEqual(replacement, original);
+      assert.strictEqual(yield* open, replacement);
+      assert.equal((yield* Ref.get(state)).openCount, 2);
+    }).pipe(
+      Effect.provide(
+        layerTest({
+          state,
+          idleTimeoutMs: 60_000,
+          runtimeIdentity,
+          hasPendingBackgroundWork: Ref.get(pendingWork),
         }),
       ),
     );

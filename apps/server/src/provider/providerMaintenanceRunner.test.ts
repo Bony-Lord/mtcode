@@ -291,6 +291,40 @@ function layerFailingLatestLookupAfterFirst() {
 }
 
 describe("providerMaintenanceRunner", () => {
+  it.effect("installs a shared Codex update through the managed installer", () =>
+    Effect.gen(function* () {
+      const { registry } = yield* makeRegistry(baseProvider, {
+        installedVersionAfterUpdate: "0.171.0",
+      });
+      const installs = yield* Ref.make(0);
+      const updater = yield* makeTestRunner({
+        ...registry,
+        getProviderMaintenanceCapabilitiesForInstance: () =>
+          Effect.succeed({
+            provider: CODEX_DRIVER,
+            packageName: null,
+            latestVersion: "0.171.0",
+            update: null,
+            managedUpdate: { lockKey: "codex-managed", run: Ref.update(installs, (n) => n + 1) },
+          }),
+      });
+      const result = yield* updater.updateProvider(CODEX_DRIVER);
+      assert.strictEqual(yield* Ref.get(installs), 1);
+      assert.strictEqual(result.providers[0]?.version, "0.171.0");
+      assert.strictEqual(result.providers[0]?.updateState?.status, "succeeded");
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          layerNonWindowsPlatform,
+          layerLatestVersionHttpClient("0.171.0"),
+          layerMockSpawner(() => {
+            throw new Error("Managed installs must not launch a shell update command.");
+          }),
+        ),
+      ),
+    ),
+  );
+
   it.effect("runs the allowlisted provider update command and records success", () => {
     const calls: Array<{ command: string; args: ReadonlyArray<string> }> = [];
     return Effect.gen(function* () {

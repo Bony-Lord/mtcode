@@ -1087,14 +1087,26 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["allow disable enable open drive preview tools sessions project override"],
   },
   {
+    id: "file-preview-on-demand",
+    title: "Файловый предпросмотр по нажатию",
+    to: "/settings/appearance",
+    searchTerms: ["file preview spoiler performance слабый компьютер скрыть"],
+  },
+  {
+    id: "file-preview-max-active",
+    title: "Одновременные предпросмотры",
+    to: "/settings/appearance",
+    searchTerms: ["file preview concurrency limit быстрее нагрузка"],
+  },
+  {
     id: "external-browser",
-    title: "External browser",
+    title: "Внешний браузер",
     to: "/settings/browser",
     searchTerms: ["default browser chrome edge firefox brave link login sign in"],
   },
   {
     id: "external-browser-private",
-    title: "Private external links",
+    title: "Открывать ссылки в режиме инкогнито",
     to: "/settings/browser",
     searchTerms: ["incognito private inprivate browser sign in"],
   },

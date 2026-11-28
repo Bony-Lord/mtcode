@@ -88,6 +88,7 @@ import { useAtomCommand } from "~/state/use-atom-command";
 import { useAtomQueryRunner } from "~/state/use-atom-query-runner";
 
 import { AttachmentFilePreview } from "./AttachmentFilePreview";
+import { FilePreviewGate } from "./FilePreviewGate";
 import { AudioPreview } from "./AudioPreview";
 import { BrowserDocumentFrame, isPdfPreviewFile } from "./BrowserDocumentFrame";
 import { DelimitedTablePreview } from "./DelimitedTablePreview";
@@ -1112,7 +1113,21 @@ function initialExplorerOpen(): boolean {
   }
 }
 
-export default function FilePreviewPanel({
+export default function FilePreviewPanel(props: FilePreviewPanelProps) {
+  if (props.relativePath === null || props.folderTrail !== undefined) {
+    return <FilePreviewPanelContent {...props} />;
+  }
+  return (
+    <FilePreviewGate
+      revealKey={props.attachment?.id ?? props.relativePath}
+      alreadyRevealed={props.revealLine !== null}
+    >
+      <FilePreviewPanelContent {...props} />
+    </FilePreviewGate>
+  );
+}
+
+function FilePreviewPanelContent({
   environmentId,
   cwd,
   projectName,

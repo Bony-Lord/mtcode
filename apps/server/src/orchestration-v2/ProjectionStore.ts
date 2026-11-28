@@ -1838,7 +1838,9 @@ export function threadShellFromProjection(
     status: latestRun?.status ?? "idle",
     ...threadErrorSummary(
       latestRootProviderFailure(latestRun, projection.turnItems),
-      providerSession?.lastError ?? null,
+      latestRun !== null && latestRun.status !== "failed"
+        ? null
+        : (providerSession?.lastError ?? null),
     ),
     pendingRuntimeRequest,
     pendingGuestMessageCount: pendingGuestMessageCount(projection.thread.guestShare),
@@ -8675,7 +8677,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               : null,
           ...threadErrorSummary(
             terminalFailureItem?.type === "error" ? terminalFailureItem.failure : null,
-            row.last_error,
+            latestRunStatus !== null && latestRunStatus !== "failed" ? null : row.last_error,
           ),
           pendingRuntimeRequest,
           latestUserMessageAt:

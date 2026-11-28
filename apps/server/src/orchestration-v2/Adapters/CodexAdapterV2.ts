@@ -22,6 +22,10 @@ import {
 } from "../../provider/CodexManagedRuntime.ts";
 import { classifyCodexManagedError } from "../../provider/CodexManagedErrors.ts";
 import {
+  isCodexModelAtCapacity,
+  isCodexSharingEligibilityFailure,
+} from "@t3tools/shared/orchestrationV2ThreadError";
+import {
   buildCodexInitializeParams,
   codexAppServerEnvironment,
   codexDefaultReasoningEffortOverride,
@@ -166,7 +170,6 @@ import {
   makeProviderFailure,
   makeProviderFailureTurnItem,
   makeProviderRetryTurnItem,
-  PROVIDER_RETRY_BUDGET_MS,
 } from "@t3tools/provider-core/server/failure";
 import { turnScopedSelectionTransition } from "@t3tools/provider-core/server/selectionTransition";
 import {
@@ -182,7 +185,9 @@ import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 
 const CODEX_PROVIDER = ProviderDriverKind.make("codex");
-const CODEX_CAPACITY_MAX_RETRIES = 5;
+const CODEX_CAPACITY_MAX_RETRIES = 1;
+const CODEX_PROVIDER_RETRY_BUDGET_MS = 45_000;
+const CODEX_FIRST_OUTPUT_TIMEOUT = "90 seconds" as const;
 // How long Stop waits for Codex to end the turn before the user is offered Force stop.
 const CODEX_STOP_CONFIRM_TIMEOUT_MS = 10_000;
 export const CODEX_DRIVER_KIND = CODEX_PROVIDER;
@@ -1296,14 +1301,17 @@ function withCodexManagedFailure(
   nativeError: unknown,
 ): OrchestrationV2ProviderFailure {
   const managed = classifyCodexManagedError(nativeError);
-  return managed === undefined
-    ? failure
-    : {
-        ...failure,
-        message: managed.message,
-        code: managed.code,
-        ...(managed.usageLimit ? { class: "usage_limit" } : {}),
-      };
+  if (managed === undefined) {
+    return failure.class !== "usage_limit" && isCodexModelAtCapacity(failure.message)
+      ? { ...failure, class: "provider_error", code: "serverOverloaded" }
+      : failure;
+  }
+  const normalized = { ...failure, message: managed.message, code: managed.code };
+  if (managed.usageLimit) return { ...normalized, class: "usage_limit" };
+  if (isCodexSharingEligibilityFailure(managed.code, managed.message)) {
+    return { ...normalized, class: "provider_error", retryable: false };
+  }
+  return normalized;
 }
 
 function failureResetAt(
@@ -1321,6 +1329,7 @@ function failureResetAt(
 }
 
 interface ActiveCodexTurnContext {
+  readonly initialActivity?: Deferred.Deferred<void>;
   hookStopReason?: string;
   capacityRetryAttempt?: number;
   capacityRetryPending?: Deferred.Deferred<ActiveCodexTurnContext | undefined>;
@@ -2376,6 +2385,18 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           new Map<string, Map<string, CodexDynamicToolItem>>(),
         );
         const interruptingNativeTurns = yield* Ref.make(new Set<string>());
+        const automaticApprovalDecision = Effect.fnUntraced(function* (
+          context: ActiveCodexTurnContext,
+        ) {
+          const { owner } = approvalOwnerCodexTurn(context);
+          const stopping = yield* Ref.get(interruptingNativeTurns);
+          if (stopping.has(context.nativeTurnId) || stopping.has(owner.nativeTurnId)) {
+            return "cancel" as const;
+          }
+          return ProviderAdapter.autoApprovesProviderRequests(owner.input.runtimePolicy)
+            ? ("accept" as const)
+            : undefined;
+        });
         // Running commands the user is stopping outside a turn interrupt; their exit wakes nobody.
         const userStoppedCommandItemIds = yield* Ref.make(new Set<string>());
         if (adapterOptions.watchCommandStops !== undefined) {
@@ -2607,6 +2628,8 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           context: ActiveCodexTurnContext,
           updatedAt: DateTime.Utc,
         ) {
+          if (context.initialActivity !== undefined)
+            yield* Deferred.succeed(context.initialActivity, undefined);
           const providerRetry = yield* Ref.modify(providerRetries, (current) => {
             const retry = current.get(context.providerTurnId);
             if (retry === undefined) {
@@ -2642,6 +2665,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           });
           const context: ActiveCodexTurnContext = {
             ...(input.waitForNativeStart ? { nativeStartReady: yield* Deferred.make<void>() } : {}),
+            initialActivity: yield* Deferred.make<void>(),
             input: input.turnInput,
             projectionAppThread: input.turnInput.appThread,
             projectionThreadId: input.turnInput.threadId,
@@ -2717,6 +2741,9 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           });
           yield* rememberRootProviderThread(input.turnInput.providerThread);
           yield* emitThreadWarnings(context);
+          yield* watchFirstProviderOutput(context).pipe(
+            Effect.forkIn(scope, { startImmediately: true }),
+          );
           return context;
         });
 
@@ -5473,12 +5500,18 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               updated.set(context.providerTurnId, state);
               return updated;
             });
+            if (failure.retryable === false) {
+              yield* failStalledProviderRetry(context, state, payload.error.codexErrorInfo).pipe(
+                Effect.forkIn(scope, { startImmediately: true }),
+              );
+              return;
+            }
             yield* failStalledProviderRetry(context, state, payload.error.codexErrorInfo).pipe(
               // Every notice aims at the same deadline, so repeated notices cannot extend it.
               Effect.delay(
                 Math.max(
                   0,
-                  PROVIDER_RETRY_BUDGET_MS -
+                  CODEX_PROVIDER_RETRY_BUDGET_MS -
                     (DateTime.toEpochMillis(updatedAt) - DateTime.toEpochMillis(state.startedAt)),
                 ),
               ),
@@ -6087,6 +6120,11 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 payload,
               );
             }
+            const automatic = yield* automaticApprovalDecision(context);
+            if (automatic !== undefined)
+              return {
+                decision: automatic,
+              } satisfies CodexSchema.CommandExecutionRequestApprovalResponse;
             const allowance = sessionAllowance(payload.threadId, context);
             if (allowance.has("command")) {
               return {
@@ -6158,6 +6196,11 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 payload,
               );
             }
+            const automatic = yield* automaticApprovalDecision(context);
+            if (automatic !== undefined)
+              return {
+                decision: automatic,
+              } satisfies CodexSchema.FileChangeRequestApprovalResponse;
             const allowance = sessionAllowance(payload.threadId, context);
             if (allowance.has("file-change")) {
               return {
@@ -6231,6 +6274,12 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               );
             }
 
+            const automatic = yield* automaticApprovalDecision(context);
+            if (automatic !== undefined)
+              return permissionsResponseFromDecision({
+                permissions: payload.permissions,
+                decision: automatic,
+              });
             const requestKind = providerRequestKindFromPermissions(payload.permissions);
             const artifacts = yield* buildApprovalRequestArtifacts({
               context,
@@ -6382,14 +6431,16 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               } satisfies CodexSchema.McpServerElicitationRequestResponse;
             }
 
+            const automatic = yield* automaticApprovalDecision(context);
             if (
-              context.input.runtimePolicy.runtimeMode === "full-access" &&
+              automatic === "accept" &&
               (payload.serverName === "t3-code" || payload.serverName === "t3-code-direct") &&
               /^Allow the t3-code(?:-direct)? MCP server to run tool "[\w-]+"\?$/.test(
                 payload.message,
               )
             )
               return toMcpElicitationResponse(payload, "acceptForSession");
+            if (automatic !== undefined) return toMcpElicitationResponse(payload, automatic);
 
             const nativeRequestId =
               payload.mode === "url"
@@ -6454,6 +6505,11 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 payload,
               );
             }
+            const automatic = yield* automaticApprovalDecision(context);
+            if (automatic !== undefined)
+              return {
+                decision: approvalDecisionToLegacyReviewDecision(automatic),
+              } satisfies CodexSchema.ExecCommandApprovalResponse;
             const allowance = sessionAllowance(payload.conversationId, context);
             if (allowance.has("command")) {
               return {
@@ -6523,6 +6579,11 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 payload,
               );
             }
+            const automatic = yield* automaticApprovalDecision(context);
+            if (automatic !== undefined)
+              return {
+                decision: approvalDecisionToLegacyReviewDecision(automatic),
+              } satisfies CodexSchema.ApplyPatchApprovalResponse;
             const allowance = sessionAllowance(payload.conversationId, context);
             if (allowance.has("file-change")) {
               return {
@@ -6645,6 +6706,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             readonly status: OrchestrationV2ProviderTurn["status"];
             readonly completedAt: DateTime.Utc;
             readonly failureMessage?: string;
+            readonly failureDetails?: string;
             readonly failureErrorInfo?: CodexErrorInfo;
             readonly providerRetry?: ActiveCodexProviderRetry;
           }): Effect.fn.Return<CodexRootTerminalEvent> {
@@ -6664,6 +6726,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 failureCode != null &&
                 !codexTerminalErrorNeedsEvidence(input.failureErrorInfo, failureCode);
               let failure =
+                input.failureDetails === undefined &&
                 previousFailure !== undefined &&
                 (input.failureMessage === undefined ||
                   input.failureMessage === previousFailure.nativeMessage) &&
@@ -6676,7 +6739,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                         code: failureCode,
                         class: failureClass,
                       }),
-                      input.failureMessage,
+                      { message: input.failureMessage, additionalDetails: input.failureDetails },
                     );
               const retry = input.providerRetry;
               const notification = input.context.latestProviderFailure;
@@ -6836,6 +6899,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             readonly status: OrchestrationV2ProviderTurn["status"];
             readonly completedAt: DateTime.Utc;
             readonly failureMessage?: string;
+            readonly failureDetails?: string;
             readonly failureErrorInfo?: CodexErrorInfo;
             readonly providerRetry?: ActiveCodexProviderRetry;
             readonly goalHoldTurn?: OrchestrationV2ProviderTurn;
@@ -7061,6 +7125,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           readonly failureDetails?: string;
           readonly failureErrorInfo?: CodexErrorInfo;
           readonly continueRun?: boolean;
+          readonly stalledStartup?: true;
           readonly stalledRetry?: {
             readonly state: ActiveCodexProviderRetry;
             readonly failure: NonNullable<ActiveCodexTurnContext["latestProviderFailure"]>;
@@ -7073,6 +7138,29 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               if (current !== input.context) {
                 return false;
               }
+              if (
+                input.stalledStartup &&
+                (input.context.initialActivity === undefined ||
+                  (yield* Deferred.isDone(input.context.initialActivity)) ||
+                  (yield* Ref.get(interruptingNativeTurns)).has(input.nativeTurnId))
+              )
+                return false;
+              if (input.stalledStartup) {
+                const message =
+                  "Codex accepted the request but did not start responding. Try again or choose another model.";
+                input.context.latestProviderFailure ??= {
+                  nativeMessage: message,
+                  nativeCode: "provider_no_progress",
+                  failure: makeProviderFailure({
+                    message,
+                    code: "provider_no_progress",
+                    class: "transport_error",
+                    retryable: false,
+                  }),
+                };
+              }
+              if (input.context.initialActivity !== undefined)
+                yield* Deferred.succeed(input.context.initialActivity, undefined);
               if (input.stalledRetry !== undefined) {
                 // Checked under the permit so item/started cannot clear the retry mid-finalize.
                 const retries = yield* Ref.get(providerRetries);
@@ -7439,6 +7527,44 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             }),
           );
 
+        const watchFirstProviderOutput: (context: ActiveCodexTurnContext) => Effect.Effect<void> =
+          Effect.fn("CodexAdapterV2.watchFirstProviderOutput")(
+            function* (context: ActiveCodexTurnContext) {
+              if (context.initialActivity === undefined) return;
+              const started = yield* Deferred.await(context.initialActivity).pipe(
+                Effect.timeoutOption(CODEX_FIRST_OUTPUT_TIMEOUT),
+              );
+              if (Option.isSome(started)) return;
+              const finalized = yield* finalizeCodexTurn({
+                context,
+                nativeTurnId: context.nativeTurnId,
+                status: "failed",
+                completedAt: yield* DateTime.now,
+                stalledStartup: true,
+              });
+              if (finalized) yield* interruptStalledProviderTurn(context);
+            },
+            Effect.ignoreCause({ log: true }),
+          );
+
+        const interruptStalledProviderTurn = Effect.fn(
+          "CodexAdapterV2.interruptStalledProviderTurn",
+        )(function* (context: ActiveCodexTurnContext) {
+          const nativeThreadId = yield* getNativeThreadId(context.providerThread);
+          yield* client
+            .request("turn/interrupt", { threadId: nativeThreadId, turnId: context.nativeTurnId })
+            .pipe(
+              Effect.timeout("10 seconds"),
+              Effect.catch((cause) =>
+                Effect.logWarning("orchestration-v2.codex-stalled-turn-interrupt-failed", {
+                  nativeThreadId,
+                  nativeTurnId: context.nativeTurnId,
+                  cause,
+                }),
+              ),
+            );
+        });
+
         // A retry that ends on 429 is the same exhaustion responseTooManyFailedAttempts reports.
         const failStalledProviderRetry = Effect.fn("CodexAdapterV2.failStalledProviderRetry")(
           function* (
@@ -7464,20 +7590,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 },
               },
             });
-            if (!finalized) return;
-            const nativeThreadId = yield* getNativeThreadId(context.providerThread);
-            yield* client
-              .request("turn/interrupt", { threadId: nativeThreadId, turnId: context.nativeTurnId })
-              .pipe(
-                Effect.timeout("10 seconds"),
-                Effect.catch((cause) =>
-                  Effect.logWarning("orchestration-v2.codex-stalled-retry-interrupt-failed", {
-                    nativeThreadId,
-                    nativeTurnId: context.nativeTurnId,
-                    cause,
-                  }),
-                ),
-              );
+            if (finalized) yield* interruptStalledProviderTurn(context);
           },
         );
 
@@ -7487,13 +7600,21 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           terminal: Parameters<typeof finalizeCodexTurn>[0],
         ) {
           const context = terminal.context;
-          const code =
+          const nativeCode =
             terminal.failureErrorInfo == null
               ? context.latestProviderFailure?.nativeCode
               : codexErrorInfoCode(terminal.failureErrorInfo);
+          const message =
+            terminal.failureMessage ?? context.latestProviderFailure?.nativeMessage ?? "";
+          const capacity =
+            nativeCode === "serverOverloaded" ||
+            ((nativeCode === "responseStreamDisconnected" ||
+              nativeCode === "responseStreamConnectionFailed") &&
+              codexErrorHttpStatus(terminal.failureErrorInfo) !== 429 &&
+              isCodexModelAtCapacity(message));
           if (
             terminal.status !== "failed" ||
-            code !== "serverOverloaded" ||
+            !capacity ||
             context.subagent !== null ||
             (context.input.message.attachments.length === 0 &&
               context.input.message.text.trim().toLowerCase() === "/compact")
@@ -7523,11 +7644,11 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                   terminal.failureMessage ??
                   context.latestProviderFailure?.nativeMessage ??
                   "Selected model is at capacity.",
-                nativeCode: code,
+                nativeCode: nativeCode ?? "serverOverloaded",
                 failure: makeProviderFailure({
                   message:
                     context.latestProviderFailure?.failure.message ?? terminal.failureMessage,
-                  code,
+                  code: "serverOverloaded",
                   class: "provider_error",
                   retryable: true,
                 }),
@@ -7638,7 +7759,9 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               nativeStatus === "completed" &&
               (yield* Ref.get(interruptingNativeTurns)).has(payload.turn.id)
                 ? "interrupted"
-                : nativeStatus;
+                : nativeStatus === "completed" && payload.turn.error != null
+                  ? "failed"
+                  : nativeStatus;
             const terminal = {
               context,
               nativeTurnId: payload.turn.id,

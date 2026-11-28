@@ -72,7 +72,7 @@ it.effect("connects a loopback gateway and rejects a remote endpoint without cha
           Layer.mock(ServerConfig)({
             stateDir,
             settingsPath: path.join(stateDir, "settings.json"),
-          }),
+          } as never),
         ),
       ),
     );

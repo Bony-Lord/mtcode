@@ -2,6 +2,8 @@ import type { OrchestrationV2ProviderFailureClass } from "@t3tools/contracts";
 import {
   CODEX_SHARING_CONTINUATION_HINT,
   CODEX_SHARING_UNSUPPORTED_CAPABILITY_CODE,
+  isCodexModelAtCapacity,
+  isCodexSharingEligibilityFailure,
 } from "@t3tools/shared/orchestrationV2ThreadError";
 import {
   CHATGPT_USAGE_LIMIT_CODE,
@@ -160,6 +162,8 @@ export const ThreadErrorBanner = memo(function ThreadErrorBanner({
   const chatGptLimit = workspaceLimit || errorCode === CHATGPT_USAGE_LIMIT_CODE;
   const sharingRejectedInput = errorCode === CODEX_SHARING_UNSUPPORTED_CAPABILITY_CODE;
   const message = getThreadErrorBannerMessage(error);
+  const sharingUnavailable = isCodexSharingEligibilityFailure(errorCode, message);
+  const modelAtCapacity = !chatGptLimit && isCodexModelAtCapacity(message);
   const variant = errorClass === "usage_limit" || chatGptLimit ? "warning" : "error";
   const clipboardText = formatThreadErrorClipboardText({ error, ...copyContext });
   return (
@@ -190,6 +194,13 @@ export const ThreadErrorBanner = memo(function ThreadErrorBanner({
                 <p>{CODEX_SHARING_CONTINUATION_HINT}</p>
               )}
             </div>
+          ) : sharingUnavailable ? (
+            <p>
+              Этот аккаунт не допущен к ChatGPT sharing. Выберите обычный Codex или другой
+              подключённый аккаунт.
+            </p>
+          ) : modelAtCapacity ? (
+            <p>Модель перегружена. Для продолжения выберите другую модель.</p>
           ) : (
             <ExpandableText text={error} collapsedText={message} />
           )}
@@ -201,9 +212,14 @@ export const ThreadErrorBanner = memo(function ThreadErrorBanner({
             </Button>
           ) : chatGptLimit ? (
             <ChatGptUsageButton variant="default" size="sm" />
-          ) : sharingRejectedInput && onChooseProvider ? (
+          ) : (sharingRejectedInput || sharingUnavailable || modelAtCapacity) &&
+            onChooseProvider ? (
             <Button variant="default" size="sm" onClick={onChooseProvider}>
-              Choose provider
+              {modelAtCapacity
+                ? "Выбрать модель"
+                : sharingUnavailable
+                  ? "Выбрать провайдер"
+                  : "Choose provider"}
             </Button>
           ) : null}
           <ThreadErrorCopyButton clipboardText={clipboardText} />

@@ -22,7 +22,6 @@ export type ProviderUpdateCandidate = ServerProvider & {
 export type ProviderSettingsUpdateCandidate = ServerProvider & {
   readonly versionAdvisory: NonNullable<ServerProvider["versionAdvisory"]> & {
     readonly canUpdate: true;
-    readonly updateCommand: string;
   };
 };
 
@@ -145,7 +144,8 @@ export function isProviderSettingsUpdateCandidate(
     provider.compatibilityAdvisory?.latestVersionStatus !== "unsupported" &&
     provider.versionAdvisory?.status === "behind_latest" &&
     provider.versionAdvisory.canUpdate === true &&
-    provider.versionAdvisory.updateCommand !== null
+    (provider.versionAdvisory.updateCommand !== null ||
+      provider.versionAdvisory.managedUpdate === true)
   );
 }
 
@@ -155,7 +155,8 @@ export function hasOneClickUpdateProviderCandidate(
 ): boolean {
   if (
     candidate.versionAdvisory.canUpdate !== true ||
-    candidate.versionAdvisory.updateCommand === null
+    (candidate.versionAdvisory.updateCommand === null &&
+      candidate.versionAdvisory.managedUpdate !== true)
   ) {
     return false;
   }
@@ -165,16 +166,15 @@ export function hasOneClickUpdateProviderCandidate(
     return false;
   }
 
-  const updateCommands = new Set<string>();
+  const updateCommands = new Set<string | null>();
   for (const provider of driverProviders) {
     if (!isProviderUpdateCandidate(provider)) {
       continue;
     }
-    const advisory = provider.versionAdvisory;
-    if (!advisory || advisory.canUpdate !== true || advisory.updateCommand === null) {
+    if (!isProviderSettingsUpdateCandidate(provider)) {
       return false;
     }
-    updateCommands.add(advisory.updateCommand);
+    updateCommands.add(provider.versionAdvisory.updateCommand);
   }
 
   return updateCommands.size === 1;

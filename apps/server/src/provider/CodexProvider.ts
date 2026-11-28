@@ -771,6 +771,7 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
   readonly cwd: string;
   readonly environment?: NodeJS.ProcessEnv;
   readonly skipNativeUsage?: boolean;
+  readonly usageOnly?: boolean;
 }) {
   const spawnedAtMs = DateTime.toEpochMillis(yield* DateTime.now);
   const { client, initialize } = yield* withCodexAppServerClient(input);
@@ -792,15 +793,22 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
   const deadlineMs = spawnedAtMs + input.probeTimeoutMs - CODEX_DISCOVERY_MARGIN_MS;
   const [skillsResponse, models, { config, nativeUsage, rateLimits }] = yield* Effect.all(
     [
-      withCodexDiscoveryDeadline(client.request("skills/list", { cwds: [input.cwd] }), deadlineMs),
-      accountResponse.account?.type === "chatgpt"
-        ? requestCodexChatGptModels({
-            client,
-            codexHome: initialize.codexHome,
-            spawnedAtMs,
+      input.usageOnly
+        ? Effect.undefined
+        : withCodexDiscoveryDeadline(
+            client.request("skills/list", { cwds: [input.cwd] }),
             deadlineMs,
-          })
-        : withCodexDiscoveryDeadline(requestAllCodexModels(client), deadlineMs),
+          ),
+      input.usageOnly
+        ? Effect.undefined
+        : accountResponse.account?.type === "chatgpt"
+          ? requestCodexChatGptModels({
+              client,
+              codexHome: initialize.codexHome,
+              spawnedAtMs,
+              deadlineMs,
+            })
+          : withCodexDiscoveryDeadline(requestAllCodexModels(client), deadlineMs),
       // The shared catalog must exclude config from the server's launch project.
       withCodexDiscoveryDeadline(
         client.request("config/read", { includeLayers: false }),
@@ -995,6 +1003,7 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
     readonly cwd: string;
     readonly environment?: NodeJS.ProcessEnv;
     readonly skipNativeUsage?: boolean;
+    readonly usageOnly?: boolean;
   }) => Effect.Effect<
     CodexAppServerProviderSnapshot,
     CodexErrors.CodexAppServerError,
@@ -1043,6 +1052,7 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
     cwd: probeCwd,
     environment: resolvedEnvironment,
     ...(managedAuth ? { skipNativeUsage: true } : {}),
+    ...(codexSettings.usageProfile ? { usageOnly: true } : {}),
   }).pipe(
     // Process teardown can outlast the work budget without discarding a completed snapshot.
     Effect.timeoutOption(Duration.millis(probeTimeoutMs)),

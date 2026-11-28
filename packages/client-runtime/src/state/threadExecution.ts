@@ -386,7 +386,12 @@ export function deriveThreadStructureRuntime(
         : DateTime.formatIso(orchestrationV2RunWorkStartedAt(liveActivityRun)),
     providerInstanceId,
     providerName: providerSession?.driver ?? null,
-    ...threadErrorSummary(failure, providerSession?.lastError ?? null),
+    ...threadErrorSummary(
+      failure,
+      latestRunProjection !== null && latestRunProjection.status !== "failed"
+        ? null
+        : (providerSession?.lastError ?? null),
+    ),
   };
 }
 

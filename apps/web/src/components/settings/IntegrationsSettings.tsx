@@ -705,7 +705,7 @@ function BrowserLinkTargetSetting({ disabled }: { readonly disabled: boolean }) 
 }
 
 const EXTERNAL_BROWSER_LABELS: Readonly<Record<ExternalBrowserId, string>> = {
-  system: "System default",
+  system: "Системный браузер",
   chrome: "Google Chrome",
   edge: "Microsoft Edge",
   firefox: "Mozilla Firefox",
@@ -718,6 +718,7 @@ function ExternalBrowserSettings({ disabled }: { readonly disabled: boolean }) {
   const updateSettings = useUpdateScopedSettings();
   const [installed, setInstalled] = useState<readonly ExternalBrowserOption[]>([]);
 
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- load device browser inventory through the native bridge when opening these controls
   useEffect(() => {
     let cancelled = false;
     const bridge = window.desktopBridge;
@@ -740,7 +741,7 @@ function ExternalBrowserSettings({ disabled }: { readonly disabled: boolean }) {
   if (!options.some((option) => option.id === browser)) {
     options.push({
       id: browser,
-      name: `${EXTERNAL_BROWSER_LABELS[browser]} (not installed)`,
+      name: `${EXTERNAL_BROWSER_LABELS[browser]} (не установлен)`,
     });
   }
 
@@ -749,11 +750,11 @@ function ExternalBrowserSettings({ disabled }: { readonly disabled: boolean }) {
       <SettingsRow
         {...searchableSetting("external-browser")}
         devicePreference
-        description="Which browser opens website links and provider sign-in pages. The in-app browser and remote or web clients are unaffected."
+        description="Браузер для внешних ссылок и страниц входа в аккаунт. Действует в настольном приложении."
         resetAction={
           !disabled && browser !== DEFAULT_EXTERNAL_BROWSER ? (
             <SettingResetButton
-              label="external browser"
+              label="внешний браузер"
               onClick={() => updateSettings({ externalBrowser: DEFAULT_EXTERNAL_BROWSER })}
             />
           ) : null
@@ -768,7 +769,7 @@ function ExternalBrowserSettings({ disabled }: { readonly disabled: boolean }) {
               }
             }}
           >
-            <SelectTrigger size="sm" className="w-full sm:w-44" aria-label="External browser">
+            <SelectTrigger size="sm" className="w-full sm:w-44" aria-label="Внешний браузер">
               <SelectValue>{EXTERNAL_BROWSER_LABELS[browser]}</SelectValue>
             </SelectTrigger>
             <SelectPopup align="end" alignItemWithTrigger={false}>
@@ -784,12 +785,12 @@ function ExternalBrowserSettings({ disabled }: { readonly disabled: boolean }) {
       <SettingsRow
         {...searchableSetting("external-browser-private")}
         devicePreference
-        description="Open external links and sign-in pages in a private window. If no private window is available, the link is not opened in a normal window."
+        description="Внешние ссылки и страницы входа открываются в режиме инкогнито. Для этого нужен установленный браузер с поддержкой приватных окон."
         control={
           <Switch
             disabled={disabled}
             checked={privateWindow}
-            aria-label="Open external links in a private window"
+            aria-label="Открывать внешние ссылки в режиме инкогнито"
             onCheckedChange={(checked) =>
               updateSettings({ externalBrowserPrivate: Boolean(checked) })
             }

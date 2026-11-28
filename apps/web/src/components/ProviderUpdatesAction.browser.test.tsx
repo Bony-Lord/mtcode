@@ -27,7 +27,8 @@ const state = vi.hoisted(() => ({
   sessions: new Map<EnvironmentId, Atom.Writable<AsyncResult.AsyncResult<AuthSessionState>>>(),
 }));
 
-vi.mock(import("~/state/environments"), () => ({
+vi.mock(import("~/state/environments"), async (original) => ({
+  ...(await original()),
   useEnvironments: (() => ({ environments: state.environments })) as never,
   useEnvironmentProviders: () => state.providers,
 }));
@@ -43,7 +44,8 @@ vi.mock(import("@t3tools/client-runtime/state/session"), async (original) => {
     })) as typeof actual.createEnvironmentSessionAtoms,
   };
 });
-vi.mock(import("~/state/server"), () => ({
+vi.mock(import("~/state/server"), async (original) => ({
+  ...(await original()),
   serverEnvironment: { updateProvider: "update", refreshProviders: "refresh" } as never,
 }));
 vi.mock(import("~/state/use-atom-command"), () => ({
@@ -60,7 +62,11 @@ vi.mock(import("~/state/use-atom-command"), () => ({
 
 import { appAtomRegistry } from "~/rpc/atomRegistry";
 import { toastManager } from "./ui/toast";
-import { useCheckProviderUpdates, useProviderUpdates } from "./ProviderUpdatesAction";
+import {
+  ProviderUpdatesAction,
+  useCheckProviderUpdates,
+  useProviderUpdates,
+} from "./ProviderUpdatesAction";
 
 const provider: ServerProvider = {
   instanceId: ProviderInstanceId.make("codex"),
@@ -185,5 +191,43 @@ it("provider updates and checks exclude connections without a confirmed manageme
   await act(async () => {
     await updates.updateAll({ quiet: true });
   });
+  expect(state.requests).toEqual([]);
+});
+
+it("uses the About label and runs the supported provider update RPC", async () => {
+  setup();
+  await using screen = await render(
+    <RegistryContext.Provider value={appAtomRegistry}>
+      <ProviderUpdatesAction label="Обновить провайдеры" pendingLabel="Обновление…" showWhenEmpty />
+    </RegistryContext.Provider>,
+  );
+
+  const button = [...screen.container.querySelectorAll("button")].find(
+    (candidate) => candidate.textContent === "Обновить провайдеры",
+  );
+  expect(button).toBeDefined();
+  expect(button?.disabled).toBe(false);
+  await act(() => button?.click());
+  expect(state.requests).toEqual([state.environments[1]!.environmentId]);
+});
+
+it("keeps the labelled provider action visible but inert without candidates", async () => {
+  setup();
+  state.providers = new Map(state.environments.map(({ environmentId }) => [environmentId, []]));
+  await using screen = await render(
+    <RegistryContext.Provider value={appAtomRegistry}>
+      <ProviderUpdatesAction
+        emptyTooltip="Нет доступных обновлений провайдеров"
+        label="Обновить провайдеры"
+        showWhenEmpty
+      />
+    </RegistryContext.Provider>,
+  );
+
+  const button = [...screen.container.querySelectorAll("button")].find(
+    (candidate) => candidate.textContent === "Обновить провайдеры",
+  );
+  expect(button?.disabled).toBe(true);
+  await act(() => button?.click());
   expect(state.requests).toEqual([]);
 });

@@ -210,6 +210,27 @@ describe("thread execution presentation", () => {
     expect(
       deriveThreadRuntime({ ...projection, runs: [failed, run("new", 2, "running")] }),
     ).toMatchObject({ status: "running", lastError: null, lastErrorClass: null });
+    const running = run("new", 2, "running");
+    expect(
+      deriveThreadRuntime({
+        ...projection,
+        runs: [failed, running],
+        providerSessions: [
+          {
+            id: ProviderSessionId.make("stale-error-session"),
+            driver: ProviderDriverKind.make("codex"),
+            providerInstanceId: running.providerInstanceId,
+            status: "ready",
+            cwd: "/repo",
+            model: null,
+            capabilities: {} as never,
+            createdAt: now,
+            updatedAt: now,
+            lastError: "Plan limit reached",
+          },
+        ],
+      }),
+    ).toMatchObject({ status: "running", lastError: null, lastErrorClass: null });
   });
 
   // regression: #15029 working timers no longer reset on every background wake

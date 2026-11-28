@@ -11,6 +11,7 @@ import { startAppServices } from "./appInit";
 import { AppRoot } from "./AppRoot";
 import { whenLocaleReady } from "./i18n/runtime";
 import { reloadOnceForChunkLoadError } from "./lib/chunkReloadGuard";
+import { showBootError } from "./lib/bootError";
 
 const router = startAppServices();
 
@@ -33,7 +34,15 @@ function ClerkGate({ children }: { readonly children: React.ReactNode }) {
   }
 
   return (
-    <React.Suspense fallback={null}>
+    <React.Suspense
+      fallback={
+        <div id="boot-shell">
+          <div id="boot-shell-card" role="status">
+            Подключение к MT Code…
+          </div>
+        </div>
+      }
+    >
       <ConnectClerkGate
         key={embedded?.id ?? "clerk"}
         publishableKey={publishableKey}
@@ -84,8 +93,5 @@ export const startup = Promise.all([
     );
   })
   .catch((error: unknown) => {
-    if (reloadScheduled) return;
-    console.error("MT Code failed to load its startup chunks.", error);
-    const bootShell = document.getElementById("boot-shell");
-    if (bootShell) bootShell.textContent = "MT Code could not load. Reload to try again.";
+    if (!reloadScheduled) showBootError(error);
   });

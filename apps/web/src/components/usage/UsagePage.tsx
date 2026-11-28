@@ -15,7 +15,12 @@ import { useEffect, useEffectEvent, useRef, useState } from "react";
 import { settlePromise } from "@t3tools/client-runtime/state/runtime";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
 import * as Cause from "effect/Cause";
-import { refreshUsageLimits } from "@t3tools/client-runtime/state/usage";
+import {
+  CODEX_LIMITS_REFRESH_INTERVAL_MS,
+  canRefreshCodexLimits,
+  refreshUsageLimits,
+} from "@t3tools/client-runtime/state/usage";
+import { useLiveRefresh } from "../../hooks/useLiveRefresh";
 import {
   updatingProvidersLabel,
   usageEnvironmentProgress,
@@ -383,6 +388,33 @@ export function UsagePage() {
   useEffect(() => {
     if (showingLimits && connectedLimitsEnvironments) autoRefreshLimits();
   }, [showingLimits, connectedLimitsEnvironments]);
+  useLiveRefresh(
+    () => {
+      if (document.visibilityState !== "visible") return;
+      for (const [environmentId, presentation] of presentationsWithProviders) {
+        if (
+          (selectedEnvironmentIds !== null && !selectedEnvironmentIds.has(environmentId)) ||
+          presentation.connection.phase !== "connected"
+        )
+          continue;
+        for (const provider of presentation.serverConfig?.providers ?? []) {
+          if (!canRefreshCodexLimits(provider)) continue;
+          void refreshUsageLimits(
+            environmentId,
+            () => refreshProviders({ environmentId, input: { instanceId: provider.instanceId } }),
+            true,
+            provider.instanceId,
+          ).catch(() => {});
+        }
+      }
+      setLimitsNow(Date.now());
+    },
+    {
+      enabled: showingLimits && !hiddenProviders.has("codex") && connectedLimitsEnvironments !== "",
+      key: JSON.stringify(["usage-page-codex-limits", connectedLimitsEnvironments]),
+      intervalMs: CODEX_LIMITS_REFRESH_INTERVAL_MS,
+    },
+  );
 
   const days = enumerateDays(shownWindow.sinceDay, shownWindow.untilDay);
   const hours =

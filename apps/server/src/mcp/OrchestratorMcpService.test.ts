@@ -1844,12 +1844,14 @@ describe("OrchestratorMcpService provider resolution", () => {
   );
 
   it.effect(
-    "advertises orchestration capability from registered adapters rather than a driver allowlist",
+    "advertises only usable targets from registered adapters rather than a driver allowlist",
     () =>
       Effect.gen(function* () {
         const disabledAntigravityInstanceId = ProviderInstanceId.make("antigravity-alt");
         const disabledWithoutAdapterInstanceId = ProviderInstanceId.make("codex-without-adapter");
         const projectDisabledInstanceId = ProviderInstanceId.make("codex-project-off");
+        const quotaCooledInstanceId = ProviderInstanceId.make("codex-quota-cooled");
+        const quotaFailureAt = DateTime.makeUnsafe(0);
         const forkOnlyInstanceId = ProviderInstanceId.make("forkOnly");
         const forkShadow = yield* buildUnavailableProviderSnapshot({
           driverKind: "forkOnly",
@@ -1900,13 +1902,33 @@ describe("OrchestratorMcpService provider resolution", () => {
             driver: ProviderDriverKind.make("codex"),
             model: "gpt-5.4",
           }),
+          providerSnapshot({
+            instanceId: quotaCooledInstanceId,
+            driver: ProviderDriverKind.make("codex"),
+            model: "gpt-5.4",
+          }),
           forkShadow,
         ];
         const layerDependencies = Layer.mergeAll(
           NodeServices.layer,
           NodeCrypto.layer,
           Layer.mock(ThreadManagementService.ThreadManagementService)({
-            getThreadRecords: () => Effect.succeed(parentProjection([])),
+            getThreadRecords: () =>
+              Effect.succeed(
+                parentProjection([
+                  {
+                    id: taskId,
+                    threadId: parentThreadId,
+                    origin: "app_owned",
+                    providerInstanceId: quotaCooledInstanceId,
+                    model: "gpt-5.4",
+                    status: "failed",
+                    result: "Quota limit reached",
+                    updatedAt: quotaFailureAt,
+                    completedAt: quotaFailureAt,
+                  },
+                ]),
+              ),
           }),
           ServerSettings.layerTest({
             providerInstances: {
@@ -1936,6 +1958,7 @@ describe("OrchestratorMcpService provider resolution", () => {
           adapterRegistryLayer([
             codexInstanceId,
             projectDisabledInstanceId,
+            quotaCooledInstanceId,
             ProviderInstanceId.make("claudeAgent"),
             ProviderInstanceId.make("pi"),
             ProviderInstanceId.make("acpRegistry"),
@@ -1954,12 +1977,44 @@ describe("OrchestratorMcpService provider resolution", () => {
           const byId = new Map(
             capabilities.providers.map((provider) => [provider.providerInstanceId, provider]),
           );
-          for (const provider of providers) {
-            assert.deepEqual(
-              byId.get(provider.instanceId)?.models.map((model) => model.id),
-              provider.models.map((model) => model.slug),
+          const usableInstanceIds = [
+            codexInstanceId,
+            ProviderInstanceId.make("claudeAgent"),
+            ProviderInstanceId.make("pi"),
+            ProviderInstanceId.make("acpRegistry"),
+            antigravityInstanceId,
+          ];
+          const assertOnlyUsable = (
+            result: OrchestratorMcpCapabilitiesResult,
+            catalog: ReadonlyArray<ServerProvider>,
+          ) => {
+            const entries = new Map(
+              result.providers.map((provider) => [provider.providerInstanceId, provider]),
             );
-          }
+            assert.deepEqual(
+              [...entries.keys()].map(String).toSorted(),
+              usableInstanceIds.map(String).toSorted(),
+            );
+            for (const instanceId of usableInstanceIds) {
+              const entry = entries.get(instanceId);
+              assert.isDefined(entry);
+              assert.isTrue(entry!.canRunChildTask);
+              assert.isTrue(entry!.canRunCrossProviderChildTask);
+              assert.deepEqual(entry!.constraints, []);
+            }
+            for (const provider of catalog) {
+              if (!usableInstanceIds.some((id) => id === provider.instanceId)) {
+                assert.isUndefined(entries.get(provider.instanceId), String(provider.instanceId));
+                continue;
+              }
+              assert.deepEqual(
+                entries.get(provider.instanceId)?.models.map((model) => model.id),
+                provider.models.map((model) => model.slug),
+                String(provider.instanceId),
+              );
+            }
+          };
+          assertOnlyUsable(capabilities, providers);
 
           providers = providers.map((provider) => ({
             ...provider,
@@ -1973,62 +2028,17 @@ describe("OrchestratorMcpService provider resolution", () => {
               },
             ],
           }));
-          const refreshed = yield* service.capabilities(scope);
-          for (const provider of providers) {
-            assert.deepEqual(
-              refreshed.providers
-                .find((entry) => entry.providerInstanceId === provider.instanceId)
-                ?.models.map((model) => model.id),
-              provider.models.map((model) => model.slug),
-            );
-          }
+          assertOnlyUsable(yield* service.capabilities(scope), providers);
 
           for (const instanceId of [
-            codexInstanceId,
-            ProviderInstanceId.make("claudeAgent"),
-            ProviderInstanceId.make("pi"),
-            ProviderInstanceId.make("acpRegistry"),
-            antigravityInstanceId,
+            disabledAntigravityInstanceId,
+            disabledWithoutAdapterInstanceId,
+            projectDisabledInstanceId,
+            quotaCooledInstanceId,
+            forkOnlyInstanceId,
           ]) {
-            const entry = byId.get(instanceId);
-            assert.isDefined(entry);
-            assert.isTrue(
-              entry!.canRunChildTask,
-              `expected ${instanceId} to advertise canRunChildTask`,
-            );
-            assert.isTrue(entry!.canRunCrossProviderChildTask);
-            assert.deepEqual(entry!.constraints, []);
+            assert.isUndefined(byId.get(instanceId), String(instanceId));
           }
-
-          const disabled = byId.get(disabledAntigravityInstanceId);
-          assert.isDefined(disabled);
-          assert.isFalse(disabled!.canRunChildTask);
-          assert.isFalse(disabled!.canRunCrossProviderChildTask);
-          assert.deepEqual(disabled!.constraints, ["Provider instance is disabled."]);
-
-          const projectDisabled = byId.get(projectDisabledInstanceId);
-          assert.isDefined(projectDisabled);
-          assert.isFalse(projectDisabled!.canRunChildTask);
-          assert.deepEqual(projectDisabled!.constraints, ["Provider instance is disabled."]);
-
-          const disabledWithoutAdapter = byId.get(disabledWithoutAdapterInstanceId);
-          assert.isDefined(disabledWithoutAdapter);
-          assert.isFalse(disabledWithoutAdapter!.canRunChildTask);
-          assert.isFalse(disabledWithoutAdapter!.canRunCrossProviderChildTask);
-          assert.deepEqual(disabledWithoutAdapter!.constraints, [
-            "No V2 provider adapter is registered.",
-            "Provider instance is disabled.",
-          ]);
-
-          const fork = byId.get(forkOnlyInstanceId);
-          assert.isDefined(fork);
-          assert.isFalse(fork!.canRunChildTask);
-          assert.isFalse(fork!.canRunCrossProviderChildTask);
-          assert.deepEqual(fork!.constraints, [
-            "No V2 provider adapter is registered.",
-            "Driver 'forkOnly' is not registered in this build.",
-            "Provider instance is disabled.",
-          ]);
         }).pipe(Effect.provide(layerOrchestratorService.pipe(Layer.provide(layerDependencies))));
       }),
   );
@@ -3211,6 +3221,14 @@ describe("OrchestratorMcpService provider resolution", () => {
             candidateDriver: driver,
           },
           {
+            name: "explicit-project-disabled",
+            inheritedEnabled: true,
+            peerEnabled: true,
+            explicit: true,
+            selectedInstanceId: null,
+            candidateDriver: driver,
+          },
+          {
             name: "explicit-healthy",
             inheritedEnabled: true,
             peerEnabled: true,
@@ -3255,7 +3273,21 @@ describe("OrchestratorMcpService provider resolution", () => {
                   } as never),
                 ),
             }),
-            ServerSettings.layerTest(),
+            ServerSettings.layerTest({
+              providerInstances: {
+                [codexInstanceId]: { driver, enabled: true },
+                [codexAltInstanceId]: { driver: testCase.candidateDriver, enabled: true },
+              },
+              ...(testCase.name === "explicit-project-disabled"
+                ? {
+                    projectSettingsOverrides: {
+                      [projectId]: {
+                        providerInstances: { [codexInstanceId]: { enabled: false } },
+                      },
+                    },
+                  }
+                : {}),
+            }),
             providerRegistryLayer([
               providerSnapshot({
                 instanceId: codexInstanceId,
@@ -3307,7 +3339,8 @@ describe("OrchestratorMcpService provider resolution", () => {
               if (
                 testCase.name === "explicit-unavailable" ||
                 testCase.name === "inherited-unavailable" ||
-                testCase.name === "explicit-disabled-without-adapter"
+                testCase.name === "explicit-disabled-without-adapter" ||
+                testCase.name === "explicit-project-disabled"
               ) {
                 const expectedMessage =
                   `Provider ${codexInstanceId} cannot run a child task: ` +
@@ -3377,6 +3410,166 @@ describe("OrchestratorMcpService provider resolution", () => {
           }).pipe(Effect.provide(layerOrchestratorService.pipe(Layer.provide(layerDependencies))));
         }
       }),
+  );
+
+  it.effect("rotates automatic helpers away from the most recent selection", () =>
+    Effect.gen(function* () {
+      const dispatched = yield* Ref.make<ReadonlyArray<unknown>>([]);
+      const helpers = yield* Ref.make<ReadonlyArray<unknown>>([]);
+      const codexAltInstanceId = ProviderInstanceId.make("codex-alt");
+      type DispatchedCommand = {
+        readonly type: string;
+        readonly modelSelection: {
+          readonly instanceId: ProviderInstanceId;
+          readonly model: string;
+        };
+      };
+      const layers = Layer.mergeAll(
+        NodeServices.layer,
+        NodeCrypto.layer,
+        Layer.mock(ThreadManagementService.ThreadManagementService)({
+          hasReceipt: () => Effect.succeed(false),
+          assertProviderInstanceEnabled: () => Effect.void,
+          isProviderInstanceEnabledForProject: () => Effect.succeed(true),
+          getThreadRecords: (threadId) =>
+            threadId === parentThreadId
+              ? Effect.map(Ref.get(helpers), (subagents) =>
+                  parentProjection(subagents, {
+                    instanceId: codexInstanceId,
+                    model: "gpt-5.4",
+                  }),
+                )
+              : Effect.succeed(childProjection),
+          dispatch: (command) =>
+            Effect.gen(function* () {
+              const commands = yield* Ref.get(dispatched);
+              const ordinal = commands.length + 1;
+              const selection = (command as DispatchedCommand).modelSelection;
+              const childId = ThreadId.make(`thread:mcp-rotation-child-${ordinal}`);
+              const task = {
+                id: NodeId.make(`node:mcp-rotation-task-${ordinal}`),
+                threadId: parentThreadId,
+                runId: parentRunId,
+                parentNodeId,
+                origin: "app_owned",
+                createdBy: "agent",
+                driver: "codex",
+                providerInstanceId: selection.instanceId,
+                providerThreadId: null,
+                childThreadId: childId,
+                nativeTaskRef: null,
+                prompt: "Summarize the diff.",
+                title: null,
+                model: selection.model,
+                modelSelection: selection,
+                status: "running",
+                result: null,
+                startedAt: DateTime.makeUnsafe(0),
+                completedAt: null,
+              };
+              yield* Ref.update(dispatched, (all) => [...all, command]);
+              yield* Ref.update(helpers, (all) => [...all, task]);
+              return {
+                sequence: ordinal,
+                storedEvents: [
+                  {
+                    sequence: ordinal,
+                    commandId: null,
+                    event: { type: "subagent.updated", payload: task },
+                  },
+                ],
+              } as never;
+            }),
+        }),
+        ServerSettings.layerTest({
+          agentWorkModes: ["fast"],
+          providerInstances: {
+            [codexInstanceId]: {
+              driver: ProviderDriverKind.make("codex"),
+              enabled: true,
+              accountTier: "free",
+            },
+            [codexAltInstanceId]: {
+              driver: ProviderDriverKind.make("codex"),
+              enabled: true,
+              accountTier: "free",
+            },
+          },
+        }),
+        providerRegistryLayer([
+          providerSnapshot({
+            instanceId: codexInstanceId,
+            driver: ProviderDriverKind.make("codex"),
+            model: "gpt-5.4",
+          }),
+          providerSnapshot({
+            instanceId: codexAltInstanceId,
+            driver: ProviderDriverKind.make("codex"),
+            model: "codex-alt-model",
+          }),
+        ]),
+        adapterRegistryLayer([codexInstanceId, codexAltInstanceId]),
+        Layer.mock(ProjectService.ProjectService)({}),
+        Layer.mock(SecretRequests.SecretRequests)({}),
+        Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+        Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+      );
+
+      yield* Effect.gen(function* () {
+        const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+        const first = yield* service.delegateTask(scope, {
+          task: "Summarize the diff.",
+          mode: "async",
+          clientRequestId: "rotate-first",
+        });
+        assert.equal(first.status, "running");
+        const firstCommands = yield* Ref.get(dispatched);
+        assert.equal(firstCommands.length, 1);
+        const firstSelection = (firstCommands[0] as DispatchedCommand).modelSelection;
+        assert.equal(firstSelection.instanceId, codexInstanceId);
+
+        const completedAt = DateTime.makeUnsafe(0);
+        yield* Ref.set(helpers, [
+          {
+            id: NodeId.make("node:mcp-rotation-completed"),
+            threadId: parentThreadId,
+            runId: parentRunId,
+            parentNodeId,
+            origin: "app_owned",
+            createdBy: "agent",
+            driver: "codex",
+            providerInstanceId: firstSelection.instanceId,
+            providerThreadId: null,
+            childThreadId: ThreadId.make("thread:mcp-rotation-completed-child"),
+            nativeTaskRef: null,
+            prompt: "Summarize the diff.",
+            title: null,
+            model: firstSelection.model,
+            modelSelection: firstSelection,
+            status: "completed",
+            result: "done",
+            startedAt: DateTime.makeUnsafe(0),
+            updatedAt: completedAt,
+            completedAt,
+          },
+        ]);
+
+        const second = yield* service.delegateTask(scope, {
+          task: "Summarize the diff.",
+          mode: "async",
+          clientRequestId: "rotate-second",
+        });
+        assert.equal(second.status, "running");
+        const commands = yield* Ref.get(dispatched);
+        assert.equal(commands.length, 2);
+        assert.deepEqual(
+          commands.map(
+            (command) => (command as DispatchedCommand).modelSelection.instanceId,
+          ),
+          [codexInstanceId, codexAltInstanceId],
+        );
+      }).pipe(Effect.provide(layerOrchestratorService.pipe(Layer.provide(layers))));
+    }),
   );
 
   describe("scheduled tasks at modes above the caller's", () => {

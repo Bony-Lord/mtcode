@@ -1,5 +1,6 @@
 import {
   EnvironmentId,
+  ProviderInstanceId,
   UsageDay,
   USAGE_CONTRACT_VERSION,
   type UsageModelFilter,
@@ -191,6 +192,25 @@ describe("manual usage refresh", () => {
 });
 
 describe("limits refresh cooldown", () => {
+  it("refreshes Codex accounts independently and allows another check after one minute", async () => {
+    using now = vi.spyOn(Date, "now").mockReturnValue(100_000);
+    const environment = EnvironmentId.make("limits-multi-account");
+    const first = ProviderInstanceId.make("codex-first");
+    const second = ProviderInstanceId.make("codex-second");
+    const pending = Promise.withResolvers<string>();
+    const refresh = vi.fn(async () => "current");
+    const initial = refreshUsageLimits(environment, () => pending.promise, true, first);
+    expect(await refreshUsageLimits(environment, refresh, true, first)).toBeUndefined();
+    expect(await refreshUsageLimits(environment, refresh, true, second)).toBe("current");
+    now.mockReturnValue(110_000);
+    pending.resolve("initial");
+    await initial;
+    now.mockReturnValue(159_999);
+    expect(await refreshUsageLimits(environment, refresh, true, first)).toBeUndefined();
+    now.mockReturnValue(160_000);
+    expect(await refreshUsageLimits(environment, refresh, true, first)).toBe("current");
+  });
+
   it("shares an in-flight check and skips duplicate automatic refreshes", async () => {
     const id = EnvironmentId.make("limits-in-flight");
     const oldCheck = Promise.withResolvers<string>();

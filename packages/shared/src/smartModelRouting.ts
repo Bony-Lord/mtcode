@@ -14,6 +14,7 @@ import {
 import { resolveAgentWorkModes } from "./agentWorkProfiles.ts";
 import { BENCHMARK_SOURCES, DEFAULT_MODEL_BENCHMARKS, modelBenchmark } from "./modelBenchmarks.ts";
 import { modelFamily } from "./model.ts";
+import type { AutoRouteFailureReason } from "./orchestrationV2ThreadError.ts";
 
 // Terminal-Bench 4.0, Codex harness, max effort. Snapshot of the public
 // leaderboard on 2026-11-17. Scores are a tie-break for code, not a generic rank.
@@ -73,6 +74,7 @@ export interface RoutingObservation {
   readonly model: string;
   readonly failed?: boolean;
   readonly blocked?: boolean;
+  readonly blockedReason?: AutoRouteFailureReason;
   readonly latencyMs?: number;
 }
 
@@ -133,8 +135,7 @@ export function selectSmartModel(input: {
         !provider.enabled ||
         !provider.installed ||
         provider.status !== "ready" ||
-        (provider.auth.status !== "authenticated" &&
-          !(provider.auth.status === "unknown" && (tier === "free" || tier === "local"))) ||
+        provider.auth.status !== "authenticated" ||
         config?.freeAccountPaused ||
         !resolveProjectProviderInstanceEnabled(
           input.settings,
@@ -184,7 +185,16 @@ export function selectSmartModel(input: {
             (observation) =>
               observation.instanceId === provider.instanceId && observation.model === model.slug,
           ) ?? [];
-        if (recent.some((observation) => observation.blocked)) return [];
+        const providerRecentlyBlocked =
+          input.observations?.some(
+            (observation) =>
+              observation.instanceId === provider.instanceId &&
+              observation.blocked &&
+              (observation.blockedReason === "sharing_forbidden" ||
+                observation.blockedReason === "usage_limit" ||
+                observation.blockedReason === "free_limit"),
+          ) ?? false;
+        if (providerRecentlyBlocked || recent.some((observation) => observation.blocked)) return [];
         const multimodal = /vl|vision|gemma-?3|gemma3|qwen3\.[56]|gemini|gpt-[56]|claude/.test(
           slug,
         );

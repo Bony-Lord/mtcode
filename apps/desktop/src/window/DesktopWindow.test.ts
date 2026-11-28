@@ -327,14 +327,14 @@ const layerElectronTheme = Layer.succeed(ElectronTheme.ElectronTheme, {
   onUpdated: () => Effect.void,
 } satisfies ElectronTheme.ElectronTheme["Service"]);
 
-const layerDesktopEnvironmentFor = (platform: NodeJS.Platform) =>
+const layerDesktopEnvironmentFor = (platform: NodeJS.Platform, packaged = false) =>
   DesktopEnvironment.layer({ ...environmentInput, platform }).pipe(
     Layer.provide(
       Layer.mergeAll(
         NodeServices.layer,
         DesktopConfig.layerTest({
           T3CODE_PORT: "3773",
-          VITE_DEV_SERVER_URL: "http://127.0.0.1:5733",
+          ...(packaged ? {} : { VITE_DEV_SERVER_URL: "http://127.0.0.1:5733" }),
         }),
       ),
     ),
@@ -368,6 +368,7 @@ function layerTest(input: {
   readonly focusedWindow?: Electron.BrowserWindow;
   readonly fallbackWindow?: Electron.BrowserWindow;
   readonly platform?: NodeJS.Platform;
+  readonly packaged?: boolean;
   readonly appearanceWindows?: ReadonlyArray<{
     readonly window: Electron.BrowserWindow;
     readonly titleBarOverlay: boolean;
@@ -455,7 +456,7 @@ function layerTest(input: {
         }),
         input.platform === undefined
           ? layerDesktopEnvironment
-          : layerDesktopEnvironmentFor(input.platform),
+          : layerDesktopEnvironmentFor(input.platform, input.packaged),
         layerDesktopAppSettings,
         layerDesktopClientSettings,
         layerDesktopServerExposure,
@@ -1727,6 +1728,32 @@ describe("DesktopWindow", () => {
         yield* TestClock.adjust(250);
         assert.equal(fakeWindow.loadURL.mock.calls.length, 2);
         assert.equal(fakeWindow.reload.mock.calls.length, 0);
+      }).pipe(Effect.provide(layer));
+    }),
+  );
+
+  it.effect("retries a failed packaged Windows startup without reloading forever", () =>
+    Effect.gen(function* () {
+      const fakeWindow = makeFakeBrowserWindow();
+      const layer = layerTest({
+        window: fakeWindow.window,
+        createCount: yield* Ref.make(0),
+        mainWindow: yield* Ref.make<Option.Option<Electron.BrowserWindow>>(Option.none()),
+        platform: "win32",
+        packaged: true,
+      });
+      yield* Effect.gen(function* () {
+        const desktopWindow = yield* DesktopWindow.DesktopWindow;
+        yield* desktopWindow.createMain;
+        const didFail = fakeWindow.webContentsListeners.get("did-fail-load");
+        for (const interval of [100, 250, 500, 1_000, 2_000, 2_000]) {
+          didFail?.({}, -2, "ERR_FAILED", "t3code://app/", true);
+          yield* TestClock.adjust(interval);
+        }
+        assert.deepEqual(
+          fakeWindow.loadURL.mock.calls,
+          Array.from({ length: 6 }, () => ["t3code://app/"]),
+        );
       }).pipe(Effect.provide(layer));
     }),
   );

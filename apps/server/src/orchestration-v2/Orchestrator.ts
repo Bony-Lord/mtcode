@@ -10,6 +10,8 @@ import type {
 import {
   CODEX_SHARING_CONTINUATION_HINT,
   CODEX_SHARING_UNSUPPORTED_CAPABILITY_CODE,
+  autoRouteFailureReason,
+  isCodexSharingEligibilityFailure,
   latestExecutedRun,
   latestRootProviderFailure,
   orchestrationV2WorktreePending,
@@ -71,7 +73,6 @@ import {
   ProviderInstanceId,
   ProviderInteractionMode,
   isRuntimeModeAbove,
-  resolveProviderInstanceEnabled,
   resolveProjectProviderInstanceEnabled,
   type ProviderSessionId,
   RunId,
@@ -1476,17 +1477,18 @@ function providerThreadPredatesBoundary(
   );
 }
 
-function providerThreadHasRejectedSharingInput(
+function providerThreadSharingFailure(
   projection: Pick<OrchestrationV2ThreadProjection, "runs" | "turnItems">,
   providerThreadId: OrchestrationV2ProviderThread["id"],
-): boolean {
+): "rejected_input" | "not_eligible" | null {
   const run = latestExecutedRun(
     projection.runs.filter((candidate) => candidate.providerThreadId === providerThreadId),
   );
-  return (
-    latestRootProviderFailure(run, projection.turnItems)?.code ===
-    CODEX_SHARING_UNSUPPORTED_CAPABILITY_CODE
-  );
+  const failure = latestRootProviderFailure(run, projection.turnItems);
+  if (failure?.code === CODEX_SHARING_UNSUPPORTED_CAPABILITY_CODE) return "rejected_input";
+  return failure !== null && isCodexSharingEligibilityFailure(failure.code, failure.message)
+    ? "not_eligible"
+    : null;
 }
 
 const REJECTED_SHARING_INPUT_DETAIL = `ChatGPT sharing rejected this session's input. ${CODEX_SHARING_CONTINUATION_HINT}`;
@@ -1709,21 +1711,30 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                 run.completedAt !== null &&
                 nowMs - DateTime.toEpochMillis(run.completedAt) < 30 * 60_000,
             )
-            .map((run) => ({
-              instanceId: run.providerInstanceId,
-              model: run.modelSelection.model,
-              failed: run.status === "failed",
-              blocked:
-                run.status === "failed" &&
-                nowMs - DateTime.toEpochMillis(run.completedAt!) < 5 * 60_000,
-              ...(run.startedAt && run.completedAt
-                ? {
-                    latencyMs:
-                      DateTime.toEpochMillis(run.completedAt) -
-                      DateTime.toEpochMillis(run.startedAt),
-                  }
-                : {}),
-            })),
+            .map((run) => {
+              const failure =
+                run.status === "failed"
+                  ? latestRootProviderFailure(run, projection.turnItems)
+                  : null;
+              const blockedReason = failure === null ? undefined : autoRouteFailureReason(failure);
+              return {
+                instanceId: run.providerInstanceId,
+                model: run.modelSelection.model,
+                failed: run.status === "failed",
+                blocked:
+                  run.status === "failed" &&
+                  nowMs - DateTime.toEpochMillis(run.completedAt!) <
+                    (blockedReason === "sharing_forbidden" ? 30 : 5) * 60_000,
+                ...(blockedReason === undefined ? {} : { blockedReason }),
+                ...(run.startedAt && run.completedAt
+                  ? {
+                      latencyMs:
+                        DateTime.toEpochMillis(run.completedAt) -
+                        DateTime.toEpochMillis(run.startedAt),
+                    }
+                  : {}),
+              };
+            }),
         })
       : null;
     if (!route)
@@ -2554,7 +2565,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     return true;
   });
 
-  const startNextQueuedRun = Effect.fn("Orchestrator.startNextQueuedRun")(
+  const promoteQueuedRun = Effect.fn("Orchestrator.promoteQueuedRun")(
     function* (
       threadId: ThreadId,
       options?: {
@@ -2677,35 +2688,57 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                 (run) => run.providerInstanceId === queuedRun.providerInstanceId,
               ),
             );
+      const lastQueuedProviderFailure = latestRootProviderFailure(
+        lastRunOnQueuedProvider,
+        projection.turnItems,
+      );
       const sharingFailureHoldsQueue =
-        queuedRun.freshContext !== true &&
-        latestRootProviderFailure(lastRunOnQueuedProvider, projection.turnItems)?.code ===
-          CODEX_SHARING_UNSUPPORTED_CAPABILITY_CODE;
+        lastQueuedProviderFailure !== null &&
+        (isCodexSharingEligibilityFailure(
+          lastQueuedProviderFailure.code,
+          lastQueuedProviderFailure.message,
+        ) ||
+          (queuedRun.freshContext !== true &&
+            lastQueuedProviderFailure.code === CODEX_SHARING_UNSUPPORTED_CAPABILITY_CODE));
       const worktreeMissing =
         endedRunId !== undefined &&
         failedRun?.id === endedRunId &&
         failedRun?.workspacePreparation?.type === "worktree" &&
         projection.thread.worktreePath === null;
-      const projectOverride =
+      const projectInstanceOverride =
         settings.projectSettingsOverrides[projection.thread.projectId]?.providerInstances?.[
           queuedRun.providerInstanceId
         ]?.enabled;
-      const machineInstance = Object.hasOwn(
-        settings.providerInstances,
-        queuedRun.providerInstanceId,
-      )
-        ? settings.providerInstances[queuedRun.providerInstanceId]
-        : undefined;
       const instanceDisabledForProject =
-        projectOverride !== undefined
-          ? !projectOverride
-          : machineInstance !== undefined && !resolveProviderInstanceEnabled(machineInstance);
+        (automatic ||
+          projectInstanceOverride !== undefined ||
+          Object.hasOwn(settings.providerInstances, queuedRun.providerInstanceId)) &&
+        !resolveProjectProviderInstanceEnabled(
+          settings,
+          projection.thread.projectId,
+          queuedRun.providerInstanceId,
+        );
+      if (sharingFailureHoldsQueue && !worktreeMissing) {
+        yield* writeSystemEvents([
+          {
+            type: "run.updated",
+            threadId,
+            runId: storedQueuedRun.id,
+            providerInstanceId: storedQueuedRun.providerInstanceId,
+            occurredAt: yield* DateTime.now,
+            payload: { ...storedQueuedRun, queueHeld: true },
+          },
+        ]);
+        return options?.queuedRunId === undefined ? ("next" as const) : undefined;
+      }
       if (
         worktreeMissing ||
         instanceDisabledForProject ||
-        sharingFailureHoldsQueue ||
         (failureClass !== undefined &&
           failureClass !== "validation_error" &&
+          !(
+            queuedRun.freshContext && failure?.code === CODEX_SHARING_UNSUPPORTED_CAPABILITY_CODE
+          ) &&
           failedRun?.providerInstanceId === queuedRun.providerInstanceId)
       ) {
         const now = yield* DateTime.now;
@@ -2801,7 +2834,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       // A run queued before a fresh run started is bound to the conversation that run left behind.
       const followsLatestContext =
         !freshContext &&
-        (followsCurrent || providerThreadPredatesBoundary(storedProviderThread, contextBoundary));
+        (followsCurrent ||
+          storedProviderThread.providerInstanceId !== queuedRun.providerInstanceId ||
+          providerThreadPredatesBoundary(storedProviderThread, contextBoundary));
       const targetProviderThread = followsLatestContext
         ? activeProviderThread?.providerInstanceId === queuedRun.providerInstanceId &&
           !providerThreadPredatesBoundary(activeProviderThread, contextBoundary)
@@ -2925,7 +2960,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         switchPlan.transition.type === "restart_and_resume" &&
         activeProviderThread !== undefined &&
         activeProviderThread.nativeThreadRef !== null &&
-        !providerThreadHasRejectedSharingInput(projection, activeProviderThread.id);
+        providerThreadSharingFailure(projection, activeProviderThread.id) === null;
       const deliveryProviderThread = canResumeAcrossInstances
         ? {
             ...queuedProviderThread,
@@ -3488,6 +3523,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         Effect.catch((cause) => failQueuedRunStart(threadId, cause, options?.queuedRunId)),
       ),
   );
+
+  const startNextQueuedRun = Effect.fn("Orchestrator.startNextQueuedRun")(function* (
+    ...args: Parameters<typeof promoteQueuedRun>
+  ) {
+    while ((yield* promoteQueuedRun(...args)) === "next") {
+      // A pinned message was held. A later queued message may already name a supported route.
+    }
+  });
 
   // Under load a resumed provider can time out before taking the prompt; the restart still owes the turn.
   const retryContinuationStart = Effect.fn("Orchestrator.retryContinuationStart")(function* (
@@ -7674,7 +7717,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       goalCommand === null &&
       activeProviderThread !== undefined &&
       activeProviderThread.providerInstanceId === modelSelection.instanceId &&
-      providerThreadHasRejectedSharingInput(projection, activeProviderThread.id)
+      providerThreadSharingFailure(projection, activeProviderThread.id) === "rejected_input"
     ) {
       return yield* new OrchestratorDispatchError({
         commandId: command.commandId,
@@ -7726,6 +7769,24 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         : [];
     const releasedAt = yield* DateTime.now;
     for (const held of heldRunsToRelease) {
+      const queuedMessage = projection.messages.find(
+        (message) => message.id === held.userMessageId,
+      );
+      const moveToSelectedRoute =
+        command.modelSelection !== undefined &&
+        !routing.automatic &&
+        !shouldQueue &&
+        held.freshContext !== true &&
+        queuedMessage?.createdBy === "user" &&
+        queuedMessage.scheduledTaskId === undefined &&
+        held.providerThreadId !== null &&
+        held.providerInstanceId !== modelSelection.instanceId &&
+        providerThreadSharingFailure(projection, held.providerThreadId) !== null &&
+        projection.providerThreads.some(
+          (thread) =>
+            thread.id === held.providerThreadId &&
+            thread.providerInstanceId === held.providerInstanceId,
+        );
       yield* emit(
         events,
         command,
@@ -7733,9 +7794,17 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         type: "run.updated",
         threadId: command.threadId,
         runId: held.id,
-        providerInstanceId: held.providerInstanceId,
+        providerInstanceId: moveToSelectedRoute
+          ? modelSelection.instanceId
+          : held.providerInstanceId,
         occurredAt: releasedAt,
-        payload: { ...held, queueHeld: false },
+        payload: {
+          ...held,
+          queueHeld: false,
+          ...(moveToSelectedRoute
+            ? { modelSelection, providerInstanceId: modelSelection.instanceId }
+            : {}),
+        },
       });
     }
     if (shouldQueue) {
@@ -8181,7 +8250,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       !freshContext &&
       isProviderSwitch &&
       activeProviderThread.nativeThreadRef !== null &&
-      !providerThreadHasRejectedSharingInput(projection, activeProviderThread.id) &&
+      providerThreadSharingFailure(projection, activeProviderThread.id) === null &&
       providerSwitchPlan?.transition.type === "restart_and_resume";
     const releasableSessions = uniqueSessions([
       ...projection.providerSessions.filter(
@@ -8694,7 +8763,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       !freshContext &&
       goalCommand === null &&
       targetProviderThread !== undefined &&
-      providerThreadHasRejectedSharingInput(projection, targetProviderThread.id)
+      providerThreadSharingFailure(projection, targetProviderThread.id) === "rejected_input"
     ) {
       return yield* new OrchestratorDispatchError({
         commandId: command.commandId,

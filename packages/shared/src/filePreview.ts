@@ -76,10 +76,10 @@ export function filePreviewKind(
     if (media?.startsWith("video/")) return "video";
     if (audioMimeTypeFromExtension(extension) !== null) return "audio";
     if (
-      /^\.(txt|log|json|jsonc|jsonl|ndjson|yaml|yml|toml|ini|conf|config|env|csv|tsv|xml|css|scss|sass|less|js|jsx|mjs|cjs|ts|tsx|mts|cts|py|pyi|rb|go|rs|swift|kt|kts|java|c|h|cc|cpp|hpp|cs|php|sh|bash|zsh|fish|sql|graphql|gql|vue|svelte|r|lua|ex|exs|erl|hs|clj|dart|diff|patch|lock|properties|gradle)$/.test(
+      /^\.(txt|log|json|jsonc|jsonl|ndjson|yaml|yml|toml|ini|conf|config|env|csv|tsv|xml|css|scss|sass|less|js|jsx|mjs|cjs|ts|tsx|mts|cts|py|pyi|rb|go|rs|swift|kt|kts|java|c|h|cc|cpp|hpp|cs|php|sh|bash|zsh|fish|sql|graphql|gql|vue|svelte|r|lua|ex|exs|erl|hs|clj|dart|diff|patch|lock|properties|gradle|ps1|psm1|psd1|bat|cmd|cmake|srt|vtt|tex|bib|ics|eml)$/.test(
         extension,
       ) ||
-      /^(dockerfile|makefile|gemfile|rakefile|license|readme|\.gitignore|\.gitattributes|\.editorconfig|\.env)(\.|$)/i.test(
+      /^(dockerfile|makefile|cmakelists|gemfile|rakefile|license|readme|\.gitignore|\.gitattributes|\.editorconfig|\.env)(\.|$)/i.test(
         name.split(/[\\/]/).at(-1) ?? "",
       )
     )
@@ -170,17 +170,25 @@ export function officePreviewKind(file: {
 
 export function decodeFilePreviewText(bytes: Uint8Array, truncated = false) {
   const bounded = bytes.subarray(0, FILE_TEXT_PREVIEW_MAX_BYTES);
-  if (bounded.some((byte) => byte === 0))
+  const encoding =
+    bounded[0] === 0xff && bounded[1] === 0xfe
+      ? "utf-16le"
+      : bounded[0] === 0xfe && bounded[1] === 0xff
+        ? "utf-16be"
+        : "utf-8";
+  if (encoding === "utf-8" && bounded.some((byte) => byte === 0))
     throw new Error("This file contains binary data and cannot be shown as text.");
-  const decoder = new TextDecoder("utf-8", { fatal: true });
+  const decoder = new TextDecoder(encoding, { fatal: true });
+  const partial = truncated || bytes.length > bounded.length;
+  let text: string;
   try {
-    return {
-      text: decoder.decode(bounded, { stream: truncated || bytes.length > bounded.length }),
-      truncated: truncated || bytes.length > bounded.length,
-    };
+    text = decoder.decode(bounded, { stream: partial });
   } catch {
-    throw new Error("This file is not UTF-8 text. Open it in another app to view its contents.");
+    throw new Error("This file is not valid UTF-8 or UTF-16 text.");
   }
+  if (text.includes("\0"))
+    throw new Error("This file contains binary data and cannot be shown as text.");
+  return { text, truncated: partial };
 }
 
 export const WORKSPACE_BROWSER_PREVIEW_EXTENSIONS = [".htm", ".html", ".pdf"] as const;

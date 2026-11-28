@@ -11,7 +11,11 @@ import {
 import { useState } from "react";
 import { flushSync } from "react-dom";
 import { isSmartModel } from "@t3tools/shared/smartModelRouting";
-import { refreshUsageLimits } from "@t3tools/client-runtime/state/usage";
+import {
+  CODEX_LIMITS_REFRESH_INTERVAL_MS,
+  canRefreshCodexLimits,
+  refreshUsageLimits,
+} from "@t3tools/client-runtime/state/usage";
 import { environmentPresentations } from "../../state/presentation";
 import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
@@ -23,6 +27,7 @@ import { CodexUsageSignInDialog } from "../settings/CodexUsageSignInDialog";
 import { ChatGptUsageButton } from "../settings/ChatGptUsageButton";
 import { SidebarMenuButton, SidebarMenuItem } from "../ui/sidebar";
 import { useNowMinute } from "../../hooks/useNowMinute";
+import { useLiveRefresh } from "../../hooks/useLiveRefresh";
 import { useThreadRouteTarget } from "../../hooks/useThreadRouteTarget";
 import { useQuietThreadShell, useThreadProjection } from "../../state/entities";
 import { useComposerDraftModelState, useComposerDraftStore } from "../../composerDraftStore";
@@ -124,16 +129,36 @@ export function QuickUsageLimits({ onOpenUsage }: { readonly onOpenUsage: () => 
   const refreshProviders = useAtomCommand(serverEnvironment.refreshProviders, {
     reportFailure: false,
   });
-  const refresh = (open: boolean) => {
-    setOpen(open);
-    if (!open || !environmentId || !source) return;
-    setOpenedAt(() => Date.now());
-    if (presentations.get(environmentId)?.connection.phase !== "connected") return;
+  const canRefresh =
+    !!environmentId &&
+    !!source &&
+    presentations.get(environmentId)?.connection.phase === "connected";
+  const liveCodex = canRefreshCodexLimits(source);
+  const refreshCurrentLimits = () => {
+    if (!canRefresh || !environmentId || !source) return;
     void refreshUsageLimits(
       environmentId,
       () => refreshProviders({ environmentId, input: { instanceId: source.instanceId } }),
       true,
+      liveCodex ? source.instanceId : undefined,
     ).catch(() => {});
+  };
+  useLiveRefresh(
+    () => {
+      if (document.visibilityState === "visible") refreshCurrentLimits();
+    },
+    {
+      enabled: canRefresh && liveCodex,
+      key: JSON.stringify(["quick-codex-limits", environmentId, source?.instanceId]),
+      intervalMs: CODEX_LIMITS_REFRESH_INTERVAL_MS,
+      refreshOnShow: true,
+    },
+  );
+  const refresh = (open: boolean) => {
+    setOpen(open);
+    if (!open) return;
+    setOpenedAt(() => Date.now());
+    refreshCurrentLimits();
   };
   return (
     <SidebarMenuItem className="shrink-0">

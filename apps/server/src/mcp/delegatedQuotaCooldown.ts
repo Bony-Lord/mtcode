@@ -1,10 +1,12 @@
 import type {
+  ModelSelection,
   OrchestrationV2Subagent,
   ProviderInstanceId,
   ServerProvider,
 } from "@t3tools/contracts";
 import {
   DELEGATED_QUOTA_COOLDOWN_MS,
+  DELEGATED_QUOTA_HISTORY_MS,
   gatewayPool,
   QUOTA_FAILURE,
   type DelegatedQuotaEstimate,
@@ -42,6 +44,35 @@ export function delegatedQuotaCooldown(
     }
   }
   return blocked;
+}
+
+/** Recent helper selections, most recent first, so automatic routing can rotate equal candidates. */
+export function recentlyUsedDelegatedSelections(
+  tasks: readonly OrchestrationV2Subagent[],
+  now: number,
+): ReadonlyArray<ModelSelection> {
+  const seen = new Set<string>();
+  const selections: Array<ModelSelection> = [];
+  for (const task of [...tasks].toSorted(
+    (left, right) =>
+      DateTime.toEpochMillis(right.completedAt ?? right.updatedAt) -
+      DateTime.toEpochMillis(left.completedAt ?? left.updatedAt),
+  )) {
+    if (task.origin !== "app_owned") continue;
+    const at = DateTime.toEpochMillis(task.completedAt ?? task.updatedAt);
+    if (at > now || now - at >= DELEGATED_QUOTA_HISTORY_MS) continue;
+    const selection: ModelSelection | undefined =
+      task.modelSelection ??
+      (task.model === null || task.providerInstanceId === null
+        ? undefined
+        : { instanceId: task.providerInstanceId, model: task.model });
+    if (selection === undefined) continue;
+    const key = `${selection.instanceId}\u0000${selection.model}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    selections.push(selection);
+  }
+  return selections;
 }
 
 export function delegatedQuotaAllows(input: {

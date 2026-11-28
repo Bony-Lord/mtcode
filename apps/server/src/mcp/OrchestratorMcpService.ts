@@ -2,7 +2,11 @@ import { isSmartModel, selectSmartModel } from "@t3tools/shared/smartModelRoutin
 import { accountUsageBudgetBlock, exhaustedAccountUsageWindow } from "@t3tools/shared/usageLimits";
 import { AUTO_ESCALATION_PREFIX, resolveAgentWorkModes } from "@t3tools/shared/agentWorkProfiles";
 import { DELEGATED_QUOTA_HISTORY_MS, estimateDelegatedQuota } from "@t3tools/shared/delegatedQuota";
-import { delegatedQuotaAllows, delegatedQuotaCooldown } from "./delegatedQuotaCooldown.ts";
+import {
+  delegatedQuotaAllows,
+  delegatedQuotaCooldown,
+  recentlyUsedDelegatedSelections,
+} from "./delegatedQuotaCooldown.ts";
 import {
   CommandId,
   type RunId,
@@ -66,6 +70,7 @@ import {
   scheduledTaskThreadMode,
   type ServerProvider,
   type ServerProviderModel,
+  type ServerSettings as ServerSettingsData,
   ThreadId,
   isOrchestrationV2WorkActive,
   latestProviderTurnForAttempt,
@@ -438,6 +443,25 @@ function providerConstraints(
   }
   if (provider.auth.status === "unauthenticated") {
     constraints.push("Provider is not authenticated.");
+  }
+  return constraints;
+}
+
+/** A route advertised to helpers must be one `delegate_task` accepts for the same caller. */
+function delegationPolicyConstraints(
+  provider: ServerProvider,
+  settings: ServerSettingsData,
+  projectId: ProjectId | undefined,
+): ReadonlyArray<string> {
+  const constraints: Array<string> = [];
+  if (settings.providerInstances[provider.instanceId]?.accountTier === "paid-api") {
+    constraints.push("Provider instance uses paid API billing.");
+  }
+  if (
+    projectId !== undefined &&
+    !resolveProjectProviderInstanceEnabled(settings, projectId, provider.instanceId)
+  ) {
+    constraints.push("Provider instance is disabled.");
   }
   return constraints;
 }
@@ -1531,6 +1555,7 @@ const make = Effect.gen(function* () {
     readonly parent: Pick<OrchestrationV2ThreadProjection, "thread">;
     readonly target: OrchestratorMcpTarget | undefined;
     readonly providers: ReadonlyArray<ServerProvider>;
+    readonly settings: ServerSettingsData;
     /** Receipt replays bypass current settings because they start no work. Dispatch must reuse the checked command ID. */
     readonly skipProjectEnablementFilter?: boolean;
     readonly quotaBlockedInstances?: ReadonlySet<ProviderInstanceId>;
@@ -1553,6 +1578,10 @@ const make = Effect.gen(function* () {
       !input.skipProjectEnablementFilter &&
       (input.quotaBlockedInstances?.has(provider.instanceId) ||
         exhaustedAccountUsageWindow(provider, input.providers, now, model) !== undefined);
+    const policyConstraints = (provider: ServerProvider) =>
+      input.skipProjectEnablementFilter
+        ? []
+        : delegationPolicyConstraints(provider, input.settings, input.parent.thread.projectId);
     const orchestrationCapableInstanceIds = yield* loadOrchestrationCapableInstanceIds();
     let instanceId = requestedInstanceId;
 
@@ -1572,6 +1601,7 @@ const make = Effect.gen(function* () {
         const model = modelFor(candidate);
         return (
           providerConstraints(candidate, true).length === 0 &&
+          policyConstraints(candidate).length === 0 &&
           model !== undefined &&
           (requestedModel === undefined ||
             isSmartModel(requestedModel) ||
@@ -1623,10 +1653,10 @@ const make = Effect.gen(function* () {
         `Provider instance ${instanceId} uses driver ${provider.driver}, not ${requestedDriver}.`,
       );
     }
-    const constraints = providerConstraints(
-      provider,
-      orchestrationCapableInstanceIds.has(provider.instanceId),
-    );
+    const constraints = [
+      ...providerConstraints(provider, orchestrationCapableInstanceIds.has(provider.instanceId)),
+      ...policyConstraints(provider),
+    ];
     if (constraints.length > 0) {
       return yield* failure(
         "provider_unavailable",
@@ -2592,6 +2622,15 @@ const make = Effect.gen(function* () {
       );
       const inherited = parent?.thread.modelSelection;
       const now = DateTime.toEpochMillis(yield* DateTime.now);
+      const quotaHistory =
+        parent === undefined
+          ? []
+          : (yield* loadThreadRecords(parent.thread.id, ["subagents"], {
+              quotaSubagentsSince: DateTime.formatIso(
+                DateTime.makeUnsafe(now - DELEGATED_QUOTA_HISTORY_MS),
+              ),
+            })).subagents;
+      const blocked = delegatedQuotaCooldown(quotaHistory, providers, now);
       const searchTerms = input.search?.toLowerCase().split(/\s+/).filter(Boolean) ?? [];
       return {
         parentThreadId: parent?.thread.id ?? null,
@@ -2607,27 +2646,32 @@ const make = Effect.gen(function* () {
           ) ?? [],
         runtimeMode: limits.runtimeMode,
         interactionMode: limits.interactionMode,
-        providers: providers.map((provider) => {
-          // Snapshots list instances any project enables; delegate_task checks the caller's project.
-          const enabledForCaller =
-            parent === undefined ||
-            resolveProjectProviderInstanceEnabled(
-              settings,
-              parent.thread.projectId,
-              provider.instanceId,
-            );
-          const availableModels = provider.models.filter(
-            (model) => !exhaustedAccountUsageWindow(provider, providers, now, model.slug),
-          );
+        providers: providers.flatMap((provider) => {
           const constraints = [
             ...providerConstraints(
-              enabledForCaller ? provider : { ...provider, enabled: false },
+              provider,
               orchestrationCapableInstanceIds.has(provider.instanceId),
             ),
-            ...(provider.models.length > 0 && availableModels.length === 0
-              ? ["All advertised models have reached their usage limits."]
-              : []),
+            ...delegationPolicyConstraints(provider, settings, parent?.thread.projectId),
           ];
+          const availableModels = provider.models.filter(
+            (model) =>
+              !blocked.has(provider.instanceId) &&
+              exhaustedAccountUsageWindow(provider, providers, now, model.slug) === undefined &&
+              delegatedQuotaAllows({
+                provider,
+                providers,
+                model: model.slug,
+                now,
+                estimate: estimateDelegatedQuota(quotaHistory, provider, model.slug, now, false),
+                sharedEstimate: estimateDelegatedQuota(quotaHistory, provider, model.slug, now, true),
+              }),
+          );
+          if (provider.models.length > 0 && availableModels.length === 0) {
+            constraints.push("No advertised model is available for a helper right now.");
+          }
+          // A hint that cannot be launched is worse than no hint: agents retry it or work around it.
+          if (constraints.length > 0) return [];
           const { listed, omitted } = listCapabilityModels({
             provider: { ...provider, models: availableModels },
             preferences: settings.providerModelPreferences?.[provider.instanceId],
@@ -2640,29 +2684,31 @@ const make = Effect.gen(function* () {
                   favorite.provider === provider.instanceId && favorite.model === model.slug,
               ),
           });
-          return {
-            providerInstanceId: provider.instanceId,
-            driverKind: provider.driver,
-            displayName: provider.displayName ?? null,
-            models: listed.map((model) => {
-              const options = model.capabilities?.optionDescriptors ?? [];
-              return {
-                id: model.slug,
-                ...(model.name.toLowerCase() === model.slug.toLowerCase()
-                  ? {}
-                  : { label: model.name }),
-                ...(options.length === 0 ? {} : { options: options.map(capabilityModelOption) }),
-              };
-            }),
-            ...(omitted === 0 ? {} : { omittedModels: omitted }),
-            ...(provider.supportedRuntimeModes === undefined ||
-            provider.supportedRuntimeModes.length === 0
-              ? {}
-              : { runtimeModes: [...provider.supportedRuntimeModes] }),
-            canRunChildTask: constraints.length === 0,
-            canRunCrossProviderChildTask: constraints.length === 0,
-            constraints: [...constraints],
-          };
+          return [
+            {
+              providerInstanceId: provider.instanceId,
+              driverKind: provider.driver,
+              displayName: provider.displayName ?? null,
+              models: listed.map((model) => {
+                const options = model.capabilities?.optionDescriptors ?? [];
+                return {
+                  id: model.slug,
+                  ...(model.name.toLowerCase() === model.slug.toLowerCase()
+                    ? {}
+                    : { label: model.name }),
+                  ...(options.length === 0 ? {} : { options: options.map(capabilityModelOption) }),
+                };
+              }),
+              ...(omitted === 0 ? {} : { omittedModels: omitted }),
+              ...(provider.supportedRuntimeModes === undefined ||
+              provider.supportedRuntimeModes.length === 0
+                ? {}
+                : { runtimeModes: [...provider.supportedRuntimeModes] }),
+              canRunChildTask: true,
+              canRunCrossProviderChildTask: true,
+              constraints: [],
+            },
+          ];
         }),
         features: {
           appOwnedSubagents: true,
@@ -2742,6 +2788,7 @@ const make = Effect.gen(function* () {
               ),
             })).subagents;
         const blocked = delegatedQuotaCooldown(quotaHistory, providers, now);
+        const recentHelpers = recentlyUsedDelegatedSelections(quotaHistory, now);
         let delegatedTarget = input.target;
         if (
           !isRetryOfAcceptedDelegation &&
@@ -2749,7 +2796,7 @@ const make = Effect.gen(function* () {
           modes.some((mode) => mode === "fast" || mode === "economy" || mode === "conductor")
         ) {
           const instanceIds = yield* loadOrchestrationCapableInstanceIds();
-          const routed = selectSmartModel({
+          const routingInput = {
             requested: { ...parent.thread.modelSelection, model: "mt-auto/economy" },
             providers: providers
               .filter(
@@ -2773,7 +2820,11 @@ const make = Effect.gen(function* () {
             projectId: parent.thread.projectId,
             text: input.task,
             now,
-          });
+          } as const;
+          // Rotate away from the last helper only while an alternative remains eligible.
+          const routed =
+            selectSmartModel({ ...routingInput, excludedSelections: recentHelpers }) ??
+            selectSmartModel(routingInput);
           if (!routed)
             return yield* failure(
               "provider_unavailable",
@@ -2789,6 +2840,7 @@ const make = Effect.gen(function* () {
           parent,
           target: delegatedTarget,
           providers,
+          settings,
           skipProjectEnablementFilter: isRetryOfAcceptedDelegation,
           quotaBlockedInstances: blocked,
         });
@@ -3135,6 +3187,9 @@ const make = Effect.gen(function* () {
         }
         const parentNodeId = parentRun.rootNodeId;
         const providers = yield* loadProviders;
+        const settings = yield* serverSettings.getSettings.pipe(
+          Effect.mapError(() => failure("orchestration_error", "Unable to read server settings.")),
+        );
         const key = yield* requestKey(input.clientRequestId);
         const created = yield* Effect.forEach(
           input.threads,
@@ -3167,6 +3222,7 @@ const make = Effect.gen(function* () {
                         providerInstanceId: committedThread.modelSelection.instanceId,
                       },
                 providers,
+                settings,
                 skipProjectEnablementFilter: isRetryOfAcceptedCreation,
               });
               const runtimeMode = yield* resolveRuntimeMode(

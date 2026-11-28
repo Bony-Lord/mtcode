@@ -43,6 +43,13 @@ const encodeServerSettings = Schema.encodeSync(ServerSettings);
 const encodeServerSettingsPatch = Schema.encodeSync(ServerSettingsPatch);
 const decodeClaudeSettings = Schema.decodeUnknownSync(ClaudeSettings);
 
+it("opens external web links privately by default and keeps an explicit opt-out", () => {
+  expect(decodeClientSettings({}).externalBrowserPrivate).toBe(true);
+  expect(decodeClientSettings({ externalBrowserPrivate: false }).externalBrowserPrivate).toBe(
+    false,
+  );
+});
+
 it("drops theme defaults from a client's settings patch", () => {
   expect(
     decodeClientServerSettingsPatch({
@@ -1159,6 +1166,21 @@ describe("ServerSettings project overrides across versions", () => {
 describe("resolveProjectProviderInstanceEnabled", () => {
   const projectId = "project-a" as ProjectId;
   const instanceId = ProviderInstanceId.make("codex_work");
+
+  it("honors a disabled override for the shared default Codex instance", () => {
+    const codex = ProviderInstanceId.make("codex");
+    const settings: ServerSettings = {
+      ...DEFAULT_SERVER_SETTINGS,
+      providerInstances: {
+        [codex]: { driver: ProviderDriverKind.make("codex"), config: {} },
+      },
+      projectSettingsOverrides: {
+        [projectId]: { providerInstances: { [codex]: { enabled: false } } },
+      },
+    };
+
+    expect(resolveProjectProviderInstanceEnabled(settings, projectId, codex)).toBe(false);
+  });
 
   it("lets a project disable an instance the machine enabled", () => {
     const settings: ServerSettings = {

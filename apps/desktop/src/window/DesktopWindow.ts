@@ -845,8 +845,8 @@ export const make = Effect.gen(function* () {
 
     // Website links and provider sign-in pages opened from the renderer follow
     // the external-browser preference; a private request never falls back.
-    const openExternalLink = (url: string) =>
-      Effect.gen(function* () {
+    const openExternalLink = Effect.fn("desktop.window.openExternalLink")(
+      function* (url: string) {
         const settings = Option.getOrElse(yield* clientSettings.get, () => DEFAULT_CLIENT_SETTINGS);
         return yield* Effect.promise(() =>
           openExternalBrowser(
@@ -855,7 +855,8 @@ export const make = Effect.gen(function* () {
             (target) => runPromise(electronShell.openExternal(target)),
           ),
         );
-      });
+      },
+    );
 
     window.webContents.setWindowOpenHandler(({ url }) => {
       if (Option.isSome(ElectronShell.parseSafeExternalUrl(url))) {
@@ -966,6 +967,7 @@ export const make = Effect.gen(function* () {
 
     let developmentLoadRetryIndex = 0;
     let developmentLoadRetryFiber: Fiber.Fiber<void, never> | undefined;
+    let initialRendererLoaded = false;
     let rendererRecoveryTimestamps: number[] = [];
     const clearDevelopmentLoadRetry = () => {
       if (developmentLoadRetryFiber === undefined) {
@@ -1025,6 +1027,7 @@ export const make = Effect.gen(function* () {
       }
       clearDevelopmentLoadRetry();
       developmentLoadRetryIndex = 0;
+      initialRendererLoaded = true;
       // Deep links (SSO callbacks) are one-shot. After they land, later
       // recovery must reload the app home rather than replaying the callback.
       currentLoadUrl = applicationUrl;
@@ -1037,7 +1040,10 @@ export const make = Effect.gen(function* () {
           return;
         }
         const retryInMs =
-          environment.isDevelopment &&
+          (environment.isDevelopment ||
+            (environment.platform === "win32" &&
+              !initialRendererLoaded &&
+              developmentLoadRetryIndex < DEVELOPMENT_LOAD_RETRY_DELAYS_MS.length)) &&
           isRetryableDevelopmentRendererLoadFailure({
             applicationUrl,
             errorCode,
@@ -1093,9 +1099,6 @@ export const make = Effect.gen(function* () {
     const revealSubscribers: RevealSubscription[] = [(fire) => window.once("ready-to-show", fire)];
     if (environment.platform === "linux" || environment.platform === "win32") {
       revealSubscribers.push((fire) => window.webContents.once("did-finish-load", fire));
-    }
-    if (environment.platform === "win32") {
-      revealSubscribers.push((fire) => window.webContents.once("dom-ready", fire));
     }
     let rendererReady = false;
     let firstRevealComplete = false;

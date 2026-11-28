@@ -38,10 +38,15 @@ export const ProviderAdapterRegistryV2Error = Schema.Union([
 ]);
 export type ProviderAdapterRegistryV2Error = typeof ProviderAdapterRegistryV2Error.Type;
 
+type RegisteredAdapter = ProviderAdapter.ProviderAdapterV2["Service"] & {
+  /** Stable across lookups until the configured Codex adapter is rebuilt. */
+  readonly runtimeIdentity?: object;
+};
+
 export interface ProviderAdapterRegistryV2Shape {
   readonly get: (
     instanceId: ProviderInstanceId,
-  ) => Effect.Effect<ProviderAdapter.ProviderAdapterV2["Service"], ProviderAdapterRegistryV2Error>;
+  ) => Effect.Effect<RegisteredAdapter, ProviderAdapterRegistryV2Error>;
   readonly list: () => Effect.Effect<ReadonlyArray<ProviderInstanceId>>;
   readonly getMetadata?: (instanceId: ProviderInstanceId) => Effect.Effect<
     {
@@ -74,10 +79,12 @@ export const layerFromProviderInstanceRegistry: Layer.Layer<
             if (instance === undefined)
               return new ProviderAdapterRegistryLookupError({ instanceId });
             const adapter = instance.orchestrationAdapter;
+            const registered: RegisteredAdapter =
+              instance.driverKind === "codex" ? { ...adapter, runtimeIdentity: adapter } : adapter;
             const auth = instance.auth;
-            if (!auth) return Effect.succeed(adapter);
+            if (!auth) return Effect.succeed(registered);
             return Effect.succeed({
-              ...adapter,
+              ...registered,
               openSession: (input) => {
                 const open = Effect.gen(function* () {
                   const binding = auth.credentialBinding;
@@ -122,7 +129,7 @@ export const layerFromProviderInstanceRegistry: Layer.Layer<
                   ),
                 );
               },
-            } satisfies ProviderAdapter.ProviderAdapterV2["Service"]);
+            } satisfies RegisteredAdapter);
           }),
         );
       }),

@@ -2,6 +2,9 @@ import { SettingsGroup } from "./SettingsGroup";
 import { RefreshIcon } from "~/components/ui/refresh-icon";
 import { CodexUsageSignInDialog } from "./CodexUsageSignInDialog";
 import { freeAccountUpdates } from "@t3tools/shared/providerAccountControl";
+import { scopeProjectRef } from "@t3tools/client-runtime/environment";
+import { useNewThreadHandler } from "../../hooks/useHandleNewThread";
+import { readProjects } from "../../state/entities";
 import {
   AuthSettingsWriteScope,
   AuthProvidersManageScope,
@@ -672,6 +675,12 @@ function AccessGatedProviderSettings({
 }
 
 const NO_PROJECT_IDS: readonly ProjectId[] = [];
+const FREE_HELPER_SETUP_PROMPT =
+  "Помоги настроить в MT Code несколько бесплатных моделей для вспомогательных задач. " +
+  "Сначала проверь текущие провайдеры и доступные модели через API MT Code. " +
+  "Предложи бесплатные и локальные варианты без платных API, покупки кредитов и ключей в чате. " +
+  "Покажи план установки и настройки, сохрани выбранную основную модель и настройки проектов. " +
+  "После подключения проверь, какие модели действительно отвечают, и назначь рабочим моделям роль помощников.";
 const NO_FAVORITES: UnifiedSettings["favorites"] = [];
 
 export function EnvironmentProviderSettings({
@@ -710,6 +719,11 @@ export function EnvironmentProviderSettings({
   const toggleModelFavorite = useToggleEnvironmentModelFavorite(environmentId);
   const persistProviderInstance = usePersistEnvironmentProviderInstanceMutation(environmentId);
   const serverProviders = useAtomValue(providersIgnoringCheckedAtAtom(environmentId));
+  const openSetupDraft = useNewThreadHandler();
+  const hasReadyModel = serverProviders.some(
+    (provider) => provider.enabled && provider.status === "ready" &&
+      provider.auth.status === "authenticated" && provider.models.some((model) => !model.isLegacy),
+  );
   // Hide overrides on older servers that silently ignore providerInstances patches.
   const supportsProjectProviderOverrides = useAtomValue(
     serverEnvironment.configValueAtom(environmentId),
@@ -1592,6 +1606,32 @@ export function EnvironmentProviderSettings({
           </div>
         </SettingsGroup>
       </SettingsSection>
+
+      {isLocalGatewayEnvironment && hasReadyModel && !readOnly ? (
+        <SettingsSection title="Бесплатные помощники">
+          <SettingsRow
+            title="Подключить дополнительные модели"
+            description="Откройте черновик с запросом на настройку бесплатных и локальных моделей для вспомогательных задач."
+            control={
+              <Button size="sm" variant="outline" onClick={() => {
+                const projects = readProjects();
+                const project = projects.find((candidate) => candidate.environmentId === environmentId &&
+                  candidate.archivedAt == null && projectIds.includes(candidate.id)) ??
+                  projects.find((candidate) => candidate.environmentId === environmentId && candidate.archivedAt == null);
+                if (!project) {
+                  toastManager.add({ type: "info", title: "Добавьте проект, чтобы открыть черновик." });
+                  return;
+                }
+                void openSetupDraft(scopeProjectRef(environmentId, project.id), { prompt: FREE_HELPER_SETUP_PROMPT, envMode: "local" }).catch(() => {
+                  toastManager.add({ type: "error", title: "Не удалось открыть черновик настройки." });
+                });
+              }}>
+                Открыть черновик
+              </Button>
+            }
+          />
+        </SettingsSection>
+      ) : null}
 
       {isLocalGatewayEnvironment ? (
         <LocalGatewaySettings

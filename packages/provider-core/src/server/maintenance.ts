@@ -5,6 +5,10 @@ export interface ProviderMaintenanceCapabilities {
   readonly provider: ProviderDriverKind;
   readonly packageName: string | null;
   readonly update: ProviderMaintenanceCommandAction | null;
+  readonly managedUpdate?: {
+    readonly lockKey: string;
+    readonly run: Effect.Effect<void, Error>;
+  };
   /** undefined defers to npm; null means the installer could not determine the latest version. */
   readonly latestVersion?: string | null;
   /**

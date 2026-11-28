@@ -1078,6 +1078,11 @@ export const layer: Layer.Layer<
             type: "provider_resume_fallback",
           });
           const createdAt = yield* DateTime.now;
+          const priorRunIds = new Set(
+            projection.runs
+              .filter((source) => source.ordinal < run.ordinal)
+              .map((source) => source.id),
+          );
           const handoff = yield* contextHandoffService.prepareProviderHandoff({
             threadId: projection.thread.id,
             targetRunId: run.id,
@@ -1090,11 +1095,7 @@ export const layer: Layer.Layer<
             strategy: "full_thread_summary",
             runs: projection.runs,
             items: (yield* projectionStore.getTurnStartHistory(input.threadId)).filter(
-              (item) =>
-                item.runId === null ||
-                projection.runs.some(
-                  (source) => source.id === item.runId && source.ordinal < run.ordinal,
-                ),
+              (item) => item.runId === null || priorRunIds.has(item.runId),
             ),
             createdAt,
           });
@@ -1395,15 +1396,6 @@ export const layer: Layer.Layer<
         resumedHandoffContext = undefined;
         resumedRetryHandoff = [];
         if (!(yield* isCurrentAttemptInStatus("starting"))) return undefined;
-        // Another client is still writing to the native thread. A fresh
-        // session here would silently split the conversation from it.
-        if (
-          resumed._tag === "Failure" &&
-          resumed.failure._tag === "ProviderAdapterThreadInUseError"
-        ) {
-          return yield* loadFromProvider(Effect.fail(resumed.failure));
-        }
-
         yield* Effect.logWarning("Recovering provider context in a fresh native session", {
           driver: session.driver,
           providerThreadId: providerThread.id,
@@ -1412,7 +1404,9 @@ export const layer: Layer.Layer<
             ? "uncertain_history_delivery"
             : resumed._tag === "Success"
               ? "handoff_budget_exhausted"
-              : "resume_failed",
+              : resumed.failure._tag === "ProviderAdapterThreadInUseError"
+                ? "external_writer"
+                : "resume_failed",
           errorTag: resumed._tag === "Failure" ? resumed.failure._tag : "ContextHandoffBudgetError",
         });
         const replacement = yield* loadFromProvider(

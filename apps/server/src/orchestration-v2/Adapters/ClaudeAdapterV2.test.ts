@@ -4944,8 +4944,6 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         yield* start("/unrestricted");
         assert.equal(harness.getOpenedOptions()?.permissionMode, "bypassPermissions");
         assert.equal(harness.getOpenedOptions()?.allowDangerouslySkipPermissions, true);
-        // Forwarded asks (including ask rules and settings fallback) still need a decision
-        // before queued init/status frames arrive.
         for (const { phase, frame } of [
           {
             phase: "init",
@@ -4990,16 +4988,11 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           );
           assert.equal(
             forwardedFirst.type,
-            "request",
-            `CLI-forwarded Bash must ask before the queued ${phase} frame reaches the adapter`,
+            "decision",
+            `Full access answers CLI-forwarded Bash before the queued ${phase} frame`,
           );
-          if (forwardedFirst.type !== "request") return;
-          assert.equal(forwardedFirst.event.runtimeRequest.kind, "command");
-          yield* harness.runtime.respondToRuntimeRequest({
-            requestId: forwardedFirst.event.runtimeRequest.id,
-            decision: "decline",
-          });
-          assert.equal((yield* Fiber.join(forwardedDecision))?.behavior, "deny");
+          if (forwardedFirst.type !== "decision") return;
+          assert.equal(forwardedFirst.result?.behavior, "allow");
           yield* harness.offerAndWait(frame);
         }
         const fallbackDecision = yield* Effect.promise(() =>
@@ -7138,6 +7131,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
 
     const startElicitationTurn = Effect.fnUntraced(function* (
       options?: Parameters<typeof makeWakeHarnessWithOptions>[0],
+      runtimeMode: "approval-required" | "full-access" = "approval-required",
     ) {
       const harness = yield* makeWakeHarnessWithOptions(options);
       yield* harness.runtime.startTurn(
@@ -7148,6 +7142,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           attemptId: RunAttemptId.make("attempt-claude-elicitation"),
           text: "Deploy web.",
           attachments: [],
+          runtimePolicy: { ...CLAUDE_TEST_RUNTIME_POLICY, runtimeMode },
         }),
       );
       const onElicitation = harness.getOpenedOptions()?.onElicitation;
@@ -7168,6 +7163,15 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       });
       return { harness, elicit, awaitCard, runtimeRequests };
     });
+
+    it.effect("answers approval-only MCP forms automatically in Full access", () =>
+      Effect.gen(function* () {
+        const { elicit, runtimeRequests } = yield* startElicitationTurn(undefined, "full-access");
+        const answer = yield* elicit(approvalOnly);
+        assert.deepEqual(yield* Fiber.join(answer), { action: "accept", content: {} });
+        assert.isEmpty(runtimeRequests());
+      }).pipe(Effect.scoped, Effect.provide(testLayer)),
+    );
 
     it.effect("shows an approval-only form and accepts only after Approve", () =>
       Effect.gen(function* () {

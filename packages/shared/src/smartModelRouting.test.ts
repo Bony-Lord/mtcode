@@ -7,6 +7,48 @@ import {
 } from "@t3tools/contracts";
 import { expect, it } from "vite-plus/test";
 import { routingTask, routingTaskText, selectSmartModel } from "./smartModelRouting.ts";
+import { autoRouteFailureReason } from "./orchestrationV2ThreadError.ts";
+
+it("distinguishes sharing, quota and transient transport failures", () => {
+  const failure = { message: "failed", retryable: null };
+  expect(
+    autoRouteFailureReason({
+      ...failure,
+      class: "transport_error",
+      code: "httpConnectionFailed",
+      message:
+        "unexpected status 403 Forbidden: The ChatGPT user is not eligible for subscription sharing.",
+    }),
+  ).toBe("sharing_forbidden");
+  expect(
+    autoRouteFailureReason({
+      ...failure,
+      class: "transport_error",
+      code: "responseStreamDisconnected",
+      message: "Selected model is at capacity. Please try a different model.",
+    }),
+  ).toBe("model_capacity");
+  expect(
+    autoRouteFailureReason({
+      ...failure,
+      class: "provider_error",
+      code: "subscription_sharing_unsupported_capability",
+    }),
+  ).toBe("sharing_forbidden");
+  expect(
+    autoRouteFailureReason({
+      ...failure,
+      class: "usage_limit",
+      code: "subscription_sharing_usage_limit_exceeded",
+    }),
+  ).toBe("usage_limit");
+  expect(autoRouteFailureReason({ ...failure, class: "usage_limit", code: "free_limit" })).toBe(
+    "free_limit",
+  );
+  expect(autoRouteFailureReason({ ...failure, class: "transport_error", code: "eof" })).toBe(
+    "transient_eof",
+  );
+});
 
 const provider = (id: string, driver: string, models: string[]): ServerProvider => ({
   instanceId: ProviderInstanceId.make(id),
@@ -149,13 +191,31 @@ it("selects across all providers by task and preserves a healthy cached route wh
       ...input,
       providers: [{ ...providers[0]!, auth: { status: "unknown" } }, providers[1]!],
     })?.selection.instanceId,
-  ).toBe("free");
+  ).toBe("codex");
   expect(
     selectSmartModel({
       ...input,
       providers: [{ ...providers[0]!, auth: { status: "unauthenticated" } }, providers[1]!],
     })?.selection.instanceId,
   ).toBe("codex");
+});
+
+it("does not route to shared Codex when the project disables it", () => {
+  const result = selectSmartModel({
+    ...input,
+    text: "исправь ошибку в проекте Fortnite и добавь тест",
+    projectId: ProjectId.make("project"),
+    settings: {
+      ...input.settings,
+      projectSettingsOverrides: {
+        [ProjectId.make("project")]: {
+          providerInstances: { [ProviderInstanceId.make("codex")]: { enabled: false } },
+        },
+      },
+    },
+  });
+
+  expect(result?.selection.instanceId).not.toBe("codex");
 });
 
 it("uses only explicitly marked subscriptions in subscription-only mode", () => {
@@ -212,6 +272,34 @@ it("skips paid, disabled, exhausted and failed routes and honors actual quota re
         blocked: true,
       })),
     })?.selection.instanceId,
+  ).toBe("codex");
+  expect(
+    selectSmartModel({
+      ...input,
+      observations: [
+        {
+          instanceId: "free",
+          model: "ovh-free/gpt-oss-20b",
+          blocked: true,
+          blockedReason: "free_limit",
+        },
+      ],
+    })?.selection.instanceId,
+  ).toBe("codex");
+});
+
+it("honors a project provider override before choosing Auto", () => {
+  const fortniteProject = ProjectId.make("83b4a9a2-6f06-4dee-bf7d-55a408b523db");
+  const settings = {
+    ...input.settings,
+    projectSettingsOverrides: {
+      [fortniteProject]: {
+        providerInstances: { free: { enabled: false } },
+      },
+    },
+  };
+  expect(
+    selectSmartModel({ ...input, projectId: fortniteProject, settings })?.selection.instanceId,
   ).toBe("codex");
 });
 

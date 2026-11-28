@@ -2,6 +2,7 @@ import { buildCodexInitializeParams } from "../../provider/CodexProvider.ts";
 
 import { historyResponseItems } from "@t3tools/provider-core/server/handoffBudget";
 import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
+import { workProfileInstructions } from "@t3tools/shared/agentWorkProfiles";
 import {
   makeProviderTextDeltaCoalescer,
   type ProviderTextDeltaUpdate,
@@ -86,6 +87,22 @@ const replayTranscriptJson = Schema.fromJsonString(CodexReplay.CodexAppServerRep
 const encodeReplayTranscriptJson = Schema.encodeEffect(replayTranscriptJson);
 const decodeReplayTranscriptJson = Schema.decodeUnknownEffect(replayTranscriptJson);
 const encodeStringJson = Schema.encodeEffect(Schema.fromJsonString(Schema.String));
+
+const encodeReplayWorkspace = Effect.fn("CodexAdapterV2.test.encodeReplayWorkspace")(function* (
+  transcript: CodexReplay.CodexAppServerReplayTranscript,
+  cwd: string,
+  prompt: string,
+) {
+  const json = yield* encodeReplayTranscriptJson(transcript);
+  return yield* decodeReplayTranscriptJson(
+    json
+      .replaceAll(yield* encodeStringJson("/workspace"), yield* encodeStringJson(cwd))
+      .replaceAll(
+        yield* encodeStringJson(prompt),
+        yield* encodeStringJson(`${workProfileInstructions([], false)}\n\n${prompt}`),
+      ),
+  );
+});
 const isProviderAdapterEventStreamError = Schema.is(
   ProviderAdapter.ProviderAdapterEventStreamError,
 );
@@ -672,6 +689,7 @@ function codexReplayPreamble(input: {
   readonly prompt: string;
   readonly sentPrompt?: string;
   readonly effort?: string;
+  readonly approvalRequired?: boolean;
 }): Array<CodexReplay.CodexAppServerReplayEntry> {
   return [
     {
@@ -766,9 +784,9 @@ function codexReplayPreamble(input: {
           input: [{ type: "text", text: input.sentPrompt ?? input.prompt }],
           cwd: "/workspace",
           model: "gpt-5.4",
-          approvalPolicy: "never",
+          approvalPolicy: input.approvalRequired ? "untrusted" : "never",
           approvalsReviewer: "user",
-          sandboxPolicy: { type: "dangerFullAccess" },
+          sandboxPolicy: { type: input.approvalRequired ? "readOnly" : "dangerFullAccess" },
           summary: "auto",
           ...(input.effort === undefined ? {} : { effort: input.effort }),
           collaborationMode: {
@@ -1612,6 +1630,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         terminalEvents,
         subagentUpdates,
         hasPendingBackgroundWork,
+        replayState: Ref.get(driver.state),
         firstTerminal: Deferred.await(firstTerminal),
         until: changes.until,
         awaitTerminal: (count: number) => changes.until(() => terminalEvents().length >= count),
@@ -3063,6 +3082,20 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           turnEvent("turn/completed", turnIds[0]!),
           ...startTurn(1),
           patchDecision!,
+          ...approval({
+            id: 105,
+            turnId: turnIds[1]!,
+            kind: "commandExecution",
+            itemId: "full-access-command",
+            decision: "accept",
+          }),
+          ...approval({
+            id: 106,
+            turnId: turnIds[1]!,
+            kind: "fileChange",
+            itemId: "full-access-patch",
+            decision: "accept",
+          }),
           turnEvent("turn/completed", turnIds[1]!),
           ...startTurn(2),
           ...approval({
@@ -4014,6 +4047,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
   it.effect.each([
     "recover",
     "completion-only",
+    "completion-with-error",
     "exhaust",
     "stop",
     "stop-continued",
@@ -4031,7 +4065,10 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       const prompt = "Continue the task.";
       const capacityError = {
         message: "Selected model is at capacity. Please try a different model.",
-        codexErrorInfo: "serverOverloaded",
+        codexErrorInfo:
+          outcome === "completion-with-error"
+            ? { responseStreamDisconnected: { httpStatusCode: null } }
+            : "serverOverloaded",
       };
       const failureEntries = (attempt: number): Array<CodexReplay.CodexAppServerReplayEntry> => [
         {
@@ -4053,7 +4090,10 @@ describe("CodexAdapterV2 post-settle continuation", () => {
             params: {
               threadId: nativeThreadId,
               turn: {
-                ...makeCodexReplayTurn({ id: nativeTurnId(attempt), status: "failed" }),
+                ...makeCodexReplayTurn({
+                  id: nativeTurnId(attempt),
+                  status: outcome === "completion-with-error" ? "completed" : "failed",
+                }),
                 error: capacityError,
               },
             },
@@ -4066,10 +4106,12 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         prompt,
       });
       entries.push(
-        ...(outcome === "completion-only" ? failureEntries(0).slice(1) : failureEntries(0)),
+        ...(outcome === "completion-only" || outcome === "completion-with-error"
+          ? failureEntries(0).slice(1)
+          : failureEntries(0)),
       );
       if (outcome === "completion-only") entries.push(...failureEntries(0).slice(1));
-      const retries = outcome === "exhaust" ? 5 : outcome === "stop" ? 0 : 1;
+      const retries = outcome === "stop" ? 0 : 1;
       const steeredText = "Use the smaller change.";
       for (let attempt = 1; attempt <= retries; attempt++) {
         const start = codexReplayPreamble({
@@ -4165,6 +4207,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         if (
           outcome === "recover" ||
           outcome === "completion-only" ||
+          outcome === "completion-with-error" ||
           outcome === "started-first" ||
           outcome === "stop-starting"
         ) {
@@ -4256,7 +4299,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         if (providerTurnId === null) return;
         assert.deepEqual(milestone.turnItem.retry, {
           attempt,
-          maxAttempts: 5,
+          maxAttempts: 1,
           retryDelayMs: Math.min(2_000 * 2 ** (attempt - 1), 30_000),
         });
         assert.isEmpty(harness.terminalEvents());
@@ -4319,6 +4362,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         terminal?.status,
         outcome === "recover" ||
           outcome === "completion-only" ||
+          outcome === "completion-with-error" ||
           outcome === "steer" ||
           outcome === "started-first" ||
           outcome === "completed-first"
@@ -4349,10 +4393,10 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       if (outcome === "recover") {
         const fs = yield* FileSystem.FileSystem;
         const cwd = yield* fs.makeTempDirectoryScoped({ prefix: "t3-capacity-retry-" });
-        const localTranscript = yield* decodeReplayTranscriptJson(
-          (yield* encodeReplayTranscriptJson(
-            makeCodexReplayTranscript({ scenario, entries }),
-          )).replaceAll(yield* encodeStringJson("/workspace"), yield* encodeStringJson(cwd)),
+        const localTranscript = yield* encodeReplayWorkspace(
+          makeCodexReplayTranscript({ scenario, entries }),
+          cwd,
+          prompt,
         );
         const driver = yield* CodexReplay.makeReplayDriver(withConfigReads(localTranscript));
         yield* Effect.gen(function* () {
@@ -4444,7 +4488,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
     ),
   );
 
-  it.effect("reports a thread another Codex client is writing to as in use", () =>
+  it.effect("reports a thread another Codex client is writing to without mutating history", () =>
     Effect.gen(function* () {
       const nativeThreadId = "thread-open-elsewhere";
       const harness = yield* makeCodexReplayHarness(
@@ -4502,6 +4546,10 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         "cause.errorMessage",
         `thread ${nativeThreadId} already has an active writer`,
       );
+      // A writer conflict is a guard for the existing native conversation.
+      // It must not synthesize a turn or replace the saved transcript while
+      // another Codex client owns the lock.
+      assert.lengthOf(harness.events, 0);
     }).pipe(
       Effect.provide(
         Layer.mergeAll(
@@ -4693,9 +4741,82 @@ describe("CodexAdapterV2 post-settle continuation", () => {
     ),
   );
 
-  it.effect("fails a stalled 429 provider retry as a usage limit and stops the Codex turn", () =>
+  it.effect("ends a Codex turn that was accepted but never produced model output", () =>
     Effect.gen(function* () {
-      const scenario = "codex-provider-retry-stall";
+      const scenario = "codex-no-output";
+      const nativeThreadId = "native-silent-thread";
+      const nativeTurnId = "native-silent-turn";
+      const interruptSent = yield* Deferred.make<void>();
+      const harness = yield* makeCodexReplayHarness(
+        makeCodexReplayTranscript({
+          scenario,
+          entries: [
+            ...codexReplayPreamble({ nativeThreadId, nativeTurnId, prompt: "Continue." }),
+            {
+              type: "expect_outbound",
+              frame: {
+                id: 4,
+                method: "turn/interrupt",
+                params: { threadId: nativeThreadId, turnId: nativeTurnId },
+              },
+            },
+            { type: "emit_inbound", frame: { id: 4, result: {} } },
+          ],
+        }),
+        () => Effect.void,
+        (method) =>
+          method === "turn/interrupt" ? Deferred.succeed(interruptSent, undefined) : Effect.void,
+      );
+      yield* harness.runtime.startTurn(
+        makeCodexTestTurnInput({
+          threadId: harness.threadId,
+          providerThread: harness.providerThread,
+          now: yield* DateTime.now,
+          text: "Continue.",
+          attemptId: RunAttemptId.make(scenario),
+        }),
+      );
+      yield* TestClock.adjust("89 seconds");
+      assert.isEmpty(harness.terminalEvents());
+      yield* TestClock.adjust("1 second");
+      yield* harness.firstTerminal;
+      yield* Deferred.await(interruptSent);
+      const terminal = harness.terminalEvents()[0];
+      assert.equal(terminal?.status, "failed");
+      if (terminal?.status !== "failed") return;
+      assert.equal(terminal.failure.class, "transport_error");
+      assert.equal(terminal.failure.code, "provider_no_progress");
+      assert.isFalse(terminal.failure.retryable);
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          IdAllocator.layer,
+          McpProviderSessions.layer,
+          NodeServices.layer,
+          NodeCrypto.layer,
+        ),
+      ),
+    ),
+  );
+
+  it.effect.each([
+    {
+      name: "usage-limit",
+      httpStatusCode: 429,
+      message: "exceeded retry limit, last status: 429 Too Many Requests",
+      expectedClass: "usage_limit",
+      expectedCode: "responseStreamDisconnected",
+    },
+    {
+      name: "capacity",
+      httpStatusCode: null,
+      message: "Selected model is at capacity. Please try a different model.",
+      expectedClass: "provider_error",
+      expectedCode: "serverOverloaded",
+    },
+  ] as const)("stops stalled Codex retries for $name", (testCase) =>
+    Effect.gen(function* () {
+      const scenario = `codex-provider-retry-stall-${testCase.name}`;
       const nativeThreadId = `native-${scenario}-thread`;
       const nativeTurnId = `native-${scenario}-turn`;
       const retryNotice = (attempt: number) => ({
@@ -4709,8 +4830,10 @@ describe("CodexAdapterV2 post-settle continuation", () => {
             willRetry: true,
             error: {
               message: `Reconnecting... ${attempt}/5`,
-              additionalDetails: "exceeded retry limit, last status: 429 Too Many Requests",
-              codexErrorInfo: { responseStreamDisconnected: { httpStatusCode: 429 } },
+              additionalDetails: testCase.message,
+              codexErrorInfo: {
+                responseStreamDisconnected: { httpStatusCode: testCase.httpStatusCode },
+              },
             },
           },
         },
@@ -4721,7 +4844,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           ...codexReplayPreamble({ nativeThreadId, nativeTurnId, prompt: "Continue." }),
           retryNotice(1),
           // A later notice in the same retry window must not push the deadline back.
-          { ...retryNotice(2), afterMs: 5 * 60 * 1000 },
+          { ...retryNotice(2), afterMs: 25_000 },
           {
             type: "expect_outbound",
             label: "turn/interrupt",
@@ -4766,20 +4889,17 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         }),
       );
       yield* Deferred.await(retryShown);
-      yield* TestClock.adjust("9 minutes");
+      yield* TestClock.adjust("44 seconds");
       assert.isEmpty(harness.terminalEvents());
-      yield* TestClock.adjust("1 minute");
+      yield* TestClock.adjust("1 second");
       yield* harness.firstTerminal;
       yield* Deferred.await(interruptSent);
       const terminal = harness.terminalEvents()[0];
       assert.equal(terminal?.status, "failed");
       if (terminal?.status !== "failed") return;
-      assert.equal(terminal.failure.class, "usage_limit");
-      assert.equal(terminal.failure.code, "responseStreamDisconnected");
-      assert.equal(
-        terminal.failure.message,
-        "exceeded retry limit, last status: 429 Too Many Requests",
-      );
+      assert.equal(terminal.failure.class, testCase.expectedClass);
+      assert.equal(terminal.failure.code, testCase.expectedCode);
+      assert.equal(terminal.failure.message, testCase.message);
       assert.equal(terminal.retry?.attempt, 2);
       assert.equal(terminal.threadDisposition, "reusable");
     }).pipe(
@@ -6050,12 +6170,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
     return Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const cwd = yield* fs.makeTempDirectoryScoped({ prefix: "t3-bg-stop-workspace-" });
-      const localTranscript = yield* decodeReplayTranscriptJson(
-        (yield* encodeReplayTranscriptJson(transcript)).replaceAll(
-          yield* encodeStringJson("/workspace"),
-          yield* encodeStringJson(cwd),
-        ),
-      );
+      const localTranscript = yield* encodeReplayWorkspace(transcript, cwd, BG_PROMPT);
       const replayDriver = yield* CodexReplay.makeReplayDriver(withConfigReads(localTranscript));
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
       assert.equal(
@@ -6182,12 +6297,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           { type: "runtime_exit", status: "success" },
         ],
       });
-      const localTranscript = yield* decodeReplayTranscriptJson(
-        (yield* encodeReplayTranscriptJson(staleTranscript)).replaceAll(
-          yield* encodeStringJson("/workspace"),
-          yield* encodeStringJson(cwd),
-        ),
-      );
+      const localTranscript = yield* encodeReplayWorkspace(staleTranscript, cwd, BG_PROMPT);
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
       for (const args of [
         ["init", "--quiet"],
@@ -7149,6 +7259,28 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       expectedClass: "provider_error",
     },
     {
+      name: "chatgpt-sharing-ineligible-403",
+      code: "httpConnectionFailed",
+      errorInfo: { httpConnectionFailed: { httpStatusCode: 403 } },
+      message:
+        "unexpected status 403 Forbidden: The ChatGPT user is not eligible for subscription sharing., url: https://api.openai.com/v1/responses",
+      notification: true,
+      willRetry: true,
+      expectedClass: "provider_error",
+      expectedCode: "subscription_sharing_user_not_eligible",
+      expectedMessage: "ChatGPT sharing is unavailable",
+    },
+    {
+      name: "chatgpt-sharing-ineligible-in-completion-details",
+      code: "httpConnectionFailed",
+      errorInfo: { httpConnectionFailed: { httpStatusCode: 403 } },
+      completionDetails: "subscription_sharing_user_not_eligible",
+      notification: false,
+      expectedClass: "provider_error",
+      expectedCode: "subscription_sharing_user_not_eligible",
+      expectedMessage: "ChatGPT sharing is unavailable",
+    },
+    {
       name: "chatgpt-workspace-limit",
       code: "other",
       details: "subscription_sharing_workplace_individual_usage_limit_exceeded",
@@ -7437,6 +7569,9 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                 turn: {
                   ...makeCodexReplayTurn({ id: nativeTurnId, status: "failed" }),
                   error: {
+                    ...("completionDetails" in scenario
+                      ? { additionalDetails: scenario.completionDetails }
+                      : {}),
                     message:
                       "terminalMessage" in scenario
                         ? scenario.terminalMessage
@@ -11725,28 +11860,41 @@ describe("CodexAdapterV2 post-settle continuation", () => {
     const startApprovalTurn = (
       scenario: string,
       entries: ReadonlyArray<CodexReplay.CodexAppServerReplayEntry>,
+      approvalRequired = true,
     ) =>
       Effect.gen(function* () {
         const pending = yield* Queue.unbounded<OrchestrationV2RuntimeRequest>();
         const harness = yield* makeCodexReplayHarness(
           makeCodexReplayTranscript({
             scenario,
-            entries: [...codexReplayPreamble({ nativeThreadId, nativeTurnId, prompt }), ...entries],
+            entries: [
+              ...codexReplayPreamble({
+                nativeThreadId,
+                nativeTurnId,
+                prompt,
+                approvalRequired,
+              }),
+              ...entries,
+            ],
           }),
           (event) =>
             event.type === "runtime_request.updated" && event.runtimeRequest.status === "pending"
               ? Queue.offer(pending, event.runtimeRequest)
               : Effect.void,
         );
-        yield* harness.runtime.startTurn(
-          makeCodexTestTurnInput({
+        yield* harness.runtime.startTurn({
+          ...makeCodexTestTurnInput({
             threadId: harness.threadId,
             providerThread: harness.providerThread,
             now: yield* DateTime.now,
             attemptId: RunAttemptId.make(`${scenario}-attempt`),
             text: prompt,
           }),
-        );
+          runtimePolicy: {
+            ...CODEX_TEST_RUNTIME_POLICY,
+            runtimeMode: approvalRequired ? "approval-required" : "full-access",
+          },
+        });
         return {
           harness,
           answerNext: Queue.take(pending).pipe(
@@ -11759,6 +11907,74 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           ),
         };
       });
+
+    it.effect("automatically answers legacy, permission and MCP approvals in Full access", () =>
+      Effect.gen(function* () {
+        const native = { threadId: nativeThreadId, turnId: nativeTurnId };
+        const legacy = { conversationId: nativeThreadId, callId: "legacy-item" };
+        const permissions = { network: { enabled: true } };
+        const fixtures = [
+          {
+            method: "execCommandApproval",
+            params: { ...legacy, command: ["git", "status"], cwd: "/workspace", parsedCmd: [] },
+            result: { decision: "approved" },
+          },
+          {
+            method: "applyPatchApproval",
+            params: { ...legacy, fileChanges: {} },
+            result: { decision: "approved" },
+          },
+          {
+            method: "item/permissions/requestApproval",
+            params: {
+              ...native,
+              itemId: "permission",
+              cwd: "/workspace",
+              permissions,
+              startedAtMs: 1,
+            },
+            result: { permissions, scope: "turn" },
+          },
+          {
+            method: "mcpServer/elicitation/request",
+            params: {
+              ...native,
+              serverName: "example",
+              message: "Approve running this tool?",
+              mode: "form",
+              requestedSchema: { type: "object", properties: {} },
+            },
+            result: { action: "accept", content: {} },
+          },
+        ];
+        const { harness } = yield* startApprovalTurn(
+          "automatic-full-access-approvals",
+          [
+            ...fixtures.flatMap(({ method, params, result }, index) => [
+              { type: "emit_inbound" as const, frame: { id: 100 + index, method, params } },
+              { type: "expect_outbound" as const, frame: { id: 100 + index, result } },
+            ]),
+            turnCompleted(nativeTurnId),
+          ],
+          false,
+        );
+        yield* TestClock.adjust("1 second");
+        assert.isNull((yield* harness.replayState).failure);
+        yield* harness.firstTerminal;
+        assert.equal(harness.terminalEvents()[0]?.status, "completed");
+        assert.isFalse(harness.events.some((event) => event.type === "runtime_request.updated"));
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            NodeCrypto.layer,
+          ),
+        ),
+      ),
+    );
 
     const approvalItem = (
       events: ReadonlyArray<ProviderAdapter.ProviderAdapterV2Event>,

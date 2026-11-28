@@ -7,14 +7,72 @@ import * as DateTime from "effect/DateTime";
 
 export const CODEX_SHARING_UNSUPPORTED_CAPABILITY_CODE =
   "subscription_sharing_unsupported_capability";
+export const CODEX_SHARING_USER_NOT_ELIGIBLE_CODE = "subscription_sharing_user_not_eligible";
 export const CODEX_SHARING_CONTINUATION_HINT =
   "Choose regular Codex or another supported provider, then send a message to continue in this chat.";
+
+export function isCodexSharingEligibilityFailure(
+  code: string | null | undefined,
+  message: string,
+): boolean {
+  return (
+    code === CODEX_SHARING_USER_NOT_ELIGIBLE_CODE ||
+    code === "subscription_sharing_v2_user_not_eligible" ||
+    /\bthe chatgpt user is not eligible for subscription sharing\b/i.test(message)
+  );
+}
+
+export function isCodexModelAtCapacity(message: string): boolean {
+  return /\bselected model is at capacity\b/i.test(message);
+}
 
 type ErrorTurnItem = Extract<OrchestrationV2TurnItem, { type: "error" }>;
 /** Only error items are read, so callers may pass items stripped of other fields. */
 type FailureScanTurnItem =
   | ErrorTurnItem
   | { readonly type: Exclude<OrchestrationV2TurnItem["type"], "error"> };
+
+export type AutoRouteFailureReason =
+  | "sharing_forbidden"
+  | "usage_limit"
+  | "free_limit"
+  | "transient_eof"
+  | "model_capacity"
+  | "provider_error";
+
+/** Keep Auto's exclusion reasons inspectable without collapsing provider failures into one bucket. */
+export function autoRouteFailureReason(
+  failure: OrchestrationV2ProviderFailure,
+): AutoRouteFailureReason {
+  const code = failure.code?.toLowerCase() ?? "";
+  const message = failure.message.toLowerCase();
+  if (
+    code === "provider.free-limit" ||
+    (failure.class === "usage_limit" &&
+      (code.includes("free") || message.includes("free-models-per-min")))
+  )
+    return "free_limit";
+  if (
+    failure.class === "usage_limit" ||
+    code.includes("usage_limit") ||
+    code.includes("rate-limit")
+  )
+    return "usage_limit";
+  if (
+    isCodexSharingEligibilityFailure(code, message) ||
+    code.startsWith("subscription_sharing_") ||
+    code.startsWith("chatpass_v2_") ||
+    ((code === "403" || code.includes("forbidden")) && message.includes("sharing"))
+  )
+    return "sharing_forbidden";
+  if (code === "serveroverloaded" || isCodexModelAtCapacity(message)) return "model_capacity";
+  if (
+    failure.class === "transport_error" &&
+    (code.includes("eof") || code.includes("streamdisconnected") || message.includes(" eof"))
+  )
+    return "transient_eof";
+  return "provider_error";
+}
 
 export function latestRootProviderFailure(
   run: OrchestrationV2Run | null,

@@ -34,6 +34,20 @@ describe("getThreadErrorBannerMessage", () => {
 });
 
 describe("ThreadErrorBanner", () => {
+  it.each([
+    [
+      "unexpected status 403 Forbidden: The ChatGPT user is not eligible for subscription sharing.",
+      "Выбрать провайдер",
+    ],
+    ["Selected model is at capacity. Please try a different model.", "Выбрать модель"],
+  ])("offers a recovery action for %s", (error, button) => {
+    const markup = renderToStaticMarkup(
+      <ThreadErrorBanner error={error} onChooseProvider={() => {}} />,
+    );
+    expect(markup).toContain(button);
+    expect(markup).not.toContain("ChatGPT usage limit reached");
+  });
+
   it("keeps the rejection reason and offers the model picker in the same chat", () => {
     const error = "ChatGPT sharing rejected an input item in the Codex session.";
     const markup = renderToStaticMarkup(

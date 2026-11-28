@@ -12,6 +12,7 @@ import {
   globalIdleCompaction,
   managedUpdatesDenial,
   managedUpdatesMessage,
+  PROVIDER_DISPLAY_NAMES,
   ProviderDriverKind,
   type ProviderInstanceId,
   type SidebarProjectGroupingMode,
@@ -39,6 +40,7 @@ import {
   HOSTED_APP_CHANNEL_LABEL,
 } from "../../branding";
 import { AboutVersionTitle } from "./AboutVersionTitle";
+import { getAboutUpdateIndicators } from "./AboutUpdateIndicators.logic";
 import { CliCommandSettingsRow } from "./CliCommandSettingsRow";
 import { MobileAppSettingsRow } from "./MobileAppSettingsRow";
 import {
@@ -86,6 +88,7 @@ import {
   usePrimaryEnvironmentId,
 } from "../../state/environments";
 import { EMPTY_SERVER_PROVIDERS } from "../../state/server";
+import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
@@ -127,7 +130,11 @@ import { StorageCleanupSections } from "./StorageSettings";
 import { UpdateTrackSwitchDialog } from "./UpdateTrackSwitchDialog";
 import { environmentIdsKey } from "~/state/environmentAtomList";
 import { environmentSessionStatesAtom } from "~/state/session";
-import { useCheckProviderUpdates } from "../ProviderUpdatesAction";
+import {
+  ProviderUpdatesAction,
+  useCheckProviderUpdates,
+  useProviderUpdates,
+} from "../ProviderUpdatesAction";
 import { canUpdateServer } from "../ServerUpdateAction";
 import { SidebarUpdateReleaseNotes } from "../sidebar/SidebarUpdateReleaseNotes";
 import { useUpdateEverythingRun } from "../sidebar/updateEverythingRun";
@@ -182,6 +189,7 @@ function AboutVersionSection() {
   // A second run would replace the first run's progress and local download.
   const updateRun = useUpdateEverythingRun();
   const checkProviderUpdates = useCheckProviderUpdates();
+  const { machines: providerUpdateMachines } = useProviderUpdates();
 
   const hasDesktopBridge = typeof window !== "undefined" && Boolean(window.desktopBridge);
   const selectedUpdateChannel = updateState?.channel ?? "latest";
@@ -277,6 +285,34 @@ function AboutVersionSection() {
     ? `Version ${offeredVersion} available.`
     : (getDesktopUpdateDisabledReason(updateState, updatesDenial) ??
       "Current version of the application.");
+  const providerUpdateNames = [
+    ...new Set(
+      providerUpdateMachines.flatMap((machine) =>
+        machine.candidates.map(
+          (candidate) => PROVIDER_DISPLAY_NAMES[candidate.driver] ?? candidate.driver,
+        ),
+      ),
+    ),
+  ];
+  const providerUpdateCount = providerUpdateMachines.reduce(
+    (total, machine) => total + machine.candidates.length,
+    0,
+  );
+  const updateIndicators = getAboutUpdateIndicators({
+    appState: updateState,
+    providerUpdateCount,
+    providerNames: providerUpdateNames,
+  });
+  const updateIndicatorStatus =
+    updateIndicators.length > 0 ? (
+      <span className="flex flex-wrap gap-1">
+        {updateIndicators.map((indicator) => (
+          <Badge key={indicator.kind} size="sm" title={indicator.title} variant="warning">
+            {indicator.label}
+          </Badge>
+        ))}
+      </span>
+    ) : undefined;
 
   return (
     <>
@@ -284,23 +320,32 @@ function AboutVersionSection() {
         id={searchableSetting("app-version").id}
         title={<AboutVersionTitle />}
         description={description}
+        status={updateIndicatorStatus}
         managed={updatesDenial}
         control={
-          <Tooltip>
-            <TooltipTrigger
-              render={
-                <Button
-                  size="sm"
-                  variant="outline"
-                  disabled={buttonDisabled}
-                  onClick={handleButtonClick}
-                >
-                  {buttonLabel}
-                </Button>
-              }
+          <div className="flex min-w-0 items-center justify-end gap-2">
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={buttonDisabled}
+                    onClick={handleButtonClick}
+                  >
+                    {buttonLabel}
+                  </Button>
+                }
+              />
+              {buttonTooltip ? <TooltipPopup>{buttonTooltip}</TooltipPopup> : null}
+            </Tooltip>
+            <ProviderUpdatesAction
+              emptyTooltip="Нет доступных обновлений провайдеров"
+              label="Обновить провайдеры"
+              pendingLabel="Обновление…"
+              showWhenEmpty
             />
-            {buttonTooltip ? <TooltipPopup>{buttonTooltip}</TooltipPopup> : null}
-          </Tooltip>
+          </div>
         }
       >
         {hasDesktopBridge && updateState && offeredVersion ? (

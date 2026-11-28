@@ -74,6 +74,13 @@ it("preserves credentials for the current subscriber and permission error codes"
 
 it("treats only ChatGPT sharing allowance limits as usage limits", () => {
   assert.deepInclude(
+    classifyCodexManagedError({
+      message:
+        "unexpected status 403 Forbidden: The ChatGPT user is not eligible for subscription sharing., url: https://api.openai.com/v1/responses",
+    }),
+    { code: "subscription_sharing_user_not_eligible", usageLimit: false },
+  );
+  assert.deepInclude(
     classifyCodexManagedError(
       "stream disconnected before completion: The ChatGPT user has reached their Subscription Sharing usage limit. Ask the user to try again after their usage limit resets or use an API key instead.",
     ),

@@ -172,7 +172,9 @@ function HistoryNavigationButton({
 function SidebarBrand({ onBackdrop }: { onBackdrop: boolean }) {
   return (
     <Link
-      aria-label={`${APP_BASE_NAME} home`}
+      aria-label={
+        BRAND_MARK === "MT" ? "MT Code, форк Bony-Lord, главная" : `${APP_BASE_NAME} home`
+      }
       className={cn(
         "relative z-10 ml-[var(--workspace-titlebar-content-left)] hidden h-7 w-fit min-w-0 shrink-0 items-center overflow-hidden rounded-md outline-hidden ring-ring focus-visible:ring-2 focus-visible:ring-inset md:flex",
         onBackdrop ? "text-white" : "text-foreground",
@@ -201,6 +203,16 @@ function SidebarBrandMark({ onBackdrop }: { onBackdrop: boolean }) {
       >
         {BRAND_LABEL}
       </span>
+      {BRAND_MARK === "MT" && (
+        <span
+          className={cn(
+            "ml-1 hidden shrink-0 rounded border px-1.5 text-3xs leading-4 font-medium xl:inline",
+            onBackdrop ? "border-white/20 text-white/75" : "border-border text-muted-foreground",
+          )}
+        >
+          Bony-Lord
+        </span>
+      )}
     </span>
   );
 }

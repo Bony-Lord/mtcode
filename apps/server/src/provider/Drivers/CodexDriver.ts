@@ -265,24 +265,20 @@ export const CodexDriver: ProviderDriver<
       config.binaryPath,
       yield* HostProcess.HomeDirectory,
     );
-    const followsSharedInstallation =
-      config.usageProfile ||
-      CodexInstallation.isManagedCodexBinaryPath(
-        pathService.relative(installation.managedDirectory, configuredBinaryPath),
-        pathService.sep,
-        yield* HostProcess.Platform,
-      );
-    // Older setups stored the versioned path of MT's own install in each account.
-    const sharedExecutable = followsSharedInstallation
-      ? installation.acquire().pipe(
-          Effect.map((executable) => executable.executablePath),
-          Effect.orElseSucceed(() => configuredBinaryPath),
-        )
-      : undefined;
+    // Resolve the machine's installation at launch so every account follows updates.
+    const sharedInstallation = installation.acquire().pipe(Effect.option);
+    const sharedExecutable = sharedInstallation.pipe(
+      Effect.map((executable) =>
+        Option.match(executable, {
+          onNone: () => configuredBinaryPath,
+          onSome: (value) => value.executablePath,
+        }),
+      ),
+    );
     const effectiveConfig = {
       ...config,
       enabled,
-      binaryPath: sharedExecutable ? yield* Effect.scoped(sharedExecutable) : configuredBinaryPath,
+      binaryPath: yield* Effect.scoped(sharedExecutable),
       homePath: homeLayout.effectiveHomePath ?? "",
     } satisfies CodexSettings;
     if (config.usageProfile) {
@@ -299,6 +295,7 @@ export const CodexDriver: ProviderDriver<
         ...makeCodexAccountLogin({
           instanceId,
           config: quotaConfig,
+          resolveExecutable: sharedExecutable,
           environment: quotaEnv,
           spawner,
         }),
@@ -316,11 +313,10 @@ export const CodexDriver: ProviderDriver<
         });
       const pending = makePendingCodexProvider(quotaConfig).pipe(Effect.map(quotaSnapshot));
       const check = Effect.gen(function* () {
-        const settings = sharedExecutable
-          ? { ...quotaConfig, binaryPath: yield* Effect.scoped(sharedExecutable) }
-          : quotaConfig;
+        const settings = { ...quotaConfig, binaryPath: yield* sharedExecutable };
         return quotaSnapshot(yield* checkCodexProviderStatus(settings, undefined, quotaEnv));
       }).pipe(
+        Effect.scoped,
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
         Effect.provideService(FileSystem.FileSystem, fileSystem),
         Effect.provideService(Path.Path, pathService),
@@ -381,16 +377,23 @@ export const CodexDriver: ProviderDriver<
       } satisfies ProviderInstance;
     }
 
-    const latestNativeConfig = sharedExecutable
-      ? sharedExecutable.pipe(Effect.map((binaryPath) => ({ ...effectiveConfig, binaryPath })))
-      : Effect.succeed(effectiveConfig);
+    const latestNativeConfig = sharedExecutable.pipe(
+      Effect.map((binaryPath) => ({ ...effectiveConfig, binaryPath })),
+    );
     const resolveInstallation = yield* makeCachedProviderMaintenanceResolution(
-      latestNativeConfig.pipe(
-        Effect.flatMap(({ binaryPath }) =>
-          resolveProviderMaintenanceCapabilitiesEffect(
-            makeCodexMaintenanceResolver(homeLayout.sharedHomePath),
-            { binaryPath, env: processEnv },
-          ),
+      sharedInstallation.pipe(
+        Effect.flatMap((executable) =>
+          Option.isSome(executable) && executable.value.source === "managed"
+            ? Effect.succeed(CodexInstallation.codexManagedMaintenance(installation))
+            : resolveProviderMaintenanceCapabilitiesEffect(
+                makeCodexMaintenanceResolver(homeLayout.sharedHomePath),
+                {
+                  binaryPath: Option.isSome(executable)
+                    ? executable.value.executablePath
+                    : configuredBinaryPath,
+                  env: processEnv,
+                },
+              ),
         ),
         Effect.scoped,
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
@@ -414,7 +417,7 @@ export const CodexDriver: ProviderDriver<
       },
       {
         onUsageLimits: (update) => snapshot.applyUsageLimits(update),
-        ...(sharedExecutable ? { resolveExecutable: sharedExecutable } : {}),
+        resolveExecutable: sharedExecutable,
         models: Effect.suspend(() => snapshot.getSnapshot).pipe(
           Effect.map((value) => value.models),
         ),
@@ -602,6 +605,7 @@ export const CodexDriver: ProviderDriver<
       accountLogin: makeCodexAccountLogin({
         instanceId,
         config: effectiveConfig,
+        resolveExecutable: sharedExecutable,
         environment: processEnv,
         spawner,
       }),

@@ -3468,8 +3468,6 @@ function claudeBypassAvailability(
 }
 
 function requiresClaudeApproval(context: ActiveClaudeTurnContext): boolean {
-  // CLI-forwarded requests need a person's decision even under bypass (ask rules,
-  // safety checks, or settings fallback). Do not wait for queued init/status updates.
   const policy = context.queryPolicy;
   return policy.installPermissionCallback || policy.permissionMode === "bypassPermissions";
 }
@@ -12206,6 +12204,24 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             } satisfies PermissionResult;
           }
 
+          if (
+            activePermissionMode === "bypassPermissions" &&
+            ProviderAdapter.autoApprovesProviderRequests(context.input.runtimePolicy)
+          ) {
+            return callbackOptions.signal.aborted || (yield* Ref.get(activeTurn)) !== context
+              ? permissionResultFromDecision({
+                  toolName,
+                  toolInput,
+                  toolUseID: callbackOptions.toolUseID,
+                  decision: "cancel",
+                })
+              : ({
+                  behavior: "allow",
+                  updatedInput: toolInput,
+                  toolUseID: callbackOptions.toolUseID,
+                } satisfies PermissionResult);
+          }
+
           const requestKind = providerRequestKindFromClaudeTool(toolName);
           // The user approves the command itself; Claude's title and description only summarize it.
           const command = inputRecordValue(nativeToolInput, "command");
@@ -12312,6 +12328,16 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           const grantKey = `${request.serverName}\u0000${request.message}`;
           if ((yield* Ref.get(mcpElicitationSessionGrants)).has(grantKey)) {
             return acceptance;
+          }
+          const activePermissionMode =
+            (yield* Ref.get(queryContext))?.permissionMode ?? context.queryPolicy.permissionMode;
+          if (
+            activePermissionMode === "bypassPermissions" &&
+            ProviderAdapter.autoApprovesProviderRequests(context.input.runtimePolicy)
+          ) {
+            return callbackOptions.signal.aborted || (yield* Ref.get(activeTurn)) !== context
+              ? ({ action: "cancel" } satisfies ElicitationResult)
+              : acceptance;
           }
           // The CLI waits on this answer, so a turn held for its prompt echo
           // must show its output now, as canUseTool does.

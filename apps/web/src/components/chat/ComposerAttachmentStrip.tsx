@@ -38,6 +38,7 @@ import { cn } from "~/lib/utils";
 import { getRestingComposerImagePreviewCounts } from "../composerFooterLayout";
 import { RefreshIcon } from "~/components/ui/refresh-icon";
 import { AttachmentFilePreview } from "../files/AttachmentFilePreview";
+import { FilePreviewGate } from "../files/FilePreviewGate";
 import { AttachmentImage } from "../media/AttachmentImage";
 import { Button } from "../ui/button";
 import { Dialog, DialogPopup, DialogTitle } from "../ui/dialog";
@@ -564,27 +565,29 @@ export function ComposerFilePreviewDialog({
         showCloseButton={false}
       >
         <DialogTitle className="sr-only">{file.name}</DialogTitle>
-        <AttachmentFilePreview
-          key={file.id}
-          name={file.name}
-          mimeType={file.mimeType}
-          sizeBytes={file.sizeBytes}
-          file={file.file}
-          origin="Draft"
-          {...(file.uploadedAttachmentId && file.uploadEnvironmentId
-            ? {
-                asset: {
-                  environmentId: file.uploadEnvironmentId,
-                  attachmentId: file.uploadedAttachmentId,
-                },
-              }
-            : {})}
-          onRemove={() => {
-            onRemove(file.id);
-            onClose();
-          }}
-          onClose={onClose}
-        />
+        <FilePreviewGate alreadyRevealed onClose={onClose}>
+          <AttachmentFilePreview
+            key={file.id}
+            name={file.name}
+            mimeType={file.mimeType}
+            sizeBytes={file.sizeBytes}
+            file={file.file}
+            origin="Draft"
+            {...(file.uploadedAttachmentId && file.uploadEnvironmentId
+              ? {
+                  asset: {
+                    environmentId: file.uploadEnvironmentId,
+                    attachmentId: file.uploadedAttachmentId,
+                  },
+                }
+              : {})}
+            onRemove={() => {
+              onRemove(file.id);
+              onClose();
+            }}
+            onClose={onClose}
+          />
+        </FilePreviewGate>
       </DialogPopup>
     </Dialog>
   );
