@@ -1,0 +1,66 @@
+name: Personal Windows Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release version
+        required: true
+        default: 0.1.68
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-publish:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 12.14.0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24.11.0
+          cache: pnpm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build Windows installer
+        env:
+          T3CODE_DESKTOP_VERSION: ${{ inputs.version }}
+          T3CODE_DESKTOP_UPDATE_REPOSITORY: Bony-Lord/mtcode
+        run: pnpm exec vp run dist:desktop:win:x64
+
+      - name: Verify and publish release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          $releaseDir = Join-Path $env:GITHUB_WORKSPACE 'release'
+          $installer = Join-Path $releaseDir "MT-Code-$env:VERSION-x64.exe"
+          $blockmap = "$installer.blockmap"
+          $feed = Join-Path $releaseDir 'latest.yml'
+          foreach ($path in @($installer, $blockmap, $feed)) {
+            if (!(Test-Path -LiteralPath $path) -or (Get-Item -LiteralPath $path).Length -eq 0) {
+              throw "Missing release file $path"
+            }
+          }
+          $sha = (Get-FileHash -Algorithm SHA256 -LiteralPath $installer).Hash.ToLowerInvariant()
+          "$sha  $(Split-Path -Leaf $installer)" | Set-Content -NoNewline -Encoding utf8 (Join-Path $releaseDir 'SHA256SUMS.txt')
+          $tag = "v$env:VERSION"
+          gh release create $tag $installer $blockmap $feed (Join-Path $releaseDir 'SHA256SUMS.txt') --repo Bony-Lord/mtcode --target $env:GITHUB_SHA --title "MT Code $env:VERSION" --notes "MT Code $env:VERSION`n`nWindows x64 installer for commit $($env:GITHUB_SHA.Substring(0, 7))." --latest
