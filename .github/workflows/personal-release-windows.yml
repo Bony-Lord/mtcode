@@ -52,7 +52,9 @@ jobs:
           VERSION: ${{ inputs.version }}
         run: |
           $releaseDir = Join-Path $env:GITHUB_WORKSPACE 'release'
-          $installer = Join-Path $releaseDir "MT-Code-$env:VERSION-x64.exe"
+          $installers = @(Get-ChildItem -LiteralPath $releaseDir -Filter '*.exe' -File)
+          if ($installers.Count -ne 1) { throw "Expected exactly one Windows installer, found $($installers.Count)" }
+          $installer = $installers[0].FullName
           $blockmap = "$installer.blockmap"
           $feed = Join-Path $releaseDir 'latest.yml'
           foreach ($path in @($installer, $blockmap, $feed)) {
